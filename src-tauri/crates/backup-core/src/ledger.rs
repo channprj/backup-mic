@@ -16,6 +16,27 @@ use crate::{
 
 pub const MAX_ACTIVITY_ENTRIES: usize = 50;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedRecording {
+    pub id: String,
+    pub transmitter: Transmitter,
+    pub source_relative_path: PathBuf,
+    pub source_size: u64,
+    pub source_mtime_ns: i128,
+    pub source_sha256: String,
+    pub destination_relative_path: PathBuf,
+    pub destination_size: u64,
+    pub destination_sha256: String,
+    pub verified_at: String,
+    pub backup_run_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingDeletionItem {
+    pub recording_id: String,
+    pub source_size: u64,
+}
+
 pub struct Ledger {
     connection: Connection,
     path: PathBuf,
@@ -228,6 +249,254 @@ impl Ledger {
             .optional()
             .map_err(CoreError::Ledger)
     }
+
+    pub fn commit_verified_recording(
+        &mut self,
+        recording: &VerifiedRecording,
+    ) -> Result<String, CoreError> {
+        if recording.source_sha256 != recording.destination_sha256
+            || recording.source_size != recording.destination_size
+            || !crate::filesystem::is_safe_relative_path(&recording.source_relative_path)
+            || !crate::filesystem::is_safe_relative_path(&recording.destination_relative_path)
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let source_relative_path = path_text(&recording.source_relative_path)?;
+        let destination_relative_path = path_text(&recording.destination_relative_path)?;
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let existing = transaction
+            .query_row(
+                r#"SELECT id, destination_relative_path, destination_size, destination_sha256
+                   FROM recordings
+                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                     AND source_size = ?3 AND source_mtime_ns = ?4 AND source_sha256 = ?5"#,
+                params![
+                    transmitter_name(recording.transmitter),
+                    source_relative_path,
+                    to_i64(recording.source_size)?,
+                    recording.source_mtime_ns.to_string(),
+                    recording.source_sha256,
+                ],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, i64>(2)?,
+                        row.get::<_, String>(3)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        let id = if let Some((id, existing_path, existing_size, existing_hash)) = existing {
+            if existing_path != destination_relative_path
+                || optional_u64(Some(existing_size))? != Some(recording.destination_size)
+                || existing_hash != recording.destination_sha256
+            {
+                return Err(CoreError::LedgerCorrupt);
+            }
+            transaction
+                .execute(
+                    r#"UPDATE recordings
+                       SET verified_at = ?1, backup_run_id = ?2
+                       WHERE id = ?3"#,
+                    params![recording.verified_at, recording.backup_run_id, id],
+                )
+                .map_err(CoreError::Ledger)?;
+            id
+        } else {
+            transaction
+                .execute(
+                    r#"INSERT INTO recordings(
+                         id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                         source_sha256, destination_relative_path, destination_size,
+                         destination_sha256, verified_at, backup_run_id
+                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+                    params![
+                        recording.id,
+                        transmitter_name(recording.transmitter),
+                        source_relative_path,
+                        to_i64(recording.source_size)?,
+                        recording.source_mtime_ns.to_string(),
+                        recording.source_sha256,
+                        destination_relative_path,
+                        to_i64(recording.destination_size)?,
+                        recording.destination_sha256,
+                        recording.verified_at,
+                        recording.backup_run_id,
+                    ],
+                )
+                .map_err(CoreError::Ledger)?;
+            recording.id.clone()
+        };
+        transaction.commit().map_err(CoreError::Ledger)?;
+        Ok(id)
+    }
+
+    pub fn verified_recording_count(&self) -> Result<u64, CoreError> {
+        let count = self
+            .connection
+            .query_row("SELECT COUNT(*) FROM recordings", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .map_err(CoreError::Ledger)?;
+        u64::try_from(count).map_err(|_| CoreError::LedgerCorrupt)
+    }
+
+    pub fn finish_backup_run(
+        &mut self,
+        id: &str,
+        finished_at: &str,
+        outcome: &str,
+        error_code: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE backup_runs
+                   SET finished_at = ?1, outcome = ?2, error_code = ?3
+                   WHERE id = ?4 AND outcome = 'running'"#,
+                params![finished_at, outcome, error_code, id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    pub fn begin_deletion_run(
+        &mut self,
+        id: &str,
+        transmitter: Transmitter,
+        started_at: &str,
+        items: &[PendingDeletionItem],
+    ) -> Result<(), CoreError> {
+        let proposed_bytes = items.iter().try_fold(0_u64, |total, item| {
+            total
+                .checked_add(item.source_size)
+                .ok_or(CoreError::InvalidRequest)
+        })?;
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        transaction
+            .execute(
+                r#"INSERT INTO deletion_runs(
+                     id, transmitter, started_at, outcome, proposed_file_count, proposed_bytes
+                   ) VALUES (?1, ?2, ?3, 'running', ?4, ?5)"#,
+                params![
+                    id,
+                    transmitter_name(transmitter),
+                    started_at,
+                    to_i64(u64::try_from(items.len()).map_err(|_| CoreError::InvalidRequest)?)?,
+                    to_i64(proposed_bytes)?,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        for item in items {
+            transaction
+                .execute(
+                    r#"INSERT INTO deletion_items(deletion_run_id, recording_id, outcome)
+                       VALUES (?1, ?2, 'pending')"#,
+                    params![id, item.recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+        }
+        transaction.commit().map_err(CoreError::Ledger)
+    }
+
+    pub fn record_deletion_success(
+        &mut self,
+        deletion_run_id: &str,
+        recording_id: &str,
+        removed_at: &str,
+    ) -> Result<(), CoreError> {
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let item_changed = transaction
+            .execute(
+                r#"UPDATE deletion_items
+                   SET outcome = 'deleted', removed_at = ?1, error_code = NULL
+                   WHERE deletion_run_id = ?2 AND recording_id = ?3 AND outcome = 'pending'"#,
+                params![removed_at, deletion_run_id, recording_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        let recording_changed = transaction
+            .execute(
+                r#"UPDATE recordings
+                   SET source_deleted_at = ?1, deletion_error_code = NULL
+                   WHERE id = ?2 AND source_deleted_at IS NULL"#,
+                params![removed_at, recording_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if item_changed != 1 || recording_changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        transaction.commit().map_err(CoreError::Ledger)
+    }
+
+    pub fn record_deletion_failure(
+        &mut self,
+        deletion_run_id: &str,
+        recording_id: &str,
+        error_code: &str,
+    ) -> Result<(), CoreError> {
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let item_changed = transaction
+            .execute(
+                r#"UPDATE deletion_items SET outcome = 'failed', error_code = ?1
+                   WHERE deletion_run_id = ?2 AND recording_id = ?3 AND outcome = 'pending'"#,
+                params![error_code, deletion_run_id, recording_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        let recording_changed = transaction
+            .execute(
+                "UPDATE recordings SET deletion_error_code = ?1 WHERE id = ?2",
+                params![error_code, recording_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if item_changed != 1 || recording_changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        transaction
+            .execute(
+                r#"UPDATE deletion_items SET outcome = 'not_attempted'
+                   WHERE deletion_run_id = ?1 AND outcome = 'pending'"#,
+                [deletion_run_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        transaction.commit().map_err(CoreError::Ledger)
+    }
+
+    pub fn finish_deletion_run(
+        &mut self,
+        id: &str,
+        finished_at: &str,
+        outcome: &str,
+        error_code: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE deletion_runs SET finished_at = ?1, outcome = ?2, error_code = ?3
+                   WHERE id = ?4 AND outcome = 'running'"#,
+                params![finished_at, outcome, error_code, id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
+    pub fn deletion_item_outcomes(&self, id: &str) -> Result<Vec<String>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare("SELECT outcome FROM deletion_items WHERE deletion_run_id = ?1 ORDER BY rowid")
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([id], |row| row.get::<_, String>(0))
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| row.map_err(CoreError::Ledger)).collect()
+    }
 }
 
 fn open_validated(path: &Path) -> Result<Connection, CoreError> {
@@ -340,4 +609,8 @@ fn optional_u64(value: Option<i64>) -> Result<Option<u64>, CoreError> {
     value
         .map(|value| u64::try_from(value).map_err(|_| CoreError::LedgerCorrupt))
         .transpose()
+}
+
+fn path_text(path: &Path) -> Result<&str, CoreError> {
+    path.to_str().ok_or(CoreError::InvalidRequest)
 }

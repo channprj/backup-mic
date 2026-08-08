@@ -21,6 +21,7 @@ pub enum PublicErrorCode {
     PartialDeletion,
     Busy,
     InvalidRequest,
+    Cancelled,
     Internal,
 }
 
@@ -66,6 +67,8 @@ pub enum CoreError {
     Busy,
     #[error("invalid request")]
     InvalidRequest,
+    #[error("operation was cancelled")]
+    Cancelled,
 }
 
 impl CoreError {
@@ -108,6 +111,7 @@ impl CoreError {
             ),
             Self::Busy => (PublicErrorCode::Busy, "operation_busy", true),
             Self::InvalidRequest => (PublicErrorCode::InvalidRequest, "invalid_request", false),
+            Self::Cancelled => (PublicErrorCode::Cancelled, "operation_cancelled", true),
         };
         PublicError {
             code,

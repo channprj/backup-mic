@@ -1,10 +1,14 @@
 pub const PRODUCT_NAME: &str = "DJI Mic Backup";
 
+pub mod backup;
 pub mod clock;
+pub mod deletion;
+pub mod destination;
 pub mod device;
 pub mod error;
 pub mod events;
 pub mod filesystem;
+pub mod hash;
 pub mod ledger;
 pub mod recording;
 pub mod recovery;
