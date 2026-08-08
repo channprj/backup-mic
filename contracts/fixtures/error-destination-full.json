@@ -9,7 +9,36 @@
     "verified_files": 0,
     "total_files": 11
   },
-  "transmitters": [],
+  "transmitters": [
+    {
+      "transmitter": "TX01",
+      "mounted": true,
+      "phase": "error",
+      "progress": {
+        "percent": 0,
+        "copied_bytes": 0,
+        "bytes_requiring_copy": 100663296,
+        "verified_files": 0,
+        "total_files": 9
+      },
+      "deletion_phase": "inactive",
+      "deletion_ready": false
+    },
+    {
+      "transmitter": "TX02",
+      "mounted": true,
+      "phase": "error",
+      "progress": {
+        "percent": 0,
+        "copied_bytes": 0,
+        "bytes_requiring_copy": 14680064,
+        "verified_files": 0,
+        "total_files": 2
+      },
+      "deletion_phase": "inactive",
+      "deletion_ready": false
+    }
+  ],
   "current_stage": null,
   "current_item_ordinal": null,
   "last_success_at": null,

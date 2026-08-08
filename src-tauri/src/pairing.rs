@@ -88,7 +88,7 @@ impl PairingManager {
         ledger: &mut Ledger,
         paired_at: &str,
     ) -> Result<Vec<PairedDevice>, CoreError> {
-        if assignments.is_empty() || assignments.len() > 2 {
+        if assignments.len() != 2 {
             return Err(CoreError::InvalidRequest);
         }
         let unique_candidates = assignments

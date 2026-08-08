@@ -73,7 +73,7 @@ export const appSnapshotSchema = z
     phase: backupPhaseSchema,
     message_code: z.string(),
     overall_progress: progressSchema,
-    transmitters: z.array(transmitterSnapshotSchema),
+    transmitters: z.array(transmitterSnapshotSchema).length(2),
     current_stage: z.enum(["copy", "sha256_verification"]).nullable(),
     current_item_ordinal: z.number().int().positive().nullable(),
     last_success_at: z.string().nullable(),
@@ -84,7 +84,17 @@ export const appSnapshotSchema = z
     recent_activity: z.array(activitySchema).max(8),
     error: publicErrorSchema.nullable(),
   })
-  .strict();
+  .strict()
+  .superRefine((snapshot, context) => {
+    const labels = new Set(snapshot.transmitters.map(({ transmitter }) => transmitter));
+    if (labels.size !== 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["transmitters"],
+        message: "TX01 and TX02 must each appear exactly once",
+      });
+    }
+  });
 
 export const deletionProposalSummarySchema = z
   .object({
@@ -100,3 +110,23 @@ export const deletionProposalSummarySchema = z
 export type AppSnapshot = z.infer<typeof appSnapshotSchema>;
 export type DeletionProposalSummary = z.infer<typeof deletionProposalSummarySchema>;
 export type Transmitter = z.infer<typeof transmitterSchema>;
+
+export const pairingAssignmentSchema = z
+  .object({
+    candidate_id: z.string().uuid(),
+    transmitter: transmitterSchema,
+  })
+  .strict();
+export const pairingAssignmentsSchema = z
+  .array(pairingAssignmentSchema)
+  .length(2)
+  .superRefine((assignments, context) => {
+    if (new Set(assignments.map(({ candidate_id }) => candidate_id)).size !== assignments.length) {
+      context.addIssue({ code: "custom", message: "Candidates must be unique" });
+    }
+    if (new Set(assignments.map(({ transmitter }) => transmitter)).size !== assignments.length) {
+      context.addIssue({ code: "custom", message: "Transmitters must be unique" });
+    }
+  });
+
+export type PairingAssignment = z.infer<typeof pairingAssignmentSchema>;
