@@ -37,6 +37,7 @@ pub(crate) struct RuntimeState {
     pub observed: HashMap<String, MountedVolume>,
     pub mounted: HashMap<Transmitter, MountedVolume>,
     pub destination: PathBuf,
+    pub destination_configured: bool,
     pub destination_generation: u64,
     pub scan_generations: HashMap<Transmitter, u64>,
     pub verified: HashMap<Transmitter, Vec<DeletionCandidate>>,
@@ -57,10 +58,13 @@ impl AppState {
     pub fn new(
         ledger: Ledger,
         destination: PathBuf,
+        destination_configured: bool,
         autostart_enabled: bool,
     ) -> Result<Self, CoreError> {
         let paired = ledger.paired_devices()?;
-        let setup_state = if paired.len() == 2 {
+        let setup_state = if !destination_configured {
+            SetupStateDto::NeedsDestination
+        } else if paired.len() == 2 {
             SetupStateDto::Ready
         } else {
             SetupStateDto::NeedsPairing
@@ -91,6 +95,7 @@ impl AppState {
                 observed: HashMap::new(),
                 mounted: HashMap::new(),
                 destination,
+                destination_configured,
                 destination_generation: 1,
                 scan_generations: HashMap::new(),
                 verified: HashMap::new(),
@@ -115,6 +120,15 @@ impl AppState {
 
     pub fn destination(&self) -> PathBuf {
         self.runtime.lock().destination.clone()
+    }
+
+    pub fn backup_is_ready(&self) -> bool {
+        let runtime = self.runtime.lock();
+        backup_requirements_met(
+            runtime.destination_configured,
+            runtime.paired.len(),
+            runtime.mounted.len(),
+        )
     }
 
     pub fn cancel_active_operation(&self) {
@@ -218,6 +232,13 @@ impl AppState {
             DeviceMatch::UnpairedCandidate | DeviceMatch::Unrelated => None,
         };
         sync_pairing_snapshot(&mut runtime);
+        let should_schedule = trusted.filter(|_| {
+            backup_requirements_met(
+                runtime.destination_configured,
+                runtime.paired.len(),
+                runtime.mounted.len(),
+            )
+        });
         publish_locked(app, &mut runtime);
         drop(runtime);
         if let Some(transmitter) = trusted {
@@ -226,7 +247,7 @@ impl AppState {
                 activity_entry("device_detected", transmitter, ActivitySeverity::Info),
             );
         }
-        trusted
+        should_schedule
     }
 
     pub fn pair_devices(
@@ -274,6 +295,7 @@ impl AppState {
             .invalidate(ProposalInvalidation::DestinationChanged);
         let mut runtime = self.runtime.lock();
         runtime.destination = destination;
+        runtime.destination_configured = true;
         runtime.destination_generation = runtime.destination_generation.saturating_add(1);
         runtime.verified.clear();
         runtime.current_source_paths.clear();
@@ -402,11 +424,21 @@ pub(crate) fn update_transmitter(
 
 fn sync_pairing_snapshot(runtime: &mut RuntimeState) {
     runtime.snapshot.pairing_candidates = runtime.pairing.summaries();
-    runtime.snapshot.setup_state = if runtime.paired.len() == 2 {
+    runtime.snapshot.setup_state = if !runtime.destination_configured {
+        SetupStateDto::NeedsDestination
+    } else if runtime.paired.len() == 2 {
         SetupStateDto::Ready
     } else {
         SetupStateDto::NeedsPairing
     };
+}
+
+fn backup_requirements_met(
+    destination_configured: bool,
+    paired_devices: usize,
+    mounted_devices: usize,
+) -> bool {
+    destination_configured && paired_devices == 2 && mounted_devices > 0
 }
 
 fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
@@ -444,11 +476,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn first_run_requires_a_user_confirmed_destination() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), false, false).unwrap();
+
+        assert_eq!(
+            state.snapshot().setup_state,
+            SetupStateDto::NeedsDestination
+        );
+        assert!(!state.backup_is_ready());
+    }
+
+    #[test]
+    fn automatic_backup_waits_for_every_setup_requirement() {
+        assert!(!backup_requirements_met(false, 2, 2));
+        assert!(!backup_requirements_met(true, 1, 1));
+        assert!(!backup_requirements_met(true, 2, 0));
+        assert!(backup_requirements_met(true, 2, 1));
+        assert!(backup_requirements_met(true, 2, 2));
+    }
+
+    #[test]
     fn snapshot_reads_always_return_the_latest_revision() {
         let state_directory = tempdir().unwrap();
         let destination = tempdir().unwrap();
         let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
-        let state = AppState::new(ledger, destination.path().to_path_buf(), false).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
         let first = state.snapshot();
         {
             let mut runtime = state.runtime.lock();
@@ -465,7 +520,7 @@ mod tests {
         let state_directory = tempdir().unwrap();
         let destination = tempdir().unwrap();
         let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
-        let state = AppState::new(ledger, destination.path().to_path_buf(), false).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
         let first = state.begin_operation().unwrap();
         assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
         drop(first);

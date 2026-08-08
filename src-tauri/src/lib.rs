@@ -51,16 +51,20 @@ pub fn run() {
             ledger
                 .mark_interrupted_runs(&orchestrator::now_string())
                 .map_err(|error| error.to_string())?;
-            let destination = persisted_destination(
+            let (destination, destination_configured) = persisted_destination(
                 ledger
                     .setting(DESTINATION_SETTING)
                     .map_err(|error| error.to_string())?,
                 documents.join("DJI-Mic-Mini-2S"),
             );
-            std::fs::create_dir_all(&destination)?;
             let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-            let state = app_state::AppState::new(ledger, destination, autostart_enabled)
-                .map_err(|error| error.to_string())?;
+            let state = app_state::AppState::new(
+                ledger,
+                destination,
+                destination_configured,
+                autostart_enabled,
+            )
+            .map_err(|error| error.to_string())?;
             let notification_status = match app.notification().permission_state() {
                 Ok(PermissionState::Granted) => dto::NotificationStatusDto::Granted,
                 Ok(PermissionState::Denied) => dto::NotificationStatusDto::Denied,
@@ -68,10 +72,27 @@ pub fn run() {
             };
             app.manage(state.clone());
             state.set_notification_status(app.handle(), notification_status);
+            let initial_setup = state.snapshot().setup_state;
+            let show_initial_setup = state.should_keep_window_open();
+            let destination_dialog_state = state.clone();
             let orchestrator = orchestrator::DeviceOrchestrator::start(app.handle().clone(), state)
                 .map_err(|error| format!("device monitor unavailable: {error}"))?;
             app.manage(orchestrator);
             tray::setup(app)?;
+            if show_initial_setup {
+                tray::show_popover(app.handle());
+            }
+            if initial_setup == dto::SetupStateDto::NeedsDestination {
+                let app_handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+                    let _ = commands::choose_destination_for_state(
+                        &app_handle,
+                        &destination_dialog_state,
+                    )
+                    .await;
+                });
+            }
             Ok(())
         })
         .on_window_event(window::handle_event)

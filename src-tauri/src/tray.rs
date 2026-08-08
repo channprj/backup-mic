@@ -39,6 +39,13 @@ fn toggle_popover(app: &tauri::AppHandle) {
         let _ = window.hide();
         return;
     }
+    show_popover(app);
+}
+
+pub(crate) fn show_popover(app: &tauri::AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
     let _ = window.move_window_constrained(Position::TrayCenter);
     let _ = window.show();
     let _ = window.set_focus();

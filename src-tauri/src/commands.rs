@@ -49,13 +49,24 @@ pub async fn choose_destination(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AppSnapshotDto, PublicError> {
-    let _guard = state
+    choose_destination_for_state(&app, state.inner()).await
+}
+
+pub(crate) async fn choose_destination_for_state(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<AppSnapshotDto, PublicError> {
+    let guard = state
         .begin_operation()
         .map_err(|error| error.public(None))?;
     let (sender, receiver) = tokio::sync::oneshot::channel();
-    app.dialog().file().pick_folder(move |selection| {
-        let _ = sender.send(selection);
-    });
+    app.dialog()
+        .file()
+        .set_title("DJI Mic Backup 폴더 선택")
+        .set_directory(state.destination())
+        .pick_folder(move |selection| {
+            let _ = sender.send(selection);
+        });
     let selection = receiver
         .await
         .map_err(|_| adapter_error("destination_dialog_failed", true))?;
@@ -67,7 +78,7 @@ pub async fn choose_destination(
     let selected = selection
         .into_path()
         .map_err(|_| adapter_error("destination_invalid", false))?;
-    let destination = validate_destination(&selected, state.inner())?;
+    let destination = validate_destination(&selected, state)?;
     let encoded = serde_json::to_string(&destination.to_string_lossy())
         .map_err(|_| adapter_error("destination_invalid", false))?;
     state
@@ -75,11 +86,20 @@ pub async fn choose_destination(
         .lock()
         .set_setting(DESTINATION_SETTING, &encoded, &orchestrator::now_string())
         .map_err(|error| error.public(None))?;
-    state.set_destination(&app, destination);
+    state.set_destination(app, destination);
     let _ = state.record_activity(
-        &app,
+        app,
         activity("destination_changed", None, None, ActivitySeverity::Info),
     );
+    drop(guard);
+    if state.backup_is_ready() {
+        match orchestrator::start_backup(app.clone(), state.clone()) {
+            Ok(())
+            | Err(backup_core::error::CoreError::Busy)
+            | Err(backup_core::error::CoreError::InvalidRequest) => {}
+            Err(error) => return Err(error.public(None)),
+        }
+    }
     state
         .snapshot_with_activity()
         .map_err(|error| error.public(None))
@@ -109,7 +129,9 @@ pub fn pair_devices(
     drop(guard);
     if !mounted.is_empty() {
         match orchestrator::start_backup(app, state.inner().clone()) {
-            Ok(()) | Err(backup_core::error::CoreError::Busy) => {}
+            Ok(())
+            | Err(backup_core::error::CoreError::Busy)
+            | Err(backup_core::error::CoreError::InvalidRequest) => {}
             Err(error) => return Err(error.public(None)),
         }
     }
@@ -202,12 +224,12 @@ pub fn quit_app(app: AppHandle, state: State<'_, AppState>, lifecycle: State<'_,
     app.exit(0);
 }
 
-pub fn persisted_destination(value: Option<String>, default: PathBuf) -> PathBuf {
-    value
+pub fn persisted_destination(value: Option<String>, default: PathBuf) -> (PathBuf, bool) {
+    let persisted = value
         .and_then(|value| serde_json::from_str::<String>(&value).ok())
         .map(PathBuf::from)
-        .filter(|path| destination_path_is_allowed(path))
-        .unwrap_or(default)
+        .filter(|path| destination_path_is_allowed(path));
+    persisted.map_or((default, false), |path| (path, true))
 }
 
 fn validate_destination(selected: &Path, state: &AppState) -> Result<PathBuf, PublicError> {
@@ -290,7 +312,19 @@ mod tests {
         let fallback = PathBuf::from("/tmp/fallback");
         assert_eq!(
             persisted_destination(Some("not-json".to_owned()), fallback.clone()),
-            fallback
+            (fallback, false)
+        );
+    }
+
+    #[test]
+    fn valid_persisted_destination_skips_first_run_confirmation() {
+        let fallback = PathBuf::from("/tmp/fallback");
+        let selected = PathBuf::from("/Users/example/Backups/DJI-Mic-Mini-2S");
+        let persisted = serde_json::to_string(&selected.to_string_lossy()).unwrap();
+
+        assert_eq!(
+            persisted_destination(Some(persisted), fallback),
+            (selected, true)
         );
     }
 
@@ -300,7 +334,7 @@ mod tests {
         let persisted = serde_json::to_string("/Volumes/External/Backups").unwrap();
         assert_eq!(
             persisted_destination(Some(persisted), fallback.clone()),
-            fallback
+            (fallback, false)
         );
         assert!(!destination_path_is_allowed(Path::new("/Volumes")));
         assert!(!destination_path_is_allowed(Path::new("/Volumes/DJI-MIC")));
