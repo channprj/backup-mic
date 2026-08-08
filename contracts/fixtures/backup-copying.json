@@ -1,0 +1,59 @@
+{
+  "revision": 14,
+  "phase": "copying",
+  "message_code": "backup_in_progress",
+  "overall_progress": {
+    "percent": 42,
+    "copied_bytes": 52428800,
+    "bytes_requiring_copy": 104857600,
+    "verified_files": 2,
+    "total_files": 6
+  },
+  "transmitters": [
+    {
+      "transmitter": "TX01",
+      "mounted": true,
+      "phase": "copying",
+      "progress": {
+        "percent": 56,
+        "copied_bytes": 41943040,
+        "bytes_requiring_copy": 73400320,
+        "verified_files": 2,
+        "total_files": 4
+      },
+      "deletion_phase": "inactive",
+      "deletion_ready": false
+    },
+    {
+      "transmitter": "TX02",
+      "mounted": true,
+      "phase": "copying",
+      "progress": {
+        "percent": 18,
+        "copied_bytes": 10485760,
+        "bytes_requiring_copy": 31457280,
+        "verified_files": 0,
+        "total_files": 2
+      },
+      "deletion_phase": "inactive",
+      "deletion_ready": false
+    }
+  ],
+  "current_stage": "copy",
+  "current_item_ordinal": 3,
+  "last_success_at": null,
+  "autostart_enabled": true,
+  "notification_status": "granted",
+  "setup_state": "ready",
+  "recent_activity": [
+    {
+      "occurred_at": "2026-08-09T02:17:31Z",
+      "code": "copy_started",
+      "transmitter": "TX01",
+      "count_value": 4,
+      "byte_value": 73400320,
+      "severity": "info"
+    }
+  ],
+  "error": null
+}

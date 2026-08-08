@@ -1,0 +1,20 @@
+[package]
+name = "backup-core"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.97"
+
+[dependencies]
+fs2 = "=0.4.3"
+parking_lot = "=0.12.5"
+regex = "=1.13.1"
+rusqlite = { version = "=0.40.2", features = ["bundled"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+sha2 = "=0.11.0"
+thiserror = "=2.0.20"
+time = { version = "=0.3.55", features = ["formatting", "macros", "serde"] }
+uuid = { version = "=1.24.0", features = ["serde", "v4"] }
+
+[dev-dependencies]
+proptest = "=1.11.0"
+tempfile = "=3.27.0"

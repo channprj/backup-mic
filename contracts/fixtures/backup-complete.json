@@ -1,0 +1,59 @@
+{
+  "revision": 21,
+  "phase": "completed_deletion_pending",
+  "message_code": "backup_complete",
+  "overall_progress": {
+    "percent": 100,
+    "copied_bytes": 115343360,
+    "bytes_requiring_copy": 115343360,
+    "verified_files": 11,
+    "total_files": 11
+  },
+  "transmitters": [
+    {
+      "transmitter": "TX01",
+      "mounted": true,
+      "phase": "completed_deletion_pending",
+      "progress": {
+        "percent": 100,
+        "copied_bytes": 100663296,
+        "bytes_requiring_copy": 100663296,
+        "verified_files": 9,
+        "total_files": 9
+      },
+      "deletion_phase": "inactive",
+      "deletion_ready": true
+    },
+    {
+      "transmitter": "TX02",
+      "mounted": true,
+      "phase": "completed_deletion_pending",
+      "progress": {
+        "percent": 100,
+        "copied_bytes": 14680064,
+        "bytes_requiring_copy": 14680064,
+        "verified_files": 2,
+        "total_files": 2
+      },
+      "deletion_phase": "inactive",
+      "deletion_ready": true
+    }
+  ],
+  "current_stage": null,
+  "current_item_ordinal": null,
+  "last_success_at": "2026-08-09T02:18:02Z",
+  "autostart_enabled": true,
+  "notification_status": "granted",
+  "setup_state": "ready",
+  "recent_activity": [
+    {
+      "occurred_at": "2026-08-09T02:18:02Z",
+      "code": "verification_complete",
+      "transmitter": null,
+      "count_value": 11,
+      "byte_value": 115343360,
+      "severity": "success"
+    }
+  ],
+  "error": null
+}

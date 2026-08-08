@@ -1,0 +1,35 @@
+{
+  "revision": 22,
+  "phase": "error",
+  "message_code": "insufficient_capacity",
+  "overall_progress": {
+    "percent": 0,
+    "copied_bytes": 0,
+    "bytes_requiring_copy": 115343360,
+    "verified_files": 0,
+    "total_files": 11
+  },
+  "transmitters": [],
+  "current_stage": null,
+  "current_item_ordinal": null,
+  "last_success_at": null,
+  "autostart_enabled": true,
+  "notification_status": "denied",
+  "setup_state": "ready",
+  "recent_activity": [
+    {
+      "occurred_at": "2026-08-09T02:18:10Z",
+      "code": "capacity_check_failed",
+      "transmitter": null,
+      "count_value": 11,
+      "byte_value": 115343360,
+      "severity": "error"
+    }
+  ],
+  "error": {
+    "code": "insufficient_capacity",
+    "message_code": "insufficient_capacity",
+    "retryable": true,
+    "transmitter": null
+  }
+}

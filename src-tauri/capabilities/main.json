@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Minimal capability for the local backup status popover",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

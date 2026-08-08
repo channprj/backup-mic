@@ -1,0 +1,156 @@
+use backup_core::{
+    error::PublicError,
+    events::ActivityEntry,
+    state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
+};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProgressDto {
+    pub percent: u8,
+    pub copied_bytes: u64,
+    pub bytes_requiring_copy: u64,
+    pub verified_files: u64,
+    pub total_files: u64,
+}
+
+impl From<&Progress> for ProgressDto {
+    fn from(progress: &Progress) -> Self {
+        Self {
+            percent: progress.percent(),
+            copied_bytes: progress.copied_bytes,
+            bytes_requiring_copy: progress.bytes_requiring_copy,
+            verified_files: progress.verified_files,
+            total_files: progress.total_files,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransmitterSnapshotDto {
+    pub transmitter: Transmitter,
+    pub mounted: bool,
+    pub phase: BackupPhase,
+    pub progress: ProgressDto,
+    pub deletion_phase: DeletionPhase,
+    pub deletion_ready: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NotificationStatusDto {
+    Unknown,
+    Granted,
+    Denied,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupStateDto {
+    NeedsDestination,
+    NeedsPairing,
+    Ready,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppSnapshotDto {
+    pub revision: u64,
+    pub phase: BackupPhase,
+    pub message_code: String,
+    pub overall_progress: ProgressDto,
+    pub transmitters: Vec<TransmitterSnapshotDto>,
+    pub current_stage: Option<CurrentStage>,
+    pub current_item_ordinal: Option<u64>,
+    pub last_success_at: Option<String>,
+    pub autostart_enabled: bool,
+    pub notification_status: NotificationStatusDto,
+    pub setup_state: SetupStateDto,
+    pub recent_activity: Vec<ActivityEntry>,
+    pub error: Option<PublicError>,
+}
+
+impl AppSnapshotDto {
+    pub fn with_activity(mut self, recent_activity: Vec<ActivityEntry>) -> Self {
+        self.recent_activity = recent_activity.into_iter().rev().take(8).collect();
+        self
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DeletionProposalSummaryDto {
+    pub proposal_id: String,
+    pub transmitter: Transmitter,
+    pub file_count: u64,
+    pub byte_count: u64,
+    pub destination_summary: String,
+    pub expires_at: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use backup_core::events::ActivitySeverity;
+
+    use super::*;
+
+    fn activity(index: u8) -> ActivityEntry {
+        ActivityEntry {
+            occurred_at: format!("2026-08-09T00:00:{index:02}Z"),
+            code: "device_detected".to_owned(),
+            transmitter: Some(Transmitter::Tx01),
+            count_value: None,
+            byte_value: None,
+            severity: ActivitySeverity::Info,
+        }
+    }
+
+    fn empty_snapshot() -> AppSnapshotDto {
+        AppSnapshotDto {
+            revision: 1,
+            phase: BackupPhase::Idle,
+            message_code: "idle".to_owned(),
+            overall_progress: ProgressDto::from(&Progress::default()),
+            transmitters: Vec::new(),
+            current_stage: None,
+            current_item_ordinal: None,
+            last_success_at: None,
+            autostart_enabled: false,
+            notification_status: NotificationStatusDto::Unknown,
+            setup_state: SetupStateDto::NeedsDestination,
+            recent_activity: Vec::new(),
+            error: None,
+        }
+    }
+
+    #[test]
+    fn snapshot_exposes_only_the_newest_eight_activity_entries() {
+        let entries = (0..10).map(activity).collect();
+        let snapshot = empty_snapshot().with_activity(entries);
+        assert_eq!(snapshot.recent_activity.len(), 8);
+        assert_eq!(
+            snapshot.recent_activity[0].occurred_at,
+            "2026-08-09T00:00:09Z"
+        );
+        assert_eq!(
+            snapshot.recent_activity[7].occurred_at,
+            "2026-08-09T00:00:02Z"
+        );
+    }
+
+    #[test]
+    fn serialized_snapshot_does_not_contain_sensitive_field_names() {
+        let json = serde_json::to_string(&empty_snapshot()).expect("snapshot serializes");
+        for forbidden in [
+            "path",
+            "uuid",
+            "hash",
+            "filename",
+            "ledger_id",
+            "recording_id",
+        ] {
+            assert!(
+                !json.to_ascii_lowercase().contains(forbidden),
+                "found {forbidden}"
+            );
+        }
+    }
+}

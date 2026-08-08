@@ -1,0 +1,50 @@
+{
+  "revision": 35,
+  "phase": "error",
+  "message_code": "partial_deletion",
+  "overall_progress": {
+    "percent": 100,
+    "copied_bytes": 115343360,
+    "bytes_requiring_copy": 115343360,
+    "verified_files": 11,
+    "total_files": 11
+  },
+  "transmitters": [
+    {
+      "transmitter": "TX01",
+      "mounted": true,
+      "phase": "error",
+      "progress": {
+        "percent": 100,
+        "copied_bytes": 100663296,
+        "bytes_requiring_copy": 100663296,
+        "verified_files": 9,
+        "total_files": 9
+      },
+      "deletion_phase": "partially_deleted",
+      "deletion_ready": false
+    }
+  ],
+  "current_stage": null,
+  "current_item_ordinal": null,
+  "last_success_at": "2026-08-09T02:18:02Z",
+  "autostart_enabled": true,
+  "notification_status": "granted",
+  "setup_state": "ready",
+  "recent_activity": [
+    {
+      "occurred_at": "2026-08-09T02:20:41Z",
+      "code": "partial_deletion",
+      "transmitter": "TX01",
+      "count_value": 1,
+      "byte_value": null,
+      "severity": "error"
+    }
+  ],
+  "error": {
+    "code": "partial_deletion",
+    "message_code": "partial_deletion",
+    "retryable": false,
+    "transmitter": "TX01"
+  }
+}
