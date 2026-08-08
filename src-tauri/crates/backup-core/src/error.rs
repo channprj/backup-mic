@@ -52,6 +52,10 @@ pub enum CoreError {
     DeviceRemoved,
     #[error("ledger is corrupt")]
     LedgerCorrupt,
+    #[error("ledger operation failed")]
+    Ledger(#[source] rusqlite::Error),
+    #[error("ledger filesystem operation failed")]
+    LedgerIo(#[source] std::io::Error),
     #[error("deletion proposal expired")]
     ProposalExpired,
     #[error("deletion proposal was invalidated")]
@@ -88,6 +92,9 @@ impl CoreError {
             Self::HashMismatch => (PublicErrorCode::HashMismatch, "hash_mismatch", true),
             Self::DeviceRemoved => (PublicErrorCode::DeviceRemoved, "device_removed", true),
             Self::LedgerCorrupt => (PublicErrorCode::LedgerCorrupt, "ledger_corrupt", false),
+            Self::Ledger(_) | Self::LedgerIo(_) => {
+                (PublicErrorCode::Internal, "ledger_operation_failed", true)
+            }
             Self::ProposalExpired => (PublicErrorCode::ProposalExpired, "proposal_expired", true),
             Self::ProposalInvalidated => (
                 PublicErrorCode::ProposalInvalidated,
