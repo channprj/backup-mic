@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf};
 
+use dji_mic_backup_lib::commands::REGISTERED_COMMANDS;
 use dji_mic_backup_lib::dto::{AppSnapshotDto, DeletionProposalSummaryDto};
 use serde_json::Value;
 
@@ -51,4 +52,18 @@ fn deletion_proposal_fixture_round_trips_through_rust_contract() {
         serde_json::from_str(&fixture("deletion-proposal.json")).expect("valid proposal");
     let value = serde_json::to_value(proposal).expect("proposal serializes");
     assert_safe_json(&value);
+}
+
+#[test]
+fn webview_capability_has_no_direct_plugin_authority() {
+    let capability_path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("capabilities/main.json");
+    let capability: Value = serde_json::from_str(
+        &fs::read_to_string(capability_path).expect("capability must be readable"),
+    )
+    .expect("capability must be valid JSON");
+    assert_eq!(
+        capability["permissions"],
+        serde_json::json!(["core:default"])
+    );
+    assert_eq!(REGISTERED_COMMANDS.len(), 9);
 }

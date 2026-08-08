@@ -104,6 +104,26 @@ pub fn execute_backup_item(
     faults: &dyn CopyFaults,
     cancellation: &CancellationToken,
 ) -> Result<VerifiedRecording, CoreError> {
+    execute_backup_item_observed(
+        context,
+        plan,
+        ledger,
+        progress,
+        faults,
+        cancellation,
+        &mut |_, _| {},
+    )
+}
+
+pub fn execute_backup_item_observed(
+    context: &BackupItemContext<'_>,
+    plan: &DestinationPlan,
+    ledger: &mut Ledger,
+    progress: &mut Progress,
+    faults: &dyn CopyFaults,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&Progress, crate::state::CurrentStage),
+) -> Result<VerifiedRecording, CoreError> {
     cancellation.check()?;
     if !is_safe_relative_path(&plan.source.relative_path)
         || !is_safe_relative_path(&plan.relative_destination)
@@ -135,6 +155,7 @@ pub fn execute_backup_item(
             progress,
             faults,
             cancellation,
+            observer,
         )?,
         DestinationDisposition::Reuse => verify_reused(
             &source_path,
@@ -143,6 +164,7 @@ pub fn execute_backup_item(
             progress,
             faults,
             cancellation,
+            observer,
         )?,
     };
     let mut verified = VerifiedRecording {
@@ -161,6 +183,7 @@ pub fn execute_backup_item(
     faults.check(CopyFaultPoint::LedgerCommit)?;
     verified.id = ledger.commit_verified_recording(&verified)?;
     progress.record_verified_file();
+    observer(progress, crate::state::CurrentStage::Sha256Verification);
     Ok(verified)
 }
 
@@ -190,6 +213,7 @@ fn copy_and_verify(
     progress: &mut Progress,
     faults: &dyn CopyFaults,
     cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&Progress, crate::state::CurrentStage),
 ) -> Result<FileDigest, CoreError> {
     let initial_metadata = checked_source_metadata(source_path, plan, faults)?;
     faults.check(CopyFaultPoint::SourceOpen)?;
@@ -221,6 +245,7 @@ fn copy_and_verify(
         let read = u64::try_from(read).map_err(|_| CoreError::InvalidRequest)?;
         copied = copied.checked_add(read).ok_or(CoreError::InvalidRequest)?;
         progress.record_copy(read);
+        observer(progress, crate::state::CurrentStage::Copy);
     }
     faults.check(CopyFaultPoint::Flush)?;
     partial
@@ -257,6 +282,7 @@ fn copy_and_verify(
         |bytes| {
             cancellation.check()?;
             progress.record_verification(bytes);
+            observer(progress, crate::state::CurrentStage::Sha256Verification);
             Ok(())
         },
     )?;
@@ -294,6 +320,7 @@ fn verify_reused(
     progress: &mut Progress,
     faults: &dyn CopyFaults,
     cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&Progress, crate::state::CurrentStage),
 ) -> Result<FileDigest, CoreError> {
     checked_source_metadata(source_path, plan, faults)?;
     faults.check(CopyFaultPoint::SourceOpen)?;
@@ -332,6 +359,7 @@ fn verify_reused(
         |bytes| {
             cancellation.check()?;
             progress.record_verification(bytes);
+            observer(progress, crate::state::CurrentStage::Sha256Verification);
             Ok(())
         },
     )?;

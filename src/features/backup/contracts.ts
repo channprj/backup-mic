@@ -50,6 +50,13 @@ export const publicErrorSchema = z
     transmitter: transmitterSchema.nullable(),
   })
   .strict();
+export const pairingCandidateSchema = z
+  .object({
+    candidate_id: z.string().uuid(),
+    display_name: z.string(),
+    capacity_bytes: z.number().int().nonnegative(),
+  })
+  .strict();
 export const transmitterSnapshotSchema = z
   .object({
     transmitter: transmitterSchema,
@@ -73,6 +80,7 @@ export const appSnapshotSchema = z
     autostart_enabled: z.boolean(),
     notification_status: z.enum(["unknown", "granted", "denied"]),
     setup_state: z.enum(["needs_destination", "needs_pairing", "ready"]),
+    pairing_candidates: z.array(pairingCandidateSchema).max(2),
     recent_activity: z.array(activitySchema).max(8),
     error: publicErrorSchema.nullable(),
   })

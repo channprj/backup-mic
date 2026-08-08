@@ -16,6 +16,7 @@
   "autostart_enabled": true,
   "notification_status": "denied",
   "setup_state": "ready",
+  "pairing_candidates": [],
   "recent_activity": [
     {
       "occurred_at": "2026-08-09T02:18:10Z",

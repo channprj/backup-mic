@@ -191,6 +191,17 @@ impl DeletionProposalStore {
         ledger: &mut Ledger,
         faults: &dyn DeletionFaults,
     ) -> Result<DeletionReport, CoreError> {
+        self.confirm_observed(proposal_id, confirmation, ledger, faults, &mut || {})
+    }
+
+    pub fn confirm_observed(
+        &mut self,
+        proposal_id: &str,
+        confirmation: DeletionConfirmation<'_>,
+        ledger: &mut Ledger,
+        faults: &dyn DeletionFaults,
+        observer: &mut dyn FnMut(),
+    ) -> Result<DeletionReport, CoreError> {
         let Some(proposal) = self.proposals.remove(proposal_id) else {
             self.invalidate(ProposalInvalidation::AnotherDeletionAttempt);
             return Err(CoreError::ProposalInvalidated);
@@ -205,6 +216,7 @@ impl DeletionProposalStore {
         let verified_source_paths =
             verify_complete_snapshot(&proposal.context, &proposal.candidates, faults)
                 .map_err(|_| CoreError::DeletionPreflightRefused)?;
+        observer();
 
         let run_id = Uuid::new_v4().to_string();
         let pending_items: Vec<PendingDeletionItem> = proposal

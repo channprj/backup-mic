@@ -5,6 +5,8 @@ use backup_core::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::pairing::PairingCandidateSummary;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressDto {
     pub percent: u8,
@@ -65,6 +67,7 @@ pub struct AppSnapshotDto {
     pub autostart_enabled: bool,
     pub notification_status: NotificationStatusDto,
     pub setup_state: SetupStateDto,
+    pub pairing_candidates: Vec<PairingCandidateSummary>,
     pub recent_activity: Vec<ActivityEntry>,
     pub error: Option<PublicError>,
 }
@@ -116,6 +119,7 @@ mod tests {
             autostart_enabled: false,
             notification_status: NotificationStatusDto::Unknown,
             setup_state: SetupStateDto::NeedsDestination,
+            pairing_candidates: Vec::new(),
             recent_activity: Vec::new(),
             error: None,
         }
