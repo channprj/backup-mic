@@ -715,9 +715,11 @@ button:not(:disabled):active {
 
 .settings-shell {
   width: 100%;
-  min-height: 100vh;
+  height: 100%;
+  min-height: 0;
   padding: 18px 28px 22px;
   overflow-y: auto;
+  overscroll-behavior-y: contain;
   background: color-mix(in srgb, var(--background) 92%, transparent);
   backdrop-filter: saturate(140%) blur(18px);
 }

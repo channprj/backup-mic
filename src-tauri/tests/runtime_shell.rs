@@ -30,3 +30,12 @@ fn only_the_popover_hides_on_focus_loss() {
     assert!(source.contains("window.label() == \"main\""));
     assert!(source.contains("WindowEvent::Focused(false)"));
 }
+
+#[test]
+fn settings_window_owns_a_bounded_vertical_scroll_area() {
+    let stylesheet = include_str!("../../src/index.css");
+    assert!(stylesheet.contains(
+        ".settings-shell {\n  width: 100%;\n  height: 100%;\n  min-height: 0;"
+    ));
+    assert!(stylesheet.contains("  overflow-y: auto;\n  overscroll-behavior-y: contain;"));
+}
