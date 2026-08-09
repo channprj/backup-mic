@@ -1,6 +1,6 @@
 [package]
 name = "dji-mic-backup"
-version = "0.260810.2"
+version = "0.260810.3"
 description = "Safe local backups for DJI Mic Mini recordings"
 authors = ["channprj"]
 edition = "2024"
