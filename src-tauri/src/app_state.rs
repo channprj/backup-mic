@@ -24,8 +24,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     dto::{
-        AppSnapshotDto, BackupSettingsDto, NotificationStatusDto, ProgressDto, SetupStateDto,
-        TransmitterSnapshotDto,
+        AppSnapshotDto, ArtifactFormatDto, BackupSettingsDto, NotificationStatusDto, ProgressDto,
+        RetirementModeDto, SetupStateDto, TransmitterSnapshotDto,
     },
     pairing::{PairingAssignment, PairingManager},
     platform::device_registry::{MountedVolume, VolumeLifecycleEvent},
@@ -88,7 +88,17 @@ impl AppState {
                     current_stage: None,
                     current_item_ordinal: None,
                     last_success_at: None,
-                    autostart_enabled,
+                    artifact_format: if preferences.m4a_conversion {
+                        ArtifactFormatDto::M4a
+                    } else {
+                        ArtifactFormatDto::Wav
+                    },
+                    retirement_mode: if preferences.automatic_trash {
+                        RetirementModeDto::Automatic
+                    } else {
+                        RetirementModeDto::Manual
+                    },
+                    current_log_available: destination_configured,
                     settings: BackupSettingsDto {
                         automatic_backup: preferences.automatic_backup,
                         m4a_conversion: preferences.m4a_conversion,
@@ -189,10 +199,20 @@ impl AppState {
             PreferenceKey::M4aConversion => {
                 runtime.preferences.m4a_conversion = enabled;
                 runtime.snapshot.settings.m4a_conversion = enabled;
+                runtime.snapshot.artifact_format = if enabled {
+                    ArtifactFormatDto::M4a
+                } else {
+                    ArtifactFormatDto::Wav
+                };
             }
             PreferenceKey::AutomaticTrash => {
                 runtime.preferences.automatic_trash = enabled;
                 runtime.snapshot.settings.automatic_trash = enabled;
+                runtime.snapshot.retirement_mode = if enabled {
+                    RetirementModeDto::Automatic
+                } else {
+                    RetirementModeDto::Manual
+                };
             }
         }
         runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
@@ -419,6 +439,7 @@ impl AppState {
         let mut runtime = self.runtime.lock();
         runtime.destination = destination;
         runtime.destination_configured = true;
+        runtime.snapshot.current_log_available = true;
         runtime.destination_generation = runtime.destination_generation.saturating_add(1);
         runtime.verified.clear();
         runtime.current_source_paths.clear();
@@ -452,6 +473,7 @@ impl AppState {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = public.message_code.clone();
         runtime.snapshot.error = Some(public);
+        runtime.snapshot.current_stage = None;
         if let Some(transmitter) = transmitter {
             update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
                 snapshot.phase = BackupPhase::Error;
@@ -467,6 +489,7 @@ impl AppState {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = public.message_code.clone();
         runtime.snapshot.error = Some(public);
+        runtime.snapshot.current_stage = None;
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Refused;
             snapshot.deletion_ready = false;
@@ -486,7 +509,6 @@ impl AppState {
 
     pub fn set_autostart(&self, app: &AppHandle, enabled: bool) {
         let mut runtime = self.runtime.lock();
-        runtime.snapshot.autostart_enabled = enabled;
         runtime.snapshot.settings.autostart = enabled;
         publish_locked(app, &mut runtime);
     }
@@ -752,6 +774,7 @@ mod tests {
             .unwrap();
 
         assert!(snapshot.settings.automatic_trash);
+        assert_eq!(snapshot.retirement_mode, RetirementModeDto::Automatic);
         assert!(state.automatic_trash_enabled());
         drop(state);
         let reopened = Ledger::open(ledger_path).unwrap();

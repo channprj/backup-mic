@@ -38,7 +38,7 @@ use uuid::Uuid;
 use crate::{
     app_state::{AppState, OperationGuard, publish_locked, update_transmitter},
     artifact_pipeline::{publish_m4a, verify_published_artifact},
-    dto::{DeletionProposalSummaryDto, ProgressDto},
+    dto::{ProgressDto, TrashProposalSummaryDto},
     platform::{
         device_registry::DeviceRegistry,
         macos::{DiskArbitrationMonitor, audio::AppleAudioTools, trash::MacTrash},
@@ -463,9 +463,9 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                             runtime.snapshot.message_code = match stage {
                                 CurrentStage::Conversion => "converting_m4a",
                                 CurrentStage::ArtifactVerification => "verifying_m4a",
-                                CurrentStage::Copy | CurrentStage::Sha256Verification => {
-                                    "backup_in_progress"
-                                }
+                                CurrentStage::Copy
+                                | CurrentStage::Sha256Verification
+                                | CurrentStage::Trash => "backup_in_progress",
                             }
                             .to_owned();
                             runtime.snapshot.current_stage = Some(stage);
@@ -863,6 +863,14 @@ fn retire_automatically(
     snapshot: CompleteDeletionSnapshot,
 ) -> Result<(), CoreError> {
     let transmitter = snapshot.context.transmitter;
+    {
+        let mut runtime = state.runtime.lock();
+        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
+        update_transmitter(&mut runtime.snapshot, transmitter, |transmitter_snapshot| {
+            transmitter_snapshot.deletion_phase = DeletionPhase::Revalidating;
+        });
+        publish_locked(app, &mut runtime);
+    }
     let fields = [("mode", AuditValue::Text("automatic"))];
     state.append_audit(
         &AuditEvent {
@@ -917,6 +925,7 @@ fn retire_automatically(
         });
         runtime.verified.remove(&transmitter);
         runtime.current_source_paths.remove(&transmitter);
+        runtime.snapshot.current_stage = None;
         publish_locked(app, &mut runtime);
     }
     let fields = [
@@ -965,13 +974,14 @@ pub fn prepare_trash(
     app: &AppHandle,
     state: &AppState,
     transmitter: Transmitter,
-) -> Result<DeletionProposalSummaryDto, CoreError> {
+) -> Result<TrashProposalSummaryDto, CoreError> {
     let _guard = state.begin_operation()?;
     {
         let mut runtime = state.runtime.lock();
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Preparing;
         });
+        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
         publish_locked(app, &mut runtime);
     }
     let (mounted, destination, destination_generation, verified) = {
@@ -1050,9 +1060,10 @@ pub fn prepare_trash(
         });
         publish_locked(app, &mut runtime);
     }
-    Ok(DeletionProposalSummaryDto {
+    Ok(TrashProposalSummaryDto {
         proposal_id: summary.proposal_id,
         transmitter: summary.transmitter,
+        session_count: summary.session_count,
         file_count: summary.file_count,
         byte_count: summary.byte_count,
         destination_summary: "DJI-Mic-Mini-2S 백업 폴더".to_owned(),
@@ -1078,6 +1089,7 @@ pub fn confirm_trash(
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Revalidating;
         });
+        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
         let mounted = runtime
             .mounted
             .get(&transmitter)
@@ -1147,6 +1159,7 @@ pub fn confirm_trash(
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = "partial_trash".to_owned();
     }
+    runtime.snapshot.current_stage = None;
     publish_locked(app, &mut runtime);
     drop(runtime);
     let _ = state.record_activity(

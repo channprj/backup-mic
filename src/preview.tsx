@@ -5,6 +5,7 @@ import copyingFixture from "../contracts/fixtures/backup-copying.json";
 import errorFixture from "../contracts/fixtures/error-destination-full.json";
 import "./index.css";
 import { BackupPopover } from "./features/backup/BackupPopover";
+import { SettingsView } from "./features/backup/SettingsApp";
 import type { BackupActions } from "./features/backup/client";
 import { appSnapshotSchema, type AppSnapshot } from "./features/backup/contracts";
 
@@ -34,35 +35,64 @@ const previews: Record<string, AppSnapshot> = { complete, copying, error: failur
 function Preview() {
   const initial = new URLSearchParams(window.location.search).get("state") ?? "complete";
   const [snapshot, setSnapshot] = useState(previews[initial] ?? complete);
+  const settingsWindow = new URLSearchParams(window.location.search).get("window") === "settings";
   const actions = useMemo<BackupActions>(
-    () => ({
+    () => {
+      const withSetting = (
+        key: keyof AppSnapshot["settings"],
+        enabled: boolean,
+      ): AppSnapshot => {
+        const next: AppSnapshot = {
+          ...snapshot,
+          revision: snapshot.revision + 1,
+          artifact_format:
+            key === "m4a_conversion" ? (enabled ? "m4a" : "wav") : snapshot.artifact_format,
+          retirement_mode:
+            key === "automatic_trash"
+              ? enabled
+                ? "automatic"
+                : "manual"
+              : snapshot.retirement_mode,
+          settings: { ...snapshot.settings, [key]: enabled },
+        };
+        setSnapshot(next);
+        return next;
+      };
+      return {
       backupNow: async () => setSnapshot(copying),
       chooseDestination: async () => snapshot,
       pairDevices: async () => {
         setSnapshot(complete);
         return complete;
       },
-      prepareDeletion: async (transmitter) => ({
+      prepareTrash: async (transmitter) => ({
         proposal_id: "550e8400-e29b-41d4-a716-446655440000",
         transmitter,
+        session_count: 1,
         file_count: 9,
         byte_count: 99_000_000,
         destination_summary: "DJI-Mic-Mini-2S 백업 폴더",
-        expires_at: "2026-08-09T02:25:00Z",
+        expires_at: new Date(Date.now() + 5 * 60 * 1_000).toISOString(),
       }),
-      confirmDeletion: async () => snapshot,
-      setAutostart: async (enabled) => {
-        const next = { ...snapshot, autostart_enabled: enabled };
-        setSnapshot(next);
-        return next;
-      },
+      confirmTrash: async () => snapshot,
+      setAutostart: async (enabled) => withSetting("autostart", enabled),
+      showSettings: async () => undefined,
+      setAutomaticBackup: async (enabled) => withSetting("automatic_backup", enabled),
+      setM4aConversion: async (enabled) => withSetting("m4a_conversion", enabled),
+      setAutomaticTrash: async (enabled) => withSetting("automatic_trash", enabled),
       openDestination: async () => undefined,
+      openLogs: async () => undefined,
       quitApp: async () => undefined,
-    }),
+    };
+    },
     [snapshot],
   );
 
-  return <BackupPopover snapshot={snapshot} actions={actions} />;
+  return settingsWindow ? (
+    <SettingsView snapshot={snapshot} actions={actions} />
+  ) : (
+    <BackupPopover snapshot={snapshot} actions={actions} />
+  );
 }
 
 createRoot(document.getElementById("root")!).render(

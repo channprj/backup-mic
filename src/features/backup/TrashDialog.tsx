@@ -11,53 +11,53 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Spinner } from "@/components/ui/spinner";
-import type { DeletionProposalSummary } from "./contracts";
+import type { TrashProposalSummary } from "./contracts";
 import { formatBytes } from "./format";
 
-interface DeletionDialogProps {
-  proposal: DeletionProposalSummary | null;
+interface TrashDialogProps {
+  proposal: TrashProposalSummary | null;
   busy: boolean;
   error: string | null;
   onOpenChange: (open: boolean) => void;
   onConfirm: (proposalId: string) => Promise<void>;
 }
 
-export function DeletionDialog({
+export function TrashDialog({
   proposal,
   busy,
   error,
   onOpenChange,
   onConfirm,
-}: DeletionDialogProps) {
+}: TrashDialogProps) {
   return (
     <AlertDialog open={proposal !== null} onOpenChange={onOpenChange}>
-      <AlertDialogContent className="deletion-dialog">
+      <AlertDialogContent className="trash-dialog">
         <AlertDialogHeader>
           <div className="dialog-kicker">
             <ShieldCheckIcon aria-hidden="true" />
-            두 번째 검증 준비됨
+            이동 직전 다시 검증합니다
           </div>
           <AlertDialogTitle>
             {proposal?.transmitter} 원본을 휴지통으로 이동할까요?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            이동 직전에 송신기와 백업 파일 전체를 다시 검사합니다. 하나라도 달라지면 아무것도
-            옮기지 않습니다. 휴지통이 비워지기 전에는 복구할 수 있습니다.
+            송신기와 백업 결과 전체가 그대로인지 다시 검사합니다. 하나라도 달라지면 이동하지
+            않으며, 휴지통이 비워지기 전에는 복구할 수 있습니다.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {proposal ? (
-          <dl className="proposal-summary">
+          <dl className="proposal-summary" aria-label="휴지통 이동 대상">
             <div>
-              <dt>검증 대상</dt>
-              <dd>{proposal.file_count}개</dd>
+              <dt>세션</dt>
+              <dd>{proposal.session_count}개 세션</dd>
+            </div>
+            <div>
+              <dt>녹음</dt>
+              <dd>{proposal.file_count}개 파일</dd>
             </div>
             <div>
               <dt>원본 용량</dt>
               <dd>{formatBytes(proposal.byte_count)}</dd>
-            </div>
-            <div>
-              <dt>백업 위치</dt>
-              <dd>{proposal.destination_summary}</dd>
             </div>
           </dl>
         ) : null}

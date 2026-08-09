@@ -153,6 +153,8 @@ fn a_complete_recognized_session_moves_to_trash_as_one_recoverable_item() {
             &NoDeletionFaults,
         )
         .unwrap();
+    assert_eq!(proposal.session_count, 1);
+    assert_eq!(proposal.file_count, 2);
     let report = store
         .confirm(
             &proposal.proposal_id,

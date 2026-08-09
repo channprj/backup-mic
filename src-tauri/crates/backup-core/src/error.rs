@@ -22,6 +22,7 @@ pub enum PublicErrorCode {
     ProposalExpired,
     ProposalInvalidated,
     DeletionPreflightRefused,
+    #[serde(rename = "partial_trash")]
     PartialDeletion,
     Busy,
     InvalidRequest,

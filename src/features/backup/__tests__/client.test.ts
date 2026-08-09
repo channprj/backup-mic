@@ -4,7 +4,13 @@ import completeFixture from "../../../../contracts/fixtures/backup-complete.json
 const { invoke } = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
-import { confirmDeletion, getAppSnapshot, pairDevices } from "../client";
+import {
+  confirmTrash,
+  getAppSnapshot,
+  pairDevices,
+  setAutomaticTrash,
+  showSettings,
+} from "../client";
 
 describe("typed Tauri client", () => {
   beforeEach(() => invoke.mockReset());
@@ -58,10 +64,25 @@ describe("typed Tauri client", () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 
-  it("confirms deletion with one validated opaque proposal ID", async () => {
+  it("confirms Trash movement with one validated opaque proposal ID", async () => {
     invoke.mockResolvedValue(completeFixture);
     const proposalId = "550e8400-e29b-41d4-a716-446655440000";
-    await confirmDeletion(proposalId);
+    await confirmTrash(proposalId);
     expect(invoke).toHaveBeenCalledWith("confirm_trash", { proposalId });
+  });
+
+  it("opens the singleton settings window without frontend window authority", async () => {
+    invoke.mockResolvedValue(undefined);
+    await showSettings();
+    expect(invoke).toHaveBeenCalledWith("show_settings");
+  });
+
+  it("passes the explicit automatic Trash acknowledgement", async () => {
+    invoke.mockResolvedValue(completeFixture);
+    await setAutomaticTrash(true, true);
+    expect(invoke).toHaveBeenCalledWith("set_automatic_trash", {
+      enabled: true,
+      acknowledged: true,
+    });
   });
 });

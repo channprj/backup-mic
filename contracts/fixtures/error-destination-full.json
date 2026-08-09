@@ -21,7 +21,7 @@
         "verified_files": 0,
         "total_files": 9
       },
-      "deletion_phase": "inactive",
+      "retirement_outcome": "inactive",
       "deletion_ready": false
     },
     {
@@ -35,14 +35,22 @@
         "verified_files": 0,
         "total_files": 2
       },
-      "deletion_phase": "inactive",
+      "retirement_outcome": "inactive",
       "deletion_ready": false
     }
   ],
   "current_stage": null,
   "current_item_ordinal": null,
   "last_success_at": null,
-  "autostart_enabled": true,
+  "artifact_format": "m4a",
+  "retirement_mode": "manual",
+  "current_log_available": true,
+  "settings": {
+    "automatic_backup": true,
+    "m4a_conversion": true,
+    "automatic_trash": false,
+    "autostart": true
+  },
   "notification_status": "denied",
   "setup_state": "ready",
   "pairing_candidates": [],

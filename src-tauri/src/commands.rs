@@ -13,7 +13,7 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use crate::{
     app_state::AppState,
-    dto::{AppSnapshotDto, DeletionProposalSummaryDto},
+    dto::{AppSnapshotDto, TrashProposalSummaryDto},
     lifecycle::AppLifecycle,
     orchestrator,
     pairing::PairingAssignment,
@@ -151,7 +151,7 @@ pub async fn prepare_trash(
     app: AppHandle,
     state: State<'_, AppState>,
     transmitter: Transmitter,
-) -> Result<DeletionProposalSummaryDto, PublicError> {
+) -> Result<TrashProposalSummaryDto, PublicError> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         match orchestrator::prepare_trash(&app, &state, transmitter) {

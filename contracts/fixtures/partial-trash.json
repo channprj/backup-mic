@@ -1,7 +1,7 @@
 {
   "revision": 35,
   "phase": "error",
-  "message_code": "partial_deletion",
+  "message_code": "partial_trash",
   "overall_progress": {
     "percent": 100,
     "copied_bytes": 115343360,
@@ -21,7 +21,7 @@
         "verified_files": 9,
         "total_files": 9
       },
-      "deletion_phase": "partially_deleted",
+      "retirement_outcome": "partially_moved_to_trash",
       "deletion_ready": false
     },
     {
@@ -35,21 +35,29 @@
         "verified_files": 2,
         "total_files": 2
       },
-      "deletion_phase": "inactive",
+      "retirement_outcome": "inactive",
       "deletion_ready": false
     }
   ],
   "current_stage": null,
   "current_item_ordinal": null,
   "last_success_at": "2026-08-09T02:18:02Z",
-  "autostart_enabled": true,
+  "artifact_format": "m4a",
+  "retirement_mode": "manual",
+  "current_log_available": true,
+  "settings": {
+    "automatic_backup": true,
+    "m4a_conversion": true,
+    "automatic_trash": false,
+    "autostart": true
+  },
   "notification_status": "granted",
   "setup_state": "ready",
   "pairing_candidates": [],
   "recent_activity": [
     {
       "occurred_at": "2026-08-09T02:20:41Z",
-      "code": "partial_deletion",
+      "code": "partial_trash",
       "transmitter": "TX01",
       "count_value": 1,
       "byte_value": null,
@@ -57,8 +65,8 @@
     }
   ],
   "error": {
-    "code": "partial_deletion",
-    "message_code": "partial_deletion",
+    "code": "partial_trash",
+    "message_code": "partial_trash",
     "retryable": false,
     "transmitter": "TX01"
   }

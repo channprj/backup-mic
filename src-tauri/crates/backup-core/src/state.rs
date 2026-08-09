@@ -31,9 +31,12 @@ pub enum DeletionPhase {
     Preparing,
     AwaitingConfirmation,
     Revalidating,
+    #[serde(rename = "moving_to_trash")]
     Deleting,
+    #[serde(rename = "moved_to_trash")]
     Deleted,
     Refused,
+    #[serde(rename = "partially_moved_to_trash")]
     PartiallyDeleted,
 }
 
@@ -41,9 +44,11 @@ pub enum DeletionPhase {
 #[serde(rename_all = "snake_case")]
 pub enum CurrentStage {
     Copy,
+    #[serde(rename = "source_verification")]
     Sha256Verification,
     Conversion,
     ArtifactVerification,
+    Trash,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

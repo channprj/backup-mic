@@ -572,31 +572,31 @@ type BackupSettings = {
 };
 ```
 
-- [ ] **Step 1: Add failing strict-contract tests**
+- [x] **Step 1: Add failing strict-contract tests**
 
 Extend the Zod schema and JSON fixture tests for artifact format, the five stage values, settings, retirement mode/outcome, and current-log availability. Keep `.strict()` at every object boundary and keep absolute paths, UUIDs, hashes, proposal internals, and audio metadata out of UI snapshots.
 
-- [ ] **Step 2: Add interaction tests before components**
+- [x] **Step 2: Add interaction tests before components**
 
 Prove `Settings…` calls `show_settings`; the popover exposes the sequence `복사 → 원본 검증 → M4A 변환 → M4A 검증 → 휴지통 이동`; `휴지통으로 이동` reports session/file/byte totals; automatic Trash requires a confirmation alert; a failed setting command restores the switch and renders an inline error; `로그 열기` invokes `open_logs`; and settings remain keyboard operable.
 
-- [ ] **Step 3: Route each Tauri window to one root component**
+- [x] **Step 3: Route each Tauri window to one root component**
 
 Render `SettingsApp` only when `window=settings` is present; otherwise render `BackupApp`. Keep one shared typed client. Do not infer state from the DOM or duplicate persistence in `localStorage`.
 
-- [ ] **Step 4: Implement the glanceable popover**
+- [x] **Step 4: Implement the glanceable popover**
 
 Use one adaptive material layer, a concise state sentence, one dominant progress value, compact TX01/TX02 rows, recent durable events, Settings, `지금 백업`, destination, log, and Quit. Rename every visible “삭제” action to “휴지통으로 이동.” Distinguish copy, source verification, conversion, artifact verification, refusal, partial Trash, and complete states.
 
-- [ ] **Step 5: Implement the settings groups**
+- [x] **Step 5: Implement the settings groups**
 
 Build Backup, Source Safety, and General sections. Show the fixed M4A profile as explanatory copy. Keep automatic Trash off by default and require a modal acknowledgement on enable. Disable only the control with an in-flight command, preserve responsive access to other non-conflicting controls, and display persisted values returned by Rust.
 
-- [ ] **Step 6: Apply the Apple interaction and accessibility contract**
+- [x] **Step 6: Apply the Apple interaction and accessibility contract**
 
 Use system font and adaptive semantic colors, immediate pressed states, standard focus rings, minimum 44-point primary targets, clear labels, and no decorative gradients. Use critically damped short transforms only for state continuity. Under `prefers-reduced-motion`, use a short opacity change; under `prefers-reduced-transparency`, replace material with opaque adaptive surfaces. Verify light and dark contrast.
 
-- [ ] **Step 7: Run frontend tests and build**
+- [x] **Step 7: Run frontend tests and build**
 
 ```bash
 pnpm test -- --run
@@ -604,7 +604,7 @@ pnpm typecheck
 pnpm build
 ```
 
-- [ ] **Step 8: Commit and push the interface checkpoint**
+- [x] **Step 8: Commit and push the interface checkpoint**
 
 Explicitly stage the listed UI, contract, and fixture files. Commit `feat(ui): refine backup status and settings`, push, and prove live parity `0 0`.
 

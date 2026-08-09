@@ -39,7 +39,10 @@ export function stageLabel(snapshot: AppSnapshot) {
   if (snapshot.phase === "scanning") return "안정적인 녹음 찾는 중";
   if (snapshot.phase === "checking_capacity") return "저장 공간 확인 중";
   if (snapshot.current_stage === "copy") return "복사 중";
-  if (snapshot.current_stage === "sha256_verification") return "SHA-256 검증 중";
+  if (snapshot.current_stage === "source_verification") return "원본 검증 중";
+  if (snapshot.current_stage === "conversion") return "M4A 변환 중";
+  if (snapshot.current_stage === "artifact_verification") return "M4A 검증 중";
+  if (snapshot.current_stage === "trash") return "휴지통으로 이동 중";
   if (snapshot.phase === "detecting") return "송신기 확인 중";
   return "백업 준비 중";
 }
@@ -54,15 +57,35 @@ const activityMessages: Record<string, string> = {
   verification_complete: "복사와 검증을 마쳤습니다",
   nothing_new: "새 녹음이 없습니다",
   partial_failure: "일부 녹음을 백업하지 못했습니다",
-  deletion_complete: "검증된 원본을 삭제했습니다",
-  deletion_refused: "원본 삭제를 중단했습니다",
-  partial_deletion: "일부 원본만 삭제됐습니다",
+  deletion_complete: "검증된 원본을 휴지통으로 이동했습니다",
+  deletion_refused: "휴지통 이동을 중단했습니다",
+  partial_deletion: "일부 원본만 휴지통으로 이동했습니다",
+  trash_complete: "검증된 원본을 휴지통으로 이동했습니다",
+  trash_refused: "원본을 이동하지 않고 중단했습니다",
+  partial_trash: "일부 원본만 휴지통으로 이동했습니다",
+  automatic_trash_complete: "검증된 원본을 자동으로 휴지통으로 이동했습니다",
+  automatic_trash_partial: "자동 휴지통 이동이 일부만 완료됐습니다",
+  legacy_session_moved_to_trash: "빈 이전 세션 폴더를 휴지통으로 이동했습니다",
   capacity_check_failed: "백업 공간이 부족합니다",
 };
 
 export function activityLabel(code: string, transmitter: Transmitter | null) {
   const message = activityMessages[code] ?? "상태가 변경됐습니다";
   return transmitter ? `${transmitter} · ${message}` : message;
+}
+
+export function retirementOutcomeLabel(outcome: AppSnapshot["transmitters"][number]["retirement_outcome"]) {
+  const labels = {
+    inactive: null,
+    preparing: "이동 준비 중",
+    awaiting_confirmation: "확인 대기 중",
+    revalidating: "다시 검증 중",
+    moving_to_trash: "휴지통 이동 중",
+    moved_to_trash: "휴지통 이동 완료",
+    refused: "이동 중단됨",
+    partially_moved_to_trash: "일부만 이동됨",
+  } as const;
+  return labels[outcome];
 }
 
 export function errorCopy(messageCode: string) {
@@ -81,15 +104,23 @@ export function errorCopy(messageCode: string) {
     },
     hash_mismatch: {
       title: "백업 검증이 일치하지 않습니다",
-      detail: "검증되지 않은 원본은 삭제되지 않았습니다. 다시 시도해 주세요.",
+      detail: "검증되지 않은 원본은 그대로 있습니다. 다시 시도해 주세요.",
     },
     partial_deletion: {
-      title: "일부 원본만 삭제됐습니다",
-      detail: "송신기를 분리하지 말고 활동 기록을 확인해 주세요.",
+      title: "일부 원본만 휴지통으로 이동했습니다",
+      detail: "송신기를 분리하지 말고 로그에서 이동 결과를 확인해 주세요.",
+    },
+    partial_trash: {
+      title: "일부 원본만 휴지통으로 이동했습니다",
+      detail: "송신기를 분리하지 말고 로그에서 이동 결과를 확인해 주세요.",
+    },
+    trash_move_failed: {
+      title: "휴지통으로 이동하지 못했습니다",
+      detail: "이동되지 않은 원본은 그대로 있습니다. 연결 상태를 확인해 주세요.",
     },
     ledger_reindex_required: {
       title: "백업 기록을 다시 확인해야 합니다",
-      detail: "안전을 위해 원본 삭제가 잠겼습니다. 백업을 다시 실행해 주세요.",
+      detail: "안전을 위해 휴지통 이동이 잠겼습니다. 백업을 다시 실행해 주세요.",
     },
     snapshot_unavailable: {
       title: "현재 상태를 불러오지 못했습니다",

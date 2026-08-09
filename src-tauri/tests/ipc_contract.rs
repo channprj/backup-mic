@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
 use dji_mic_backup_lib::commands::REGISTERED_COMMANDS;
-use dji_mic_backup_lib::dto::{AppSnapshotDto, DeletionProposalSummaryDto};
+use dji_mic_backup_lib::dto::{AppSnapshotDto, TrashProposalSummaryDto};
 use serde_json::Value;
 
 fn fixture_path(name: &str) -> PathBuf {
@@ -37,7 +37,7 @@ fn snapshot_fixtures_round_trip_through_rust_contract() {
         "backup-copying.json",
         "backup-complete.json",
         "error-destination-full.json",
-        "partial-deletion.json",
+        "partial-trash.json",
     ] {
         let snapshot: AppSnapshotDto =
             serde_json::from_str(&fixture(name)).expect("valid snapshot");
@@ -48,9 +48,9 @@ fn snapshot_fixtures_round_trip_through_rust_contract() {
 }
 
 #[test]
-fn deletion_proposal_fixture_round_trips_through_rust_contract() {
-    let proposal: DeletionProposalSummaryDto =
-        serde_json::from_str(&fixture("deletion-proposal.json")).expect("valid proposal");
+fn trash_proposal_fixture_round_trips_through_rust_contract() {
+    let proposal: TrashProposalSummaryDto =
+        serde_json::from_str(&fixture("trash-proposal.json")).expect("valid proposal");
     let value = serde_json::to_value(proposal).expect("proposal serializes");
     assert_safe_json(&value);
 }

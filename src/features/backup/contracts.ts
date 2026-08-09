@@ -13,16 +13,31 @@ export const backupPhaseSchema = z.enum([
   "partial_failure",
   "error",
 ]);
-export const deletionPhaseSchema = z.enum([
+export const retirementOutcomeSchema = z.enum([
   "inactive",
   "preparing",
   "awaiting_confirmation",
   "revalidating",
-  "deleting",
-  "deleted",
+  "moving_to_trash",
+  "moved_to_trash",
   "refused",
-  "partially_deleted",
+  "partially_moved_to_trash",
 ]);
+export const currentStageSchema = z.enum([
+  "copy",
+  "source_verification",
+  "conversion",
+  "artifact_verification",
+  "trash",
+]);
+export const backupSettingsSchema = z
+  .object({
+    automatic_backup: z.boolean(),
+    m4a_conversion: z.boolean(),
+    automatic_trash: z.boolean(),
+    autostart: z.boolean(),
+  })
+  .strict();
 export const progressSchema = z
   .object({
     percent: z.number().int().min(0).max(100),
@@ -63,7 +78,7 @@ export const transmitterSnapshotSchema = z
     mounted: z.boolean(),
     phase: backupPhaseSchema,
     progress: progressSchema,
-    deletion_phase: deletionPhaseSchema,
+    retirement_outcome: retirementOutcomeSchema,
     deletion_ready: z.boolean(),
   })
   .strict();
@@ -74,10 +89,13 @@ export const appSnapshotSchema = z
     message_code: z.string(),
     overall_progress: progressSchema,
     transmitters: z.array(transmitterSnapshotSchema).length(2),
-    current_stage: z.enum(["copy", "sha256_verification"]).nullable(),
+    current_stage: currentStageSchema.nullable(),
     current_item_ordinal: z.number().int().positive().nullable(),
     last_success_at: z.string().nullable(),
-    autostart_enabled: z.boolean(),
+    artifact_format: z.enum(["wav", "m4a"]),
+    retirement_mode: z.enum(["manual", "automatic"]),
+    current_log_available: z.boolean(),
+    settings: backupSettingsSchema,
     notification_status: z.enum(["unknown", "granted", "denied"]),
     setup_state: z.enum(["needs_destination", "needs_pairing", "ready"]),
     pairing_candidates: z.array(pairingCandidateSchema).max(2),
@@ -96,10 +114,11 @@ export const appSnapshotSchema = z
     }
   });
 
-export const deletionProposalSummarySchema = z
+export const trashProposalSummarySchema = z
   .object({
     proposal_id: z.string().uuid(),
     transmitter: transmitterSchema,
+    session_count: z.number().int().nonnegative(),
     file_count: z.number().int().nonnegative(),
     byte_count: z.number().int().nonnegative(),
     destination_summary: z.string(),
@@ -108,7 +127,7 @@ export const deletionProposalSummarySchema = z
   .strict();
 
 export type AppSnapshot = z.infer<typeof appSnapshotSchema>;
-export type DeletionProposalSummary = z.infer<typeof deletionProposalSummarySchema>;
+export type TrashProposalSummary = z.infer<typeof trashProposalSummarySchema>;
 export type Transmitter = z.infer<typeof transmitterSchema>;
 
 export const pairingAssignmentSchema = z

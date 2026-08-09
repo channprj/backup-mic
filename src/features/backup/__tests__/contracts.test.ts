@@ -1,10 +1,10 @@
 import { describe, expect, test } from "vitest";
 import backupComplete from "../../../../contracts/fixtures/backup-complete.json";
 import backupCopying from "../../../../contracts/fixtures/backup-copying.json";
-import deletionProposal from "../../../../contracts/fixtures/deletion-proposal.json";
+import trashProposal from "../../../../contracts/fixtures/trash-proposal.json";
 import destinationFull from "../../../../contracts/fixtures/error-destination-full.json";
-import partialDeletion from "../../../../contracts/fixtures/partial-deletion.json";
-import { appSnapshotSchema, deletionProposalSummarySchema } from "../contracts";
+import partialTrash from "../../../../contracts/fixtures/partial-trash.json";
+import { appSnapshotSchema, trashProposalSummarySchema } from "../contracts";
 
 const baseSnapshot = {
   revision: 1,
@@ -28,13 +28,21 @@ const baseSnapshot = {
       verified_files: 0,
       total_files: 0,
     },
-    deletion_phase: "inactive" as const,
+    retirement_outcome: "inactive" as const,
     deletion_ready: false,
   })),
   current_stage: null,
   current_item_ordinal: null,
   last_success_at: null,
-  autostart_enabled: false,
+  artifact_format: "m4a",
+  retirement_mode: "manual",
+  current_log_available: false,
+  settings: {
+    automatic_backup: true,
+    m4a_conversion: true,
+    automatic_trash: false,
+    autostart: false,
+  },
   notification_status: "unknown",
   setup_state: "needs_destination",
   pairing_candidates: [],
@@ -44,10 +52,34 @@ const baseSnapshot = {
 
 describe("app snapshot contract", () => {
   test("accepts every committed Rust snapshot fixture", () => {
-    for (const fixture of [backupComplete, backupCopying, destinationFull, partialDeletion]) {
+    for (const fixture of [backupComplete, backupCopying, destinationFull, partialTrash]) {
       expect(appSnapshotSchema.safeParse(fixture).success).toBe(true);
     }
-    expect(deletionProposalSummarySchema.safeParse(deletionProposal).success).toBe(true);
+    expect(trashProposalSummarySchema.safeParse(trashProposal).success).toBe(true);
+  });
+
+  test("accepts exactly the five public backup stages", () => {
+    for (const current_stage of [
+      "copy",
+      "source_verification",
+      "conversion",
+      "artifact_verification",
+      "trash",
+    ]) {
+      expect(appSnapshotSchema.safeParse({ ...baseSnapshot, current_stage }).success).toBe(true);
+    }
+    expect(
+      appSnapshotSchema.safeParse({ ...baseSnapshot, current_stage: "sha256_verification" }).success,
+    ).toBe(false);
+  });
+
+  test("requires display-safe artifact, retirement, settings, and log fields", () => {
+    const parsed = appSnapshotSchema.parse(baseSnapshot);
+    expect(parsed.artifact_format).toBe("m4a");
+    expect(parsed.retirement_mode).toBe("manual");
+    expect(parsed.current_log_available).toBe(false);
+    expect(parsed.settings.automatic_trash).toBe(false);
+    expect(parsed.transmitters[0].retirement_outcome).toBe("inactive");
   });
 
   test("rejects more activity entries than the popover contract allows", () => {

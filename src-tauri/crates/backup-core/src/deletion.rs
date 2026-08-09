@@ -52,6 +52,7 @@ pub struct CompleteDeletionSnapshot {
 pub struct DeletionProposalSummary {
     pub proposal_id: String,
     pub transmitter: Transmitter,
+    pub session_count: u64,
     pub file_count: u64,
     pub byte_count: u64,
     pub expires_in_seconds: u64,
@@ -187,6 +188,18 @@ impl DeletionProposalStore {
             })?;
         let file_count =
             u64::try_from(snapshot.candidates.len()).map_err(|_| CoreError::InvalidRequest)?;
+        let session_count = u64::try_from(
+            snapshot
+                .candidates
+                .iter()
+                .filter_map(|candidate| candidate.source_relative_path.parent())
+                .filter(|parent| {
+                    parent.components().count() == 1 && is_recognized_session_name(parent)
+                })
+                .collect::<BTreeSet<_>>()
+                .len(),
+        )
+        .map_err(|_| CoreError::InvalidRequest)?;
         let expires_at = now
             .checked_add(PROPOSAL_TTL)
             .ok_or(CoreError::InvalidRequest)?;
@@ -203,6 +216,7 @@ impl DeletionProposalStore {
         Ok(DeletionProposalSummary {
             proposal_id,
             transmitter,
+            session_count,
             file_count,
             byte_count,
             expires_in_seconds: PROPOSAL_TTL.as_secs(),
@@ -791,6 +805,7 @@ mod tests {
             )
             .unwrap();
         assert_eq!(proposal.file_count, 2);
+        assert_eq!(proposal.session_count, 0);
         let report = confirm(
             &mut store,
             &proposal.proposal_id,

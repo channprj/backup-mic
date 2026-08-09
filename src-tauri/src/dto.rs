@@ -34,6 +34,7 @@ pub struct TransmitterSnapshotDto {
     pub mounted: bool,
     pub phase: BackupPhase,
     pub progress: ProgressDto,
+    #[serde(rename = "retirement_outcome")]
     pub deletion_phase: DeletionPhase,
     pub deletion_ready: bool,
 }
@@ -73,6 +74,20 @@ impl Default for BackupSettingsDto {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ArtifactFormatDto {
+    Wav,
+    M4a,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetirementModeDto {
+    Manual,
+    Automatic,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSnapshotDto {
     pub revision: u64,
@@ -83,7 +98,9 @@ pub struct AppSnapshotDto {
     pub current_stage: Option<CurrentStage>,
     pub current_item_ordinal: Option<u64>,
     pub last_success_at: Option<String>,
-    pub autostart_enabled: bool,
+    pub artifact_format: ArtifactFormatDto,
+    pub retirement_mode: RetirementModeDto,
+    pub current_log_available: bool,
     #[serde(default)]
     pub settings: BackupSettingsDto,
     pub notification_status: NotificationStatusDto,
@@ -101,9 +118,10 @@ impl AppSnapshotDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct DeletionProposalSummaryDto {
+pub struct TrashProposalSummaryDto {
     pub proposal_id: String,
     pub transmitter: Transmitter,
+    pub session_count: u64,
     pub file_count: u64,
     pub byte_count: u64,
     pub destination_summary: String,
@@ -137,7 +155,9 @@ mod tests {
             current_stage: None,
             current_item_ordinal: None,
             last_success_at: None,
-            autostart_enabled: false,
+            artifact_format: ArtifactFormatDto::M4a,
+            retirement_mode: RetirementModeDto::Manual,
+            current_log_available: false,
             settings: BackupSettingsDto::default(),
             notification_status: NotificationStatusDto::Unknown,
             setup_state: SetupStateDto::NeedsDestination,

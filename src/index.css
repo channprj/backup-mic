@@ -4,34 +4,60 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  color-scheme: dark;
-  --background: #0a0d10;
-  --foreground: #eef3f5;
-  --card: #11161b;
-  --card-foreground: #eef3f5;
-  --popover: #141a20;
-  --popover-foreground: #eef3f5;
-  --primary: #a7dce4;
-  --primary-foreground: #0b171a;
-  --secondary: #1b232a;
-  --secondary-foreground: #dce7eb;
-  --muted: #171d23;
-  --muted-foreground: #89969e;
-  --accent: #202a32;
-  --accent-foreground: #f4f8f9;
-  --destructive: #ef8585;
-  --destructive-foreground: #190707;
-  --border: #273139;
-  --input: #303b44;
-  --ring: #85cbd6;
-  --verified: #8acbac;
-  --warning: #ddb778;
+  color-scheme: light dark;
+  --background: #f5f5f7;
+  --foreground: #1d1d1f;
+  --card: #ffffff;
+  --card-foreground: #1d1d1f;
+  --popover: #ffffff;
+  --popover-foreground: #1d1d1f;
+  --primary: #006f85;
+  --primary-foreground: #ffffff;
+  --secondary: #e9eaec;
+  --secondary-foreground: #28282b;
+  --muted: #f0f0f2;
+  --muted-foreground: #636366;
+  --accent: #e5e5e7;
+  --accent-foreground: #111113;
+  --destructive: #c93432;
+  --destructive-foreground: #ffffff;
+  --border: #d2d2d7;
+  --input: #c7c7cc;
+  --ring: #007f98;
+  --verified: #247b55;
+  --warning: #946200;
   --radius: 0.75rem;
   font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif;
   background: transparent;
   color: var(--foreground);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #111315;
+    --foreground: #f2f2f4;
+    --card: #1c1f22;
+    --card-foreground: #f2f2f4;
+    --popover: #232629;
+    --popover-foreground: #f2f2f4;
+    --primary: #83d4e2;
+    --primary-foreground: #081416;
+    --secondary: #292d31;
+    --secondary-foreground: #e5e6e8;
+    --muted: #24272a;
+    --muted-foreground: #a2a2a7;
+    --accent: #303438;
+    --accent-foreground: #ffffff;
+    --destructive: #ff8a88;
+    --destructive-foreground: #250909;
+    --border: #3b3f43;
+    --input: #454a4f;
+    --ring: #8ed9e5;
+    --verified: #78c99d;
+    --warning: #e1ba6a;
+  }
 }
 
 @theme inline {
@@ -86,6 +112,22 @@ button:not(:disabled),
   cursor: pointer;
 }
 
+button {
+  transition:
+    transform 140ms cubic-bezier(0.2, 0.75, 0.25, 1),
+    background-color 140ms ease,
+    color 140ms ease;
+}
+
+button:not(:disabled):active {
+  transform: scale(0.975);
+}
+
+:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .app-shell {
   display: flex;
   width: 100%;
@@ -95,7 +137,8 @@ button:not(:disabled),
   gap: 12px;
   overflow: hidden;
   padding: 16px;
-  background: var(--background);
+  background: color-mix(in srgb, var(--background) 88%, transparent);
+  backdrop-filter: saturate(150%) blur(22px);
   border: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
 }
 
@@ -112,6 +155,17 @@ button:not(:disabled),
 .loading-brand {
   display: flex;
   align-items: center;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.header-actions button {
+  min-height: 32px;
+  padding-inline: 8px;
 }
 
 .app-header,
@@ -229,6 +283,50 @@ button:not(:disabled),
   font-size: 10px;
 }
 
+.stage-sequence {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 3px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stage-sequence li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+.stage-sequence li span {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  background: var(--card);
+}
+
+.stage-sequence li.is-complete,
+.stage-sequence li.is-current {
+  color: var(--foreground);
+}
+
+.stage-sequence li.is-complete span {
+  border-color: var(--verified);
+  background: var(--verified);
+}
+
+.stage-sequence li.is-current span {
+  border-color: var(--primary);
+  background: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
 .progress-meta span:last-child,
 .channel-count,
 .verified-summary strong,
@@ -297,7 +395,7 @@ button:not(:disabled),
   white-space: nowrap;
 }
 
-.deletion-actions {
+.trash-actions {
   flex-wrap: wrap;
   gap: 8px;
 }
@@ -522,7 +620,7 @@ button:not(:disabled),
   font-size: 9px;
 }
 
-.deletion-dialog {
+.trash-dialog {
   width: calc(100vw - 28px);
   max-width: 352px;
   padding: 18px;
@@ -591,6 +689,184 @@ button:not(:disabled),
   margin-top: 4px;
 }
 
+.settings-shell {
+  width: 100%;
+  min-height: 100vh;
+  padding: 18px 28px 22px;
+  overflow-y: auto;
+  background: color-mix(in srgb, var(--background) 92%, transparent);
+  backdrop-filter: saturate(140%) blur(18px);
+}
+
+.settings-header,
+.settings-section-title,
+.settings-row,
+.settings-control,
+.settings-shortcuts {
+  display: flex;
+  align-items: center;
+}
+
+.settings-header {
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.settings-header p,
+.settings-header h1,
+.settings-section h2,
+.settings-section p,
+.settings-row strong,
+.settings-row span {
+  margin: 0;
+}
+
+.settings-header p {
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.025em;
+}
+
+.settings-header h1 {
+  margin-top: 2px;
+  font-family: ui-rounded, "SF Pro Rounded", -apple-system, sans-serif;
+  font-size: 24px;
+  letter-spacing: -0.025em;
+}
+
+.settings-header > span {
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.settings-section {
+  margin-top: 14px;
+}
+
+.settings-section-title {
+  align-items: flex-start;
+  gap: 10px;
+  margin: 0 4px 6px;
+}
+
+.settings-section-title > svg {
+  width: 18px;
+  height: 18px;
+  margin-top: 1px;
+  color: var(--primary);
+}
+
+.settings-section-title h2 {
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-section-title p {
+  margin-top: 2px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.settings-group {
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--card) 94%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 7%, transparent);
+}
+
+.settings-row {
+  min-height: 54px;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 8px 14px;
+}
+
+.settings-row + .settings-row,
+.settings-row + .settings-status-note {
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.settings-row > label,
+.settings-row > div:first-child {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-row strong {
+  font-size: 12px;
+  font-weight: 590;
+}
+
+.settings-row span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.settings-control {
+  min-width: 52px;
+  min-height: 44px;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.settings-control > [role="switch"] {
+  flex: 0 0 auto;
+}
+
+.settings-destination-row button,
+.settings-shortcuts button {
+  min-height: 36px;
+}
+
+.settings-status-note {
+  padding: 10px 14px;
+  color: var(--warning);
+  font-size: 10px;
+}
+
+.settings-shortcuts {
+  gap: 8px;
+  padding: 9px 14px;
+}
+
+.settings-shortcuts button {
+  flex: 1 1 0;
+}
+
+.settings-confirmation-dialog {
+  max-width: 430px;
+}
+
+.trash-dialog button,
+.settings-confirmation-dialog button {
+  min-height: 44px;
+}
+
+.settings-loading,
+.settings-unavailable {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 16px;
+}
+
+.settings-title-skeleton {
+  width: 120px;
+  height: 28px;
+}
+
+.settings-group-skeleton {
+  width: 100%;
+  height: 150px;
+}
+
 @keyframes signal-pulse {
   0%,
   100% {
@@ -608,8 +884,29 @@ button:not(:disabled),
   *::before,
   *::after {
     scroll-behavior: auto !important;
-    animation-duration: 0.01ms !important;
-    animation-iteration-count: 1 !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition-duration: 80ms !important;
+    transition-property: opacity !important;
+  }
+
+  button:not(:disabled):active {
+    transform: none;
+  }
+
+  .waiting-pulse {
+    opacity: 0.72;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .app-shell,
+  .settings-shell,
+  .settings-group {
+    background: var(--background);
+    backdrop-filter: none;
+  }
+
+  .settings-group {
+    background: var(--card);
   }
 }

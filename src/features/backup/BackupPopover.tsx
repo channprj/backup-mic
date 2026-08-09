@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import {
   CheckCircle2Icon,
   CircleAlertIcon,
+  FileTextIcon,
   FolderOpenIcon,
   PowerIcon,
   RefreshCwIcon,
+  SettingsIcon,
   ShieldCheckIcon,
   Trash2Icon,
   UsbIcon,
@@ -20,26 +22,25 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Field, FieldContent, FieldDescription, FieldLabel } from "@/components/ui/field";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
 import type { BackupActions } from "./client";
 import type {
   AppSnapshot,
-  DeletionProposalSummary,
   PairingAssignment,
+  TrashProposalSummary,
   Transmitter,
 } from "./contracts";
-import { DeletionDialog } from "./DeletionDialog";
+import { TrashDialog } from "./TrashDialog";
 import {
   activityLabel,
   errorCopy,
   formatBytes,
   formatCompactTime,
   formatTime,
+  retirementOutcomeLabel,
   stageLabel,
 } from "./format";
 import { SetupFlow } from "./SetupFlow";
@@ -66,15 +67,15 @@ function commandMessage(error: unknown) {
 
 export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const [pending, setPending] = useState<string | null>(null);
-  const [proposal, setProposal] = useState<DeletionProposalSummary | null>(null);
+  const [proposal, setProposal] = useState<TrashProposalSummary | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const pendingRef = useRef<string | null>(null);
-  const active = activePhases.has(snapshot.phase);
+  const active = activePhases.has(snapshot.phase) || snapshot.current_stage === "trash";
   const failed = snapshot.phase === "error" || snapshot.phase === "partial_failure";
   const mountedCount = snapshot.transmitters.filter(({ mounted }) => mounted).length;
 
   useEffect(() => {
-    if (!proposal || pending === "confirm-delete") return;
+    if (!proposal || pending === "confirm-trash") return;
     const transmitter = snapshot.transmitters.find(
       ({ transmitter }) => transmitter === proposal.transmitter,
     );
@@ -121,7 +122,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   async function prepare(transmitter: Transmitter) {
     try {
       await run(`prepare-${transmitter}`, async () => {
-        setProposal(await actions.prepareDeletion(transmitter));
+        setProposal(await actions.prepareTrash(transmitter));
       });
     } catch {
       // The inline error already describes the retry path.
@@ -130,10 +131,10 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
 
   async function confirm(proposalId: string) {
     try {
-      await run("confirm-delete", () => actions.confirmDeletion(proposalId));
+      await run("confirm-trash", () => actions.confirmTrash(proposalId));
       setProposal(null);
     } catch {
-      // Keep the confirmation open; Rust has already refused unsafe deletion.
+      // Keep the confirmation open; Rust has already refused unsafe Trash movement.
     }
   }
 
@@ -150,13 +151,24 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
             <p>로컬 · SHA-256 검증</p>
           </div>
         </div>
-        <div
-          className="connection-summary"
-          role="status"
-          aria-label={`${mountedCount}개 송신기 연결됨`}
-        >
-          <span className={mountedCount > 0 ? "status-dot is-connected" : "status-dot"} />
-          {mountedCount}/2
+        <div className="header-actions">
+          <div
+            className="connection-summary"
+            role="status"
+            aria-label={`${mountedCount}개 송신기 연결됨`}
+          >
+            <span className={mountedCount > 0 ? "status-dot is-connected" : "status-dot"} />
+            {mountedCount}/2
+          </div>
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={pending !== null}
+            onClick={() => void run("settings", actions.showSettings).catch(() => undefined)}
+          >
+            <SettingsIcon data-icon="inline-start" />
+            Settings…
+          </Button>
         </div>
       </header>
 
@@ -185,6 +197,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
               <SettledStatus snapshot={snapshot} onPrepare={prepare} pending={pending} />
             ) : null}
             {failed ? <FailureStatus snapshot={snapshot} /> : null}
+            <StageSequence snapshot={snapshot} />
             {actionError ? (
               <Alert variant="destructive">
                 <CircleAlertIcon aria-hidden="true" />
@@ -231,22 +244,6 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
       )}
 
       <footer className="app-footer">
-        <Field orientation="horizontal" className="autostart-field">
-          <FieldContent>
-            <FieldLabel htmlFor="autostart">로그인할 때 시작</FieldLabel>
-            <FieldDescription>
-              알림 {snapshot.notification_status === "granted" ? "허용됨" : "확인 필요"}
-            </FieldDescription>
-          </FieldContent>
-          <Switch
-            id="autostart"
-            checked={snapshot.autostart_enabled}
-            disabled={pending !== null}
-            onCheckedChange={(enabled) => {
-              void run("autostart", () => actions.setAutostart(enabled)).catch(() => undefined);
-            }}
-          />
-        </Field>
         <div className="utility-actions">
           <Button
             variant="ghost"
@@ -268,7 +265,17 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
             onClick={() => void run("open", actions.openDestination).catch(() => undefined)}
           >
             <FolderOpenIcon data-icon="inline-start" />
-            폴더
+            백업 폴더
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            aria-label="로그 열기"
+            disabled={!snapshot.current_log_available || pending !== null}
+            onClick={() => void run("logs", actions.openLogs).catch(() => undefined)}
+          >
+            <FileTextIcon data-icon="inline-start" />
+            로그
           </Button>
           <Button
             variant="ghost"
@@ -282,12 +289,12 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
         </div>
       </footer>
 
-      <DeletionDialog
+      <TrashDialog
         proposal={proposal}
-        busy={pending === "confirm-delete"}
+        busy={pending === "confirm-trash"}
         error={proposal ? actionError : null}
         onOpenChange={(open) => {
-          if (!open && pending !== "confirm-delete") {
+          if (!open && pending !== "confirm-trash") {
             setProposal(null);
             setActionError(null);
           }
@@ -329,6 +336,40 @@ function ActiveStatus({ snapshot }: { snapshot: AppSnapshot }) {
         완료될 때까지 케이스를 연결해 두세요
       </CardFooter>
     </Card>
+  );
+}
+
+const backupStages = [
+  ["copy", "복사"],
+  ["source_verification", "원본 검증"],
+  ["conversion", "M4A 변환"],
+  ["artifact_verification", "M4A 검증"],
+  ["trash", "휴지통 이동"],
+] as const;
+
+function StageSequence({ snapshot }: { snapshot: AppSnapshot }) {
+  const activeIndex = backupStages.findIndex(([stage]) => stage === snapshot.current_stage);
+  const backupComplete = ["completed_deletion_pending", "nothing_new"].includes(snapshot.phase);
+  return (
+    <ol className="stage-sequence" aria-label="백업 단계">
+      {backupStages.map(([stage, label], index) => {
+        const complete = backupComplete
+          ? stage !== "trash" || snapshot.retirement_mode === "automatic"
+          : activeIndex > index;
+        return (
+          <li
+            key={stage}
+            className={
+              activeIndex === index ? "is-current" : complete ? "is-complete" : undefined
+            }
+            aria-current={activeIndex === index ? "step" : undefined}
+          >
+            <span aria-hidden="true" />
+            {label}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
@@ -382,7 +423,7 @@ function SettledStatus({
         </div>
       </CardContent>
       {deletable ? (
-        <CardFooter className="deletion-actions">
+        <CardFooter className="trash-actions">
           {snapshot.transmitters
             .filter(({ deletion_ready }) => deletion_ready)
             .map(({ transmitter }) => (
@@ -390,7 +431,7 @@ function SettledStatus({
                 key={transmitter}
                 variant="outline"
                 size="sm"
-                aria-label={`${transmitter} 휴지통 이동 준비`}
+                aria-label={`${transmitter} 휴지통으로 이동`}
                 disabled={pending !== null}
                 onClick={() => void onPrepare(transmitter)}
               >
@@ -399,7 +440,7 @@ function SettledStatus({
                 ) : (
                   <Trash2Icon data-icon="inline-start" />
                 )}
-                {transmitter} 휴지통
+                {transmitter} 이동
               </Button>
             ))}
         </CardFooter>
@@ -426,8 +467,11 @@ function ChannelRow({
   snapshot: AppSnapshot["transmitters"][number];
   active: boolean;
 }) {
+  const retirement = retirementOutcomeLabel(snapshot.retirement_outcome);
   const state = !snapshot.mounted
     ? "연결 안 됨"
+    : retirement
+      ? retirement
     : snapshot.phase === "error" || snapshot.phase === "partial_failure"
       ? "확인 필요"
       : snapshot.progress.percent === 100
