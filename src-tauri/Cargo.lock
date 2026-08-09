@@ -855,6 +855,8 @@ dependencies = [
  "core-foundation-sys",
  "directories",
  "libc",
+ "objc2",
+ "objc2-foundation",
  "parking_lot",
  "quick-xml",
  "serde",

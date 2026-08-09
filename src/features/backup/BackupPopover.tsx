@@ -390,7 +390,7 @@ function SettledStatus({
                 key={transmitter}
                 variant="outline"
                 size="sm"
-                aria-label={`${transmitter} 원본 삭제 준비`}
+                aria-label={`${transmitter} 휴지통 이동 준비`}
                 disabled={pending !== null}
                 onClick={() => void onPrepare(transmitter)}
               >
@@ -399,7 +399,7 @@ function SettledStatus({
                 ) : (
                   <Trash2Icon data-icon="inline-start" />
                 )}
-                {transmitter} 원본
+                {transmitter} 휴지통
               </Button>
             ))}
         </CardFooter>

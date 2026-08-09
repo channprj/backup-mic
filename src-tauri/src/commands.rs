@@ -23,8 +23,8 @@ pub const REGISTERED_COMMANDS: [&str; 9] = [
     "backup_now",
     "choose_destination",
     "pair_devices",
-    "prepare_deletion",
-    "confirm_deletion",
+    "prepare_trash",
+    "confirm_trash",
     "set_autostart",
     "open_destination",
     "quit_app",
@@ -141,14 +141,14 @@ pub fn pair_devices(
 }
 
 #[tauri::command]
-pub async fn prepare_deletion(
+pub async fn prepare_trash(
     app: AppHandle,
     state: State<'_, AppState>,
     transmitter: Transmitter,
 ) -> Result<DeletionProposalSummaryDto, PublicError> {
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        match orchestrator::prepare_deletion(&app, &state, transmitter) {
+        match orchestrator::prepare_trash(&app, &state, transmitter) {
             Ok(summary) => Ok(summary),
             Err(error) => {
                 state.set_deletion_error(&app, &error, transmitter);
@@ -161,7 +161,7 @@ pub async fn prepare_deletion(
 }
 
 #[tauri::command]
-pub async fn confirm_deletion(
+pub async fn confirm_trash(
     app: AppHandle,
     state: State<'_, AppState>,
     proposal_id: String,
@@ -172,7 +172,7 @@ pub async fn confirm_deletion(
     let state = state.inner().clone();
     let transmitter = state.awaiting_deletion_transmitter();
     tauri::async_runtime::spawn_blocking(move || {
-        match orchestrator::confirm_deletion(&app, &state, &proposal_id) {
+        match orchestrator::confirm_trash(&app, &state, &proposal_id) {
             Ok(()) => state.snapshot_with_activity(),
             Err(error) => {
                 if let Some(transmitter) = transmitter {

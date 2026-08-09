@@ -37,8 +37,8 @@ fi
 printf 'isolated-fat32-deletion-test\n' > "$FIXTURE_MOUNT/.dji-mic-backup-delete-fixture"
 cd "$PROJECT_ROOT"
 DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
-  cargo test --manifest-path src-tauri/Cargo.toml -p backup-core \
-  --test fat32_deletion_acceptance -- --ignored --exact \
-  deletes_only_reverified_sources_on_an_isolated_fat32_volume
+  cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
+  --test fat32_trash_acceptance -- --ignored --exact \
+  foundation_moves_a_whole_session_on_the_isolated_fat32_fixture
 
-echo "Isolated FAT32 deletion acceptance passed."
+echo "Isolated FAT32 macOS Trash acceptance passed."

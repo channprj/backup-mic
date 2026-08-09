@@ -43,6 +43,12 @@ pub struct PendingDeletionItem {
     pub source_size: u64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LegacyRetiredRecording {
+    pub recording_id: String,
+    pub source_relative_path: PathBuf,
+}
+
 pub struct Ledger {
     connection: Connection,
     path: PathBuf,
@@ -631,6 +637,70 @@ impl Ledger {
         u64::try_from(count).map_err(|_| CoreError::LedgerCorrupt)
     }
 
+    pub fn legacy_retired_recordings(
+        &self,
+        transmitter: Transmitter,
+    ) -> Result<Vec<LegacyRetiredRecording>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, source_relative_path
+                   FROM recordings
+                   WHERE transmitter = ?1 AND retirement_status = 'legacy_deleted'
+                   ORDER BY source_relative_path"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([transmitter_name(transmitter)], |row| {
+                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+            })
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| {
+            let (recording_id, source_relative_path) = row.map_err(CoreError::Ledger)?;
+            let source_relative_path = PathBuf::from(source_relative_path);
+            if !crate::filesystem::is_safe_relative_path(&source_relative_path) {
+                return Err(CoreError::LedgerCorrupt);
+            }
+            Ok(LegacyRetiredRecording {
+                recording_id,
+                source_relative_path,
+            })
+        })
+        .collect()
+    }
+
+    pub fn record_legacy_session_moved_to_trash(
+        &mut self,
+        recording_ids: &[String],
+        session_relative_path: &Path,
+        moved_at: &str,
+    ) -> Result<(), CoreError> {
+        if recording_ids.is_empty()
+            || !crate::filesystem::is_safe_relative_path(session_relative_path)
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let session = path_text(session_relative_path)?;
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        for recording_id in recording_ids {
+            let changed = transaction
+                .execute(
+                    r#"UPDATE recordings
+                       SET source_deleted_at = COALESCE(source_deleted_at, ?1),
+                           deletion_error_code = NULL,
+                           retirement_status = 'moved_to_trash',
+                           retired_session_relative_path = ?2
+                       WHERE id = ?3 AND retirement_status = 'legacy_deleted'"#,
+                    params![moved_at, session, recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            if changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
+        }
+        transaction.commit().map_err(CoreError::Ledger)
+    }
+
     pub fn finish_backup_run(
         &mut self,
         id: &str,
@@ -688,62 +758,105 @@ impl Ledger {
                     params![id, item.recording_id],
                 )
                 .map_err(CoreError::Ledger)?;
+            let changed = transaction
+                .execute(
+                    r#"UPDATE recordings
+                       SET retirement_status = 'trash_pending', deletion_error_code = NULL
+                       WHERE id = ?1 AND source_deleted_at IS NULL
+                         AND retirement_status IN ('present', 'failed')"#,
+                    [&item.recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            if changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
         }
         transaction.commit().map_err(CoreError::Ledger)
     }
 
-    pub fn record_deletion_success(
+    pub fn record_deletion_target_success(
         &mut self,
         deletion_run_id: &str,
-        recording_id: &str,
+        recording_ids: &[&str],
         removed_at: &str,
+        retired_session_relative_path: Option<&Path>,
     ) -> Result<(), CoreError> {
+        if recording_ids.is_empty() {
+            return Err(CoreError::InvalidRequest);
+        }
+        let retired_session = retired_session_relative_path
+            .map(|path| path.to_str().ok_or(CoreError::InvalidRequest))
+            .transpose()?;
         let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
-        let item_changed = transaction
-            .execute(
-                r#"UPDATE deletion_items
-                   SET outcome = 'deleted', removed_at = ?1, error_code = NULL
-                   WHERE deletion_run_id = ?2 AND recording_id = ?3 AND outcome = 'pending'"#,
-                params![removed_at, deletion_run_id, recording_id],
-            )
-            .map_err(CoreError::Ledger)?;
-        let recording_changed = transaction
-            .execute(
-                r#"UPDATE recordings
-                   SET source_deleted_at = ?1, deletion_error_code = NULL
-                   WHERE id = ?2 AND source_deleted_at IS NULL"#,
-                params![removed_at, recording_id],
-            )
-            .map_err(CoreError::Ledger)?;
-        if item_changed != 1 || recording_changed != 1 {
-            return Err(CoreError::LedgerCorrupt);
+        for recording_id in recording_ids {
+            let item_changed = transaction
+                .execute(
+                    r#"UPDATE deletion_items
+                       SET outcome = 'moved_to_trash', removed_at = ?1, error_code = NULL
+                       WHERE deletion_run_id = ?2 AND recording_id = ?3 AND outcome = 'pending'"#,
+                    params![removed_at, deletion_run_id, recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            let recording_changed = transaction
+                .execute(
+                    r#"UPDATE recordings
+                       SET source_deleted_at = ?1, deletion_error_code = NULL,
+                           retirement_status = 'moved_to_trash',
+                           retired_session_relative_path = ?2
+                       WHERE id = ?3 AND source_deleted_at IS NULL
+                         AND retirement_status = 'trash_pending'"#,
+                    params![removed_at, retired_session, recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            if item_changed != 1 || recording_changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
         }
         transaction.commit().map_err(CoreError::Ledger)
     }
 
-    pub fn record_deletion_failure(
+    pub fn record_deletion_target_failure(
         &mut self,
         deletion_run_id: &str,
-        recording_id: &str,
+        recording_ids: &[&str],
         error_code: &str,
     ) -> Result<(), CoreError> {
-        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
-        let item_changed = transaction
-            .execute(
-                r#"UPDATE deletion_items SET outcome = 'failed', error_code = ?1
-                   WHERE deletion_run_id = ?2 AND recording_id = ?3 AND outcome = 'pending'"#,
-                params![error_code, deletion_run_id, recording_id],
-            )
-            .map_err(CoreError::Ledger)?;
-        let recording_changed = transaction
-            .execute(
-                "UPDATE recordings SET deletion_error_code = ?1 WHERE id = ?2",
-                params![error_code, recording_id],
-            )
-            .map_err(CoreError::Ledger)?;
-        if item_changed != 1 || recording_changed != 1 {
-            return Err(CoreError::LedgerCorrupt);
+        if recording_ids.is_empty() {
+            return Err(CoreError::InvalidRequest);
         }
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        for recording_id in recording_ids {
+            let item_changed = transaction
+                .execute(
+                    r#"UPDATE deletion_items SET outcome = 'failed', error_code = ?1
+                       WHERE deletion_run_id = ?2 AND recording_id = ?3 AND outcome = 'pending'"#,
+                    params![error_code, deletion_run_id, recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            let recording_changed = transaction
+                .execute(
+                    r#"UPDATE recordings
+                       SET deletion_error_code = ?1, retirement_status = 'failed'
+                       WHERE id = ?2 AND retirement_status = 'trash_pending'"#,
+                    params![error_code, recording_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            if item_changed != 1 || recording_changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
+        }
+        transaction
+            .execute(
+                r#"UPDATE recordings
+                   SET retirement_status = 'present'
+                   WHERE retirement_status = 'trash_pending'
+                     AND id IN (
+                       SELECT recording_id FROM deletion_items
+                       WHERE deletion_run_id = ?1 AND outcome = 'pending'
+                     )"#,
+                [deletion_run_id],
+            )
+            .map_err(CoreError::Ledger)?;
         transaction
             .execute(
                 r#"UPDATE deletion_items SET outcome = 'not_attempted'

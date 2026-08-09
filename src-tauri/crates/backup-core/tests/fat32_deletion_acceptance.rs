@@ -1,11 +1,17 @@
-use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
+use std::{
+    collections::BTreeSet,
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use backup_core::{
     artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
     deletion::{
         CompleteDeletionSnapshot, DeletionConfirmation, DeletionContext, DeletionOutcome,
-        DeletionProposalStore, NoDeletionFaults,
+        DeletionProposalStore, NoDeletionFaults, TrashAdapter,
     },
+    error::CoreError,
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
@@ -15,6 +21,18 @@ use tempfile::tempdir;
 
 const FIXTURE_ROOT: &str = "/Volumes/DJI-DELTEST";
 const MARKER: &str = ".dji-mic-backup-delete-fixture";
+
+struct FixtureTrash {
+    root: PathBuf,
+}
+
+impl TrashAdapter for FixtureTrash {
+    fn move_to_trash(&self, absolute_path: &Path) -> Result<(), CoreError> {
+        fs::create_dir_all(&self.root).map_err(CoreError::CopyFailed)?;
+        let name = absolute_path.file_name().ok_or(CoreError::InvalidRequest)?;
+        fs::rename(absolute_path, self.root.join(name)).map_err(CoreError::CopyFailed)
+    }
+}
 
 #[test]
 #[ignore = "requires scripts/accept-deletion-fixture.sh"]
@@ -123,6 +141,9 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
                 finished_at: "2026-08-09T00:03:00Z",
             },
             &mut ledger,
+            &FixtureTrash {
+                root: fixture.join("recoverable-trash"),
+            },
             &NoDeletionFaults,
         )
         .unwrap();

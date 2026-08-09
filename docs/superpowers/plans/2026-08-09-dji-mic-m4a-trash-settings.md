@@ -404,19 +404,19 @@ pub struct RetirementPlan {
 }
 ```
 
-- [ ] **Step 1: Add failing complete-session inventory tests**
+- [x] **Step 1: Add failing complete-session inventory tests**
 
 Cover an exact verified session, two sessions, root-level WAVs, anchored-name mismatch, traversal, hidden entries, symlinks, nested directories, unknown files, missing candidates, changed metadata, changed hash, source/artifact mismatch, stale mount generation, stale scan generation, unavailable audit log, and a later target failing after an earlier successful target.
 
-- [ ] **Step 2: Add a regression test proving production policy never unlinks**
+- [x] **Step 2: Add a regression test proving production policy never unlinks**
 
 Remove `fs::remove_file` from the production retirement path. A source scan test must fail if `deletion.rs` or the macOS adapter contains `remove_file`, `remove_dir`, direct `.Trashes`, shell execution, Finder, or AppleScript disposal logic.
 
-- [ ] **Step 3: Implement grouping and shared revalidation**
+- [x] **Step 3: Implement grouping and shared revalidation**
 
 Build `RetirementPlan` only after a fresh canonical inventory and rehash. For a recognized session, compare the complete recursive set with the verified candidate set before creating one directory target. Keep the five-minute opaque manual proposal, but have confirmation re-run the same function used by automatic retirement.
 
-- [ ] **Step 4: Implement the Foundation adapter**
+- [x] **Step 4: Implement the Foundation adapter**
 
 Add target-specific dependencies:
 
@@ -428,19 +428,19 @@ objc2-foundation = { version = "=0.3.2", features = ["NSFileManager", "NSError",
 
 Convert the already-authorized absolute `Path` with `NSURL::from_file_path` and call `NSFileManager::defaultManager().trashItemAtURL_resultingItemURL_error`. Return a privacy-safe typed error and do not retain or expose the resulting absolute Trash URL.
 
-- [ ] **Step 5: Implement manual and automatic retirement**
+- [x] **Step 5: Implement manual and automatic retirement**
 
 Rename the narrow IPC actions to `prepare_trash` and `confirm_trash`. After each independently successful transmitter backup, call the same retirement planner only when `automatic_trash` is true. Write and `sync_data` the preflight log before the first move. Record each target outcome so a partial run never repeats a completed move.
 
-- [ ] **Step 6: Reconcile the known empty legacy session safely**
+- [x] **Step 6: Reconcile the known empty legacy session safely**
 
 Add an empty-folder candidate only when the anchored directory is empty, the ledger has legacy-retired recordings under that exact relative directory, the current paired identity matches, and the mount generation is current. Move the directory with the same Trash adapter and log `trash.legacy_empty_session`; leave every look-alike without ledger evidence untouched.
 
-- [ ] **Step 7: Add disposable-volume acceptance**
+- [x] **Step 7: Add disposable-volume acceptance**
 
 Update the fixture harness to use `/Volumes/DJI-DELTEST` only after verifying the volume name, removable/external properties, and fixture sentinel. Prove the whole session disappears from its original location, remains recoverable through macOS Trash behavior, and no permanent unlink occurs. Skip with an explicit reason when the disposable volume is absent.
 
-- [ ] **Step 8: Run safety tests, commit, and push**
+- [x] **Step 8: Run safety tests, commit, and push**
 
 ```bash
 cargo test -p backup-core --test session_retirement

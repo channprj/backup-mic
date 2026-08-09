@@ -41,12 +41,12 @@ export async function prepareDeletion(
 ): Promise<DeletionProposalSummary> {
   const safeTransmitter = transmitterSchema.parse(transmitter);
   return deletionProposalSummarySchema.parse(
-    await invoke("prepare_deletion", { transmitter: safeTransmitter }),
+    await invoke("prepare_trash", { transmitter: safeTransmitter }),
   );
 }
 
 export function confirmDeletion(proposalId: string): Promise<AppSnapshot> {
-  return invokeSnapshot("confirm_deletion", {
+  return invokeSnapshot("confirm_trash", {
     proposalId: proposalIdSchema.parse(proposalId),
   });
 }

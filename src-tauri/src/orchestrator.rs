@@ -18,7 +18,8 @@ use backup_core::{
     },
     deletion::{
         CompleteDeletionSnapshot, DeletionCandidate, DeletionConfirmation, DeletionContext,
-        DeletionOutcome, NoDeletionFaults, ProposalInvalidation,
+        DeletionOutcome, NoDeletionFaults, ProposalInvalidation, TrashAdapter,
+        reconcile_legacy_empty_sessions,
     },
     destination::{
         DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition, DestinationPlan, plan_recording,
@@ -40,7 +41,7 @@ use crate::{
     dto::{DeletionProposalSummaryDto, ProgressDto},
     platform::{
         device_registry::DeviceRegistry,
-        macos::{DiskArbitrationMonitor, audio::AppleAudioTools},
+        macos::{DiskArbitrationMonitor, audio::AppleAudioTools, trash::MacTrash},
     },
     rescan::{RescanDecision, RescanScheduler},
 };
@@ -482,7 +483,57 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                             &mut artifact_observer,
                         ) {
                             Ok(result) => {
+                                let superseded = result.superseded_wav;
                                 recording = result.recording;
+                                let superseded_path = destination.join(&superseded);
+                                let output =
+                                    superseded.to_str().ok_or(CoreError::InvalidAuditEvent)?;
+                                let fields = [
+                                    ("output", AuditValue::Text(output)),
+                                    ("mode", AuditValue::Text("artifact_migration")),
+                                ];
+                                if state
+                                    .append_audit(
+                                        &AuditEvent {
+                                            occurred_at: audit_now(),
+                                            level: AuditLevel::Info,
+                                            code: "retirement.preflight",
+                                            transmitter: Some(prepared_tx.transmitter),
+                                            fields: &fields,
+                                        },
+                                        AuditDurability::SyncData,
+                                    )
+                                    .is_ok()
+                                {
+                                    let (level, code, reason) =
+                                        match MacTrash.move_to_trash(&superseded_path) {
+                                            Ok(()) => (
+                                                AuditLevel::Info,
+                                                "retirement.complete",
+                                                "moved_to_trash",
+                                            ),
+                                            Err(_) => (
+                                                AuditLevel::Warning,
+                                                "retirement.refused",
+                                                "trash_failed",
+                                            ),
+                                        };
+                                    let fields = [
+                                        ("output", AuditValue::Text(output)),
+                                        ("mode", AuditValue::Text("artifact_migration")),
+                                        ("reason", AuditValue::Text(reason)),
+                                    ];
+                                    let _ = state.append_audit(
+                                        &AuditEvent {
+                                            occurred_at: audit_now(),
+                                            level,
+                                            code,
+                                            transmitter: Some(prepared_tx.transmitter),
+                                            fields: &fields,
+                                        },
+                                        AuditDurability::Buffered,
+                                    );
+                                }
                             }
                             Err(error) => {
                                 failed_transmitters.insert(prepared_tx.transmitter);
@@ -608,6 +659,9 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         },
         AuditDurability::SyncData,
     )?;
+    let automatic_trash_enabled = state.automatic_trash_enabled();
+    let mut automatic_snapshots = Vec::new();
+    let mut legacy_contexts = Vec::new();
     let mut runtime = state.runtime.lock();
     for prepared_tx in prepared {
         let verified = verified_by_tx
@@ -624,12 +678,35 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             .entry(prepared_tx.transmitter)
             .or_default();
         *generation = generation.saturating_add(1);
+        let scan_generation = *generation;
+        let current_source_paths = source_paths(&prepared_tx.scan.recordings);
+        let context = runtime
+            .mounted
+            .get(&prepared_tx.transmitter)
+            .map(|mounted| DeletionContext {
+                transmitter: prepared_tx.transmitter,
+                paired_volume_uuid: mounted.descriptor.volume_uuid.clone(),
+                mount_generation: mounted.descriptor.mount_generation,
+                scan_generation,
+                destination_generation: runtime.destination_generation,
+                source_root: mounted.descriptor.mount_root.clone(),
+                destination_root: runtime.destination.clone(),
+            });
+        if let Some(context) = context.clone() {
+            legacy_contexts.push(context);
+        }
         if complete && !verified.is_empty() {
+            if automatic_trash_enabled && let Some(context) = context {
+                automatic_snapshots.push(CompleteDeletionSnapshot {
+                    context,
+                    candidates: verified.clone(),
+                    current_source_paths: current_source_paths.clone(),
+                });
+            }
             runtime.verified.insert(prepared_tx.transmitter, verified);
-            runtime.current_source_paths.insert(
-                prepared_tx.transmitter,
-                source_paths(&prepared_tx.scan.recordings),
-            );
+            runtime
+                .current_source_paths
+                .insert(prepared_tx.transmitter, current_source_paths);
         } else {
             runtime.verified.remove(&prepared_tx.transmitter);
             runtime
@@ -672,6 +749,17 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     publish_locked(app, &mut runtime);
     drop(runtime);
 
+    for context in legacy_contexts {
+        if let Err(error) = reconcile_legacy_sessions(app, state, &context) {
+            state.set_error(app, error, Some(context.transmitter));
+        }
+    }
+    for snapshot in automatic_snapshots {
+        if let Err(error) = retire_automatically(app, state, snapshot) {
+            state.set_error(app, error, None);
+        }
+    }
+
     let (activity_code, severity) = if failed_transmitters.is_empty() {
         if total_files == 0 || required_copy_bytes == 0 {
             ("nothing_new", ActivitySeverity::Info)
@@ -711,7 +799,169 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     Ok(())
 }
 
-pub fn prepare_deletion(
+fn reconcile_legacy_sessions(
+    app: &AppHandle,
+    state: &AppState,
+    context: &DeletionContext,
+) -> Result<(), CoreError> {
+    if state
+        .ledger
+        .lock()
+        .legacy_retired_recordings(context.transmitter)?
+        .is_empty()
+    {
+        return Ok(());
+    }
+    let fields = [("mode", AuditValue::Text("legacy_empty_session"))];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code: "retirement.preflight",
+            transmitter: Some(context.transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
+    let moved_at = now_string();
+    let moved =
+        reconcile_legacy_empty_sessions(context, &mut state.ledger.lock(), &MacTrash, &moved_at)?;
+    if moved == 0 {
+        return Ok(());
+    }
+    let fields = [
+        ("count", AuditValue::Unsigned(moved)),
+        ("mode", AuditValue::Text("legacy_empty_session")),
+    ];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code: "trash.legacy_empty_session",
+            transmitter: Some(context.transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
+    let _ = state.record_activity(
+        app,
+        ActivityEntry {
+            occurred_at: moved_at,
+            code: "legacy_session_moved_to_trash".to_owned(),
+            transmitter: Some(context.transmitter),
+            count_value: Some(moved),
+            byte_value: None,
+            severity: ActivitySeverity::Success,
+        },
+    );
+    Ok(())
+}
+
+fn retire_automatically(
+    app: &AppHandle,
+    state: &AppState,
+    snapshot: CompleteDeletionSnapshot,
+) -> Result<(), CoreError> {
+    let transmitter = snapshot.context.transmitter;
+    let fields = [("mode", AuditValue::Text("automatic"))];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code: "retirement.preflight",
+            transmitter: Some(transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
+    let deletion_allowed = !state.ledger.lock().deletion_disabled();
+    let proposal = state.proposals.lock().prepare(
+        snapshot.clone(),
+        state.elapsed(),
+        deletion_allowed,
+        &NoDeletionFaults,
+    )?;
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code: "retirement.authorized",
+            transmitter: Some(transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
+    let started_at = now_string();
+    let finished_at = now_string();
+    let report = state.proposals.lock().confirm(
+        &proposal.proposal_id,
+        DeletionConfirmation {
+            current_context: &snapshot.context,
+            now: state.elapsed(),
+            started_at: &started_at,
+            finished_at: &finished_at,
+        },
+        &mut state.ledger.lock(),
+        &MacTrash,
+        &NoDeletionFaults,
+    )?;
+    {
+        let mut runtime = state.runtime.lock();
+        update_transmitter(&mut runtime.snapshot, transmitter, |transmitter_snapshot| {
+            transmitter_snapshot.deletion_phase = match report.outcome {
+                DeletionOutcome::Deleted => DeletionPhase::Deleted,
+                DeletionOutcome::Refused => DeletionPhase::Refused,
+                DeletionOutcome::PartiallyDeleted => DeletionPhase::PartiallyDeleted,
+            };
+            transmitter_snapshot.deletion_ready = false;
+        });
+        runtime.verified.remove(&transmitter);
+        runtime.current_source_paths.remove(&transmitter);
+        publish_locked(app, &mut runtime);
+    }
+    let fields = [
+        ("files", AuditValue::Unsigned(report.deleted_files)),
+        ("bytes", AuditValue::Unsigned(report.deleted_bytes)),
+        ("mode", AuditValue::Text("automatic")),
+    ];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: if report.outcome == DeletionOutcome::Deleted {
+                AuditLevel::Info
+            } else {
+                AuditLevel::Error
+            },
+            code: "retirement.complete",
+            transmitter: Some(transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
+    let _ = state.record_activity(
+        app,
+        ActivityEntry {
+            occurred_at: finished_at,
+            code: if report.outcome == DeletionOutcome::Deleted {
+                "automatic_trash_complete"
+            } else {
+                "automatic_trash_partial"
+            }
+            .to_owned(),
+            transmitter: Some(transmitter),
+            count_value: Some(report.deleted_files),
+            byte_value: Some(report.deleted_bytes),
+            severity: if report.outcome == DeletionOutcome::Deleted {
+                ActivitySeverity::Success
+            } else {
+                ActivitySeverity::Error
+            },
+        },
+    );
+    Ok(())
+}
+
+pub fn prepare_trash(
     app: &AppHandle,
     state: &AppState,
     transmitter: Transmitter,
@@ -810,7 +1060,7 @@ pub fn prepare_deletion(
     })
 }
 
-pub fn confirm_deletion(
+pub fn confirm_trash(
     app: &AppHandle,
     state: &AppState,
     proposal_id: &str,
@@ -875,6 +1125,7 @@ pub fn confirm_deletion(
             finished_at: &now_string(),
         },
         &mut state.ledger.lock(),
+        &MacTrash,
         &NoDeletionFaults,
         &mut observer,
     )?;
@@ -894,7 +1145,7 @@ pub fn confirm_deletion(
     runtime.current_source_paths.remove(&context.transmitter);
     if report.outcome == DeletionOutcome::PartiallyDeleted {
         runtime.snapshot.phase = BackupPhase::Error;
-        runtime.snapshot.message_code = "partial_deletion".to_owned();
+        runtime.snapshot.message_code = "partial_trash".to_owned();
     }
     publish_locked(app, &mut runtime);
     drop(runtime);
@@ -903,9 +1154,9 @@ pub fn confirm_deletion(
         ActivityEntry {
             occurred_at: now_string(),
             code: match report.outcome {
-                DeletionOutcome::Deleted => "deletion_complete",
-                DeletionOutcome::Refused => "deletion_refused",
-                DeletionOutcome::PartiallyDeleted => "partial_deletion",
+                DeletionOutcome::Deleted => "trash_complete",
+                DeletionOutcome::Refused => "trash_refused",
+                DeletionOutcome::PartiallyDeleted => "partial_trash",
             }
             .to_owned(),
             transmitter: Some(context.transmitter),
@@ -945,9 +1196,11 @@ pub fn confirm_deletion(
         AuditDurability::SyncData,
     )?;
     let body = match report.outcome {
-        DeletionOutcome::Deleted => "검증된 원본 삭제를 완료했습니다.",
-        DeletionOutcome::Refused => "원본을 삭제하지 못했습니다.",
-        DeletionOutcome::PartiallyDeleted => "일부 원본만 삭제되었습니다. 상태를 확인해 주세요.",
+        DeletionOutcome::Deleted => "검증된 원본을 휴지통으로 이동했습니다.",
+        DeletionOutcome::Refused => "원본을 휴지통으로 이동하지 못했습니다.",
+        DeletionOutcome::PartiallyDeleted => {
+            "일부 원본만 휴지통으로 이동했습니다. 상태를 확인해 주세요."
+        }
     };
     let _ = app
         .notification()

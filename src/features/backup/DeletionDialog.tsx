@@ -37,10 +37,12 @@ export function DeletionDialog({
             <ShieldCheckIcon aria-hidden="true" />
             두 번째 검증 준비됨
           </div>
-          <AlertDialogTitle>{proposal?.transmitter} 원본을 삭제할까요?</AlertDialogTitle>
+          <AlertDialogTitle>
+            {proposal?.transmitter} 원본을 휴지통으로 이동할까요?
+          </AlertDialogTitle>
           <AlertDialogDescription>
-            삭제 직전에 송신기와 백업 파일 전체를 다시 검사합니다. 하나라도 달라지면 아무것도
-            삭제하지 않습니다.
+            이동 직전에 송신기와 백업 파일 전체를 다시 검사합니다. 하나라도 달라지면 아무것도
+            옮기지 않습니다. 휴지통이 비워지기 전에는 복구할 수 있습니다.
           </AlertDialogDescription>
         </AlertDialogHeader>
         {proposal ? (
@@ -75,7 +77,7 @@ export function DeletionDialog({
             }}
           >
             {busy ? <Spinner data-icon="inline-start" /> : <Trash2Icon data-icon="inline-start" />}
-            검증 후 원본 삭제
+            검증 후 휴지통으로 이동
           </AlertDialogAction>
         </AlertDialogFooter>
       </AlertDialogContent>

@@ -62,6 +62,6 @@ describe("typed Tauri client", () => {
     invoke.mockResolvedValue(completeFixture);
     const proposalId = "550e8400-e29b-41d4-a716-446655440000";
     await confirmDeletion(proposalId);
-    expect(invoke).toHaveBeenCalledWith("confirm_deletion", { proposalId });
+    expect(invoke).toHaveBeenCalledWith("confirm_trash", { proposalId });
   });
 });

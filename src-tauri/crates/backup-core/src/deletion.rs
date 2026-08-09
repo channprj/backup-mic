@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     fs,
     path::{Path, PathBuf},
     time::Duration,
@@ -12,6 +12,7 @@ use crate::{
     filesystem::{is_safe_relative_path, modified_nanos},
     hash::hash_file,
     ledger::{Ledger, PendingDeletionItem},
+    scanner::scan_once,
     state::Transmitter,
 };
 
@@ -63,6 +64,30 @@ pub struct DeletionConfirmation<'a> {
     pub finished_at: &'a str,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RetirementTarget {
+    Session {
+        relative_directory: PathBuf,
+        recording_ids: Vec<String>,
+    },
+    RootFile {
+        relative_path: PathBuf,
+        recording_id: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RetirementPlan {
+    pub transmitter: Transmitter,
+    pub targets: Vec<RetirementTarget>,
+    pub recording_count: usize,
+    pub byte_count: u64,
+}
+
+pub trait TrashAdapter: Send + Sync {
+    fn move_to_trash(&self, absolute_path: &Path) -> Result<(), CoreError>;
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProposalInvalidation {
     DeviceDisappeared,
@@ -77,7 +102,7 @@ pub enum ProposalInvalidation {
 pub enum DeletionFaultPoint {
     RevalidateSource(usize),
     RevalidateDestination(usize),
-    Unlink(usize),
+    MoveToTrash(usize),
 }
 
 pub trait DeletionFaults: Send + Sync {
@@ -189,9 +214,10 @@ impl DeletionProposalStore {
         proposal_id: &str,
         confirmation: DeletionConfirmation<'_>,
         ledger: &mut Ledger,
+        trash: &dyn TrashAdapter,
         faults: &dyn DeletionFaults,
     ) -> Result<DeletionReport, CoreError> {
-        self.confirm_observed(proposal_id, confirmation, ledger, faults, &mut || {})
+        self.confirm_observed(proposal_id, confirmation, ledger, trash, faults, &mut || {})
     }
 
     pub fn confirm_observed(
@@ -199,6 +225,7 @@ impl DeletionProposalStore {
         proposal_id: &str,
         confirmation: DeletionConfirmation<'_>,
         ledger: &mut Ledger,
+        trash: &dyn TrashAdapter,
         faults: &dyn DeletionFaults,
         observer: &mut dyn FnMut(),
     ) -> Result<DeletionReport, CoreError> {
@@ -213,7 +240,7 @@ impl DeletionProposalStore {
         if &proposal.context != confirmation.current_context {
             return Err(CoreError::ProposalInvalidated);
         }
-        let verified_source_paths =
+        let retirement_plan =
             verify_complete_snapshot(&proposal.context, &proposal.candidates, faults)
                 .map_err(|_| CoreError::DeletionPreflightRefused)?;
         observer();
@@ -238,21 +265,15 @@ impl DeletionProposalStore {
             u64::try_from(proposal.candidates.len()).map_err(|_| CoreError::InvalidRequest)?;
         let mut deleted_files = 0_u64;
         let mut deleted_bytes = 0_u64;
-        for (index, (candidate, source_path)) in proposal
-            .candidates
-            .iter()
-            .zip(verified_source_paths)
-            .enumerate()
-        {
-            let unlink_result = faults
-                .check(DeletionFaultPoint::Unlink(index))
-                .and_then(|()| fs::remove_file(source_path).map_err(CoreError::CopyFailed));
-            if unlink_result.is_err() {
-                ledger.record_deletion_failure(
-                    &run_id,
-                    &candidate.recording_id,
-                    "unlink_failed",
-                )?;
+        for (index, target) in retirement_plan.targets.iter().enumerate() {
+            let relative_path = target_relative_path(target);
+            let absolute_path = proposal.context.source_root.join(relative_path);
+            let move_result = faults
+                .check(DeletionFaultPoint::MoveToTrash(index))
+                .and_then(|()| trash.move_to_trash(&absolute_path));
+            if move_result.is_err() {
+                let recording_ids = target_recording_ids(target);
+                ledger.record_deletion_target_failure(&run_id, &recording_ids, "trash_failed")?;
                 let outcome = if deleted_files == 0 {
                     DeletionOutcome::Refused
                 } else {
@@ -261,13 +282,13 @@ impl DeletionProposalStore {
                 let outcome_name = if outcome == DeletionOutcome::Refused {
                     "refused"
                 } else {
-                    "partially_deleted"
+                    "partially_moved_to_trash"
                 };
                 ledger.finish_deletion_run(
                     &run_id,
                     confirmation.finished_at,
                     outcome_name,
-                    Some("unlink_failed"),
+                    Some("trash_failed"),
                 )?;
                 return Ok(DeletionReport {
                     run_id,
@@ -275,22 +296,46 @@ impl DeletionProposalStore {
                     deleted_files,
                     deleted_bytes,
                     remaining_files: total_files.saturating_sub(deleted_files),
-                    first_failure_code: Some("unlink_failed".to_owned()),
+                    first_failure_code: Some("trash_failed".to_owned()),
                 });
             }
-            ledger.record_deletion_success(
+            let target_candidates = proposal
+                .candidates
+                .iter()
+                .filter(|candidate| target_contains_recording(target, &candidate.recording_id))
+                .collect::<Vec<_>>();
+            let recording_ids = target_candidates
+                .iter()
+                .map(|candidate| candidate.recording_id.as_str())
+                .collect::<Vec<_>>();
+            ledger.record_deletion_target_success(
                 &run_id,
-                &candidate.recording_id,
+                &recording_ids,
                 confirmation.finished_at,
+                match target {
+                    RetirementTarget::Session {
+                        relative_directory, ..
+                    } => Some(relative_directory.as_path()),
+                    RetirementTarget::RootFile { .. } => None,
+                },
             )?;
+            let target_files =
+                u64::try_from(target_candidates.len()).map_err(|_| CoreError::InvalidRequest)?;
+            let target_bytes = target_candidates
+                .iter()
+                .try_fold(0_u64, |total, candidate| {
+                    total
+                        .checked_add(candidate.source_size)
+                        .ok_or(CoreError::InvalidRequest)
+                })?;
             deleted_files = deleted_files
-                .checked_add(1)
+                .checked_add(target_files)
                 .ok_or(CoreError::InvalidRequest)?;
             deleted_bytes = deleted_bytes
-                .checked_add(candidate.source_size)
+                .checked_add(target_bytes)
                 .ok_or(CoreError::InvalidRequest)?;
         }
-        ledger.finish_deletion_run(&run_id, confirmation.finished_at, "deleted", None)?;
+        ledger.finish_deletion_run(&run_id, confirmation.finished_at, "moved_to_trash", None)?;
         Ok(DeletionReport {
             run_id,
             outcome: DeletionOutcome::Deleted,
@@ -310,25 +355,237 @@ fn verify_complete_snapshot(
     context: &DeletionContext,
     candidates: &[DeletionCandidate],
     faults: &dyn DeletionFaults,
-) -> Result<Vec<PathBuf>, CoreError> {
+) -> Result<RetirementPlan, CoreError> {
+    let expected_source_paths = candidates
+        .iter()
+        .map(|candidate| candidate.source_relative_path.clone())
+        .collect::<BTreeSet<_>>();
+    let observed_source_paths = scan_once(
+        &context.source_root,
+        context.transmitter,
+        time::UtcOffset::UTC,
+    )?
+    .recordings
+    .into_iter()
+    .map(|recording| recording.relative_path)
+    .collect::<BTreeSet<_>>();
+    if observed_source_paths != expected_source_paths {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
     let source_root = fs::canonicalize(&context.source_root).map_err(CoreError::CopyFailed)?;
     let destination_root =
         fs::canonicalize(&context.destination_root).map_err(CoreError::CopyFailed)?;
-    let mut source_paths = Vec::with_capacity(candidates.len());
+    let mut session_candidates: HashMap<PathBuf, Vec<&DeletionCandidate>> = HashMap::new();
+    let mut root_candidates = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
-        if candidate.source_sha256 != candidate.destination_sha256
-            || candidate.source_size != candidate.destination_size
-            || !is_safe_relative_path(&candidate.source_relative_path)
+        if !is_safe_relative_path(&candidate.source_relative_path)
             || !is_safe_relative_path(&candidate.destination_relative_path)
         {
             return Err(CoreError::DeletionPreflightRefused);
         }
         faults.check(DeletionFaultPoint::RevalidateSource(index))?;
-        source_paths.push(verify_source(&source_root, candidate)?);
+        verify_source(&source_root, candidate)?;
         faults.check(DeletionFaultPoint::RevalidateDestination(index))?;
         verify_destination(&destination_root, candidate)?;
+        let mut components = candidate.source_relative_path.components();
+        let first = components
+            .next()
+            .ok_or(CoreError::DeletionPreflightRefused)?;
+        let second = components.next();
+        if components.next().is_some() {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+        let first = PathBuf::from(first.as_os_str());
+        match second {
+            None => root_candidates.push(candidate),
+            Some(_) if is_recognized_session_name(&first) => {
+                session_candidates.entry(first).or_default().push(candidate);
+            }
+            Some(_) => return Err(CoreError::DeletionPreflightRefused),
+        }
     }
-    Ok(source_paths)
+    let mut targets = Vec::new();
+    let mut sessions: Vec<_> = session_candidates.into_iter().collect();
+    sessions.sort_by(|left, right| left.0.cmp(&right.0));
+    for (session, grouped) in sessions {
+        verify_session_inventory(&source_root, &session, &grouped)?;
+        let mut recording_ids = grouped
+            .into_iter()
+            .map(|candidate| candidate.recording_id.clone())
+            .collect::<Vec<_>>();
+        recording_ids.sort();
+        targets.push(RetirementTarget::Session {
+            relative_directory: session,
+            recording_ids,
+        });
+    }
+    root_candidates
+        .sort_by(|left, right| left.source_relative_path.cmp(&right.source_relative_path));
+    targets.extend(
+        root_candidates
+            .into_iter()
+            .map(|candidate| RetirementTarget::RootFile {
+                relative_path: candidate.source_relative_path.clone(),
+                recording_id: candidate.recording_id.clone(),
+            }),
+    );
+    let byte_count = candidates.iter().try_fold(0_u64, |total, candidate| {
+        total
+            .checked_add(candidate.source_size)
+            .ok_or(CoreError::DeletionPreflightRefused)
+    })?;
+    Ok(RetirementPlan {
+        transmitter: context.transmitter,
+        targets,
+        recording_count: candidates.len(),
+        byte_count,
+    })
+}
+
+fn is_recognized_session_name(path: &Path) -> bool {
+    let Some(name) = path.to_str() else {
+        return false;
+    };
+    let mut parts = name.split('_');
+    let (Some(tx), Some(mic), Some(date), Some(time), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return false;
+    };
+    tx == "TX"
+        && mic.strip_prefix("MIC").is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 6
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+fn verify_session_inventory(
+    source_root: &Path,
+    session: &Path,
+    candidates: &[&DeletionCandidate],
+) -> Result<(), CoreError> {
+    let session_path = source_root.join(session);
+    let metadata = fs::symlink_metadata(&session_path).map_err(CoreError::CopyFailed)?;
+    if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    let canonical_session = fs::canonicalize(&session_path).map_err(CoreError::CopyFailed)?;
+    if canonical_session.parent() != Some(source_root) {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    let expected = candidates
+        .iter()
+        .map(|candidate| candidate.source_relative_path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut observed = BTreeSet::new();
+    for entry in fs::read_dir(&canonical_session).map_err(CoreError::CopyFailed)? {
+        let entry = entry.map_err(CoreError::CopyFailed)?;
+        let file_type = entry.file_type().map_err(CoreError::CopyFailed)?;
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return Err(CoreError::DeletionPreflightRefused);
+        };
+        if name.starts_with('.') || file_type.is_symlink() || !file_type.is_file() {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+        observed.insert(session.join(name));
+    }
+    if observed != expected {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    Ok(())
+}
+
+fn target_relative_path(target: &RetirementTarget) -> &Path {
+    match target {
+        RetirementTarget::Session {
+            relative_directory, ..
+        } => relative_directory,
+        RetirementTarget::RootFile { relative_path, .. } => relative_path,
+    }
+}
+
+fn target_recording_ids(target: &RetirementTarget) -> Vec<&str> {
+    match target {
+        RetirementTarget::Session { recording_ids, .. } => {
+            recording_ids.iter().map(String::as_str).collect()
+        }
+        RetirementTarget::RootFile { recording_id, .. } => vec![recording_id],
+    }
+}
+
+fn target_contains_recording(target: &RetirementTarget, recording_id: &str) -> bool {
+    match target {
+        RetirementTarget::Session { recording_ids, .. } => {
+            recording_ids.iter().any(|value| value == recording_id)
+        }
+        RetirementTarget::RootFile {
+            recording_id: value,
+            ..
+        } => value == recording_id,
+    }
+}
+
+pub fn reconcile_legacy_empty_sessions(
+    context: &DeletionContext,
+    ledger: &mut Ledger,
+    trash: &dyn TrashAdapter,
+    moved_at: &str,
+) -> Result<u64, CoreError> {
+    let source_root = fs::canonicalize(&context.source_root).map_err(CoreError::CopyFailed)?;
+    let mut sessions: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
+    for recording in ledger.legacy_retired_recordings(context.transmitter)? {
+        let mut components = recording.source_relative_path.components();
+        let Some(session) = components.next() else {
+            continue;
+        };
+        if components.next().is_none() || components.next().is_some() {
+            continue;
+        }
+        let session = PathBuf::from(session.as_os_str());
+        if is_recognized_session_name(&session) {
+            sessions
+                .entry(session)
+                .or_default()
+                .push(recording.recording_id);
+        }
+    }
+    let mut moved = 0_u64;
+    for (session, recording_ids) in sessions {
+        let session_path = source_root.join(&session);
+        let metadata = match fs::symlink_metadata(&session_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(CoreError::CopyFailed(error)),
+        };
+        if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            continue;
+        }
+        let canonical_session = fs::canonicalize(&session_path).map_err(CoreError::CopyFailed)?;
+        if canonical_session.parent() != Some(source_root.as_path()) {
+            continue;
+        }
+        if fs::read_dir(&canonical_session)
+            .map_err(CoreError::CopyFailed)?
+            .next()
+            .transpose()
+            .map_err(CoreError::CopyFailed)?
+            .is_some()
+        {
+            continue;
+        }
+        trash.move_to_trash(&canonical_session)?;
+        ledger.record_legacy_session_moved_to_trash(&recording_ids, &session, moved_at)?;
+        moved = moved.checked_add(1).ok_or(CoreError::InvalidRequest)?;
+    }
+    Ok(moved)
 }
 
 fn verify_source(root: &Path, candidate: &DeletionCandidate) -> Result<PathBuf, CoreError> {
@@ -389,6 +646,22 @@ mod tests {
     };
 
     use super::*;
+
+    struct TestTrash;
+
+    impl TrashAdapter for TestTrash {
+        fn move_to_trash(&self, absolute_path: &Path) -> Result<(), CoreError> {
+            let file_name = absolute_path
+                .file_name()
+                .and_then(|value| value.to_str())
+                .ok_or(CoreError::InvalidRequest)?;
+            let target = absolute_path
+                .parent()
+                .ok_or(CoreError::InvalidRequest)?
+                .join(format!(".trashed-{file_name}-{}", Uuid::new_v4()));
+            fs::rename(absolute_path, target).map_err(CoreError::CopyFailed)
+        }
+    }
 
     struct Fixture {
         source: tempfile::TempDir,
@@ -500,12 +773,13 @@ mod tests {
                 finished_at: "2026-08-09T00:03:00Z",
             },
             ledger,
+            &TestTrash,
             faults,
         )
     }
 
     #[test]
-    fn confirmation_revalidates_the_complete_snapshot_then_deletes_sources_only() {
+    fn confirmation_revalidates_the_complete_snapshot_then_moves_sources_only() {
         let mut fixture = fixture(2);
         let mut store = DeletionProposalStore::default();
         let proposal = store
@@ -549,12 +823,12 @@ mod tests {
                 .ledger
                 .deletion_item_outcomes(&report.run_id)
                 .unwrap(),
-            ["deleted", "deleted"]
+            ["moved_to_trash", "moved_to_trash"]
         );
     }
 
     #[test]
-    fn changed_destination_refuses_before_the_first_unlink() {
+    fn changed_destination_refuses_before_the_first_trash_move() {
         let mut fixture = fixture(2);
         let mut store = DeletionProposalStore::default();
         let proposal = store
@@ -652,6 +926,7 @@ mod tests {
                 finished_at: "finish",
             },
             &mut fixture.ledger,
+            &TestTrash,
             &NoDeletionFaults,
         );
         assert!(matches!(expired, Err(CoreError::ProposalExpired)));
@@ -675,17 +950,17 @@ mod tests {
         ));
     }
 
-    struct FailUnlinkAt {
+    struct FailTrashAt {
         index: usize,
         seen: Mutex<Vec<DeletionFaultPoint>>,
     }
 
-    impl DeletionFaults for FailUnlinkAt {
+    impl DeletionFaults for FailTrashAt {
         fn check(&self, point: DeletionFaultPoint) -> Result<(), CoreError> {
             self.seen.lock().unwrap().push(point);
-            if point == DeletionFaultPoint::Unlink(self.index) {
+            if point == DeletionFaultPoint::MoveToTrash(self.index) {
                 return Err(CoreError::CopyFailed(std::io::Error::other(
-                    "injected unlink failure",
+                    "injected Trash failure",
                 )));
             }
             Ok(())
@@ -693,7 +968,7 @@ mod tests {
     }
 
     #[test]
-    fn first_unlink_failure_stops_and_records_exact_partial_outcomes() {
+    fn first_trash_failure_stops_and_records_exact_partial_outcomes() {
         let mut fixture = fixture(3);
         let mut store = DeletionProposalStore::default();
         let proposal = store
@@ -704,7 +979,7 @@ mod tests {
                 &NoDeletionFaults,
             )
             .unwrap();
-        let faults = FailUnlinkAt {
+        let faults = FailTrashAt {
             index: 1,
             seen: Mutex::new(Vec::new()),
         };
@@ -724,7 +999,7 @@ mod tests {
                 .ledger
                 .deletion_item_outcomes(&report.run_id)
                 .unwrap(),
-            ["deleted", "failed", "not_attempted"]
+            ["moved_to_trash", "failed", "not_attempted"]
         );
         assert!(
             !fixture
@@ -752,7 +1027,7 @@ mod tests {
                 .seen
                 .lock()
                 .unwrap()
-                .contains(&DeletionFaultPoint::Unlink(2))
+                .contains(&DeletionFaultPoint::MoveToTrash(2))
         );
     }
 
@@ -793,11 +1068,11 @@ mod tests {
     }
 
     #[derive(Default)]
-    struct CountUnlinks(AtomicUsize);
+    struct CountTrashMoves(AtomicUsize);
 
-    impl DeletionFaults for CountUnlinks {
+    impl DeletionFaults for CountTrashMoves {
         fn check(&self, point: DeletionFaultPoint) -> Result<(), CoreError> {
-            if matches!(point, DeletionFaultPoint::Unlink(_)) {
+            if matches!(point, DeletionFaultPoint::MoveToTrash(_)) {
                 self.0.fetch_add(1, Ordering::SeqCst);
             }
             Ok(())
@@ -806,12 +1081,12 @@ mod tests {
 
     proptest! {
         #[test]
-        fn arbitrary_operation_sequences_never_unlink_without_current_authority(
+        fn arbitrary_operation_sequences_never_move_without_current_authority(
             operations in prop::collection::vec(0_u8..6, 0..24)
         ) {
             let mut fixture = fixture(1);
             let mut store = DeletionProposalStore::default();
-            let faults = CountUnlinks::default();
+            let faults = CountTrashMoves::default();
             let mut current_id: Option<String> = None;
             let mut model_authority = false;
 
@@ -870,6 +1145,7 @@ mod tests {
                                     finished_at: "finish",
                                 },
                                 &mut fixture.ledger,
+                                &TestTrash,
                                 &faults,
                             );
                         }

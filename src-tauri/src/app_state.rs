@@ -159,6 +159,10 @@ impl AppState {
         self.runtime.lock().preferences.m4a_conversion
     }
 
+    pub fn automatic_trash_enabled(&self) -> bool {
+        self.runtime.lock().preferences.automatic_trash
+    }
+
     pub fn operation_is_active(&self) -> bool {
         self.operation_active.load(Ordering::SeqCst)
     }
@@ -674,5 +678,6 @@ mod tests {
 
         assert!(!state.automatic_backup_enabled());
         assert!(state.m4a_conversion_enabled());
+        assert!(!state.automatic_trash_enabled());
     }
 }

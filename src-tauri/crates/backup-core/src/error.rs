@@ -15,6 +15,7 @@ pub enum PublicErrorCode {
     HashMismatch,
     ArtifactInvalid,
     AudioToolFailed,
+    TrashFailed,
     DeviceRemoved,
     LedgerCorrupt,
     AuditLogUnavailable,
@@ -56,6 +57,8 @@ pub enum CoreError {
     ArtifactInvalid,
     #[error("Apple audio tool failed")]
     AudioToolFailed,
+    #[error("macOS Trash movement failed")]
+    TrashFailed,
     #[error("device was removed")]
     DeviceRemoved,
     #[error("ledger is corrupt")]
@@ -114,6 +117,7 @@ impl CoreError {
                 "audio_conversion_failed",
                 true,
             ),
+            Self::TrashFailed => (PublicErrorCode::TrashFailed, "trash_move_failed", true),
             Self::DeviceRemoved => (PublicErrorCode::DeviceRemoved, "device_removed", true),
             Self::LedgerCorrupt => (PublicErrorCode::LedgerCorrupt, "ledger_corrupt", false),
             Self::Ledger(_) | Self::LedgerIo(_) => {
