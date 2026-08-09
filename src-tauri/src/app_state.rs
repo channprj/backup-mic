@@ -61,6 +61,7 @@ pub struct AppState {
     pub(crate) proposals: Arc<Mutex<DeletionProposalStore>>,
     pub(crate) preference_save: Arc<tokio::sync::Mutex<()>>,
     operation_active: Arc<AtomicBool>,
+    operation_reserved: Arc<AtomicBool>,
     cancellation: Arc<Mutex<CancellationToken>>,
     failure_reporter: FailureReporter,
     started: Instant,
@@ -156,6 +157,7 @@ impl AppState {
             proposals: Arc::new(Mutex::new(DeletionProposalStore::default())),
             preference_save: Arc::new(tokio::sync::Mutex::new(())),
             operation_active: Arc::new(AtomicBool::new(false)),
+            operation_reserved: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(Mutex::new(CancellationToken::default())),
             failure_reporter: FailureReporter::new(failure_root),
             started: Instant::now(),
@@ -374,6 +376,9 @@ impl AppState {
     }
 
     pub fn begin_operation(&self) -> Result<OperationGuard, CoreError> {
+        if self.operation_reserved.load(Ordering::SeqCst) {
+            return Err(CoreError::Busy);
+        }
         self.operation_active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| CoreError::Busy)?;
@@ -382,6 +387,18 @@ impl AppState {
         Ok(OperationGuard {
             active: Arc::clone(&self.operation_active),
             cancellation,
+            reservation: None,
+        })
+    }
+
+    pub(crate) fn reserve_operation(&self) -> Result<OperationReservation, CoreError> {
+        self.operation_reserved
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .map_err(|_| CoreError::Busy)?;
+        Ok(OperationReservation {
+            active: Arc::clone(&self.operation_active),
+            reserved: Some(Arc::clone(&self.operation_reserved)),
+            cancellation: Arc::clone(&self.cancellation),
         })
     }
 
@@ -705,11 +722,50 @@ impl AppState {
 pub struct OperationGuard {
     active: Arc<AtomicBool>,
     pub cancellation: CancellationToken,
+    reservation: Option<Arc<AtomicBool>>,
 }
 
 impl Drop for OperationGuard {
     fn drop(&mut self) {
         self.active.store(false, Ordering::SeqCst);
+        if let Some(reservation) = self.reservation.take() {
+            reservation.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
+pub(crate) struct OperationReservation {
+    active: Arc<AtomicBool>,
+    reserved: Option<Arc<AtomicBool>>,
+    cancellation: Arc<Mutex<CancellationToken>>,
+}
+
+impl OperationReservation {
+    pub(crate) async fn acquire(mut self) -> OperationGuard {
+        loop {
+            if self
+                .active
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                let cancellation = CancellationToken::default();
+                *self.cancellation.lock() = cancellation.clone();
+                return OperationGuard {
+                    active: Arc::clone(&self.active),
+                    cancellation,
+                    reservation: self.reserved.take(),
+                };
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+}
+
+impl Drop for OperationReservation {
+    fn drop(&mut self) {
+        if let Some(reservation) = self.reserved.take() {
+            reservation.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -861,6 +917,29 @@ mod tests {
         let first = state.begin_operation().unwrap();
         assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
         drop(first);
+        assert!(state.begin_operation().is_ok());
+    }
+
+    #[tokio::test]
+    async fn reserved_operation_waits_for_the_active_run_and_blocks_new_starters() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        let active = state.begin_operation().unwrap();
+        let reservation = state.reserve_operation().unwrap();
+
+        assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
+
+        drop(active);
+        let reserved =
+            tokio::time::timeout(std::time::Duration::from_secs(1), reservation.acquire())
+                .await
+                .expect("the reserved operation should acquire the next slot");
+
+        assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
+        drop(reserved);
         assert!(state.begin_operation().is_ok());
     }
 

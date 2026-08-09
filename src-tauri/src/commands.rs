@@ -71,9 +71,16 @@ pub(crate) async fn choose_destination_for_state(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<AppSnapshotDto, PublicError> {
-    let guard = state.begin_operation().map_err(|error| {
-        reported_core_error(state, "choose_destination", "operation_start", error, None)
+    let reservation = state.reserve_operation().map_err(|error| {
+        reported_core_error(
+            state,
+            "choose_destination",
+            "operation_reservation",
+            error,
+            None,
+        )
     })?;
+    let guard = reservation.acquire().await;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
