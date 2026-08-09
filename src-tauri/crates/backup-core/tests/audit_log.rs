@@ -141,3 +141,19 @@ fn concurrent_writers_append_complete_non_interleaved_events() {
     assert_eq!(output.lines().count(), 16);
     assert!(output.lines().all(|line| line.contains(" scan.complete ")));
 }
+
+#[test]
+fn core_errors_expose_stable_codes_without_private_source_text() {
+    let error = CoreError::CopyFailed(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "/Volumes/private/TX01/secret.wav",
+    ));
+
+    assert_eq!(error.diagnostic_code(), "copy_failed");
+    assert_eq!(
+        error.diagnostic_io_kind(),
+        Some(std::io::ErrorKind::PermissionDenied)
+    );
+    assert_eq!(error.diagnostic_io_kind_code(), Some("permission_denied"));
+    assert!(!error.diagnostic_code().contains("/Volumes/"));
+}

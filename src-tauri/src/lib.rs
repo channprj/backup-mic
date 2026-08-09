@@ -4,6 +4,7 @@ pub mod app_state;
 pub mod artifact_pipeline;
 pub mod commands;
 pub mod dto;
+pub mod failure_reporter;
 pub mod lifecycle;
 pub mod orchestrator;
 pub mod pairing;
@@ -12,8 +13,9 @@ pub mod rescan;
 pub mod tray;
 pub mod window;
 
-use backup_core::ledger::Ledger;
+use backup_core::{error::CoreError, ledger::Ledger};
 use commands::{DESTINATION_SETTING, persisted_destination};
+use failure_reporter::{FailureEvent, FailureReporter};
 use lifecycle::AppLifecycle;
 use tauri::Manager;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
@@ -51,31 +53,48 @@ pub fn run() {
             #[cfg(target_os = "macos")]
             app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-            let app_data = app.path().app_data_dir()?;
-            let documents = app.path().document_dir()?;
-            let mut ledger =
-                Ledger::open(app_data.join("ledger.sqlite3")).map_err(|error| error.to_string())?;
+            let failure_root = app.path().app_log_dir()?;
+            let setup_reporter = FailureReporter::new(&failure_root);
+            let app_data = app.path().app_data_dir().inspect_err(|_| {
+                report_setup_adapter_failure(&setup_reporter, "app_data_resolution");
+            })?;
+            let documents = app.path().document_dir().inspect_err(|_| {
+                report_setup_adapter_failure(&setup_reporter, "documents_resolution");
+            })?;
+            let mut ledger = Ledger::open(app_data.join("ledger.sqlite3"))
+                .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             ledger
                 .mark_interrupted_runs(&orchestrator::now_string())
-                .map_err(|error| error.to_string())?;
+                .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             let (destination, destination_configured) = persisted_destination(
                 ledger
                     .setting(DESTINATION_SETTING)
-                    .map_err(|error| error.to_string())?,
+                    .map_err(|error| report_setup_core_failure(&setup_reporter, error))?,
                 documents.join("DJI-Mic-Mini-2S"),
             );
-            let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
-            let state = app_state::AppState::new(
+            let autostart_enabled = match app.autolaunch().is_enabled() {
+                Ok(enabled) => enabled,
+                Err(_) => {
+                    report_setup_adapter_failure(&setup_reporter, "autostart_read");
+                    false
+                }
+            };
+            let state = app_state::AppState::new_with_failure_root(
                 ledger,
                 destination,
                 destination_configured,
                 autostart_enabled,
+                failure_root,
             )
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             let notification_status = match app.notification().permission_state() {
                 Ok(PermissionState::Granted) => dto::NotificationStatusDto::Granted,
                 Ok(PermissionState::Denied) => dto::NotificationStatusDto::Denied,
-                _ => dto::NotificationStatusDto::Unknown,
+                Ok(_) => dto::NotificationStatusDto::Unknown,
+                Err(_) => {
+                    report_setup_adapter_failure(&setup_reporter, "notification_permission");
+                    dto::NotificationStatusDto::Unknown
+                }
             };
             app.manage(state.clone());
             state.set_notification_status(app.handle(), notification_status);
@@ -83,9 +102,14 @@ pub fn run() {
             let show_initial_setup = state.should_keep_window_open();
             let destination_dialog_state = state.clone();
             let orchestrator = orchestrator::DeviceOrchestrator::start(app.handle().clone(), state)
-                .map_err(|error| format!("device monitor unavailable: {error}"))?;
+                .map_err(|error| {
+                    report_setup_adapter_failure(&setup_reporter, "device_monitor_start");
+                    format!("device monitor unavailable: {error}")
+                })?;
             app.manage(orchestrator);
-            tray::setup(app)?;
+            tray::setup(app).inspect_err(|_| {
+                report_setup_adapter_failure(&setup_reporter, "tray_setup");
+            })?;
             if show_initial_setup {
                 tray::show_popover(app.handle());
             }
@@ -112,6 +136,45 @@ pub fn run() {
             api.prevent_exit();
         }
     });
+}
+
+fn report_setup_core_failure(reporter: &FailureReporter, error: CoreError) -> String {
+    let public = error.public(None);
+    reporter.report(
+        None,
+        local_now(),
+        &FailureEvent {
+            operation: "app_setup",
+            stage: "startup",
+            transmitter: None,
+            item_name: None,
+            error_code: error.diagnostic_code().to_owned(),
+            os_kind: error.diagnostic_io_kind_code().map(str::to_owned),
+            retryable: public.retryable,
+        },
+    );
+    error.to_string()
+}
+
+fn report_setup_adapter_failure(reporter: &FailureReporter, stage: &'static str) {
+    reporter.report(
+        None,
+        local_now(),
+        &FailureEvent {
+            operation: "app_setup",
+            stage,
+            transmitter: None,
+            item_name: None,
+            error_code: "startup_adapter_failed".to_owned(),
+            os_kind: None,
+            retryable: true,
+        },
+    );
+}
+
+fn local_now() -> time::OffsetDateTime {
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    time::OffsetDateTime::now_utc().to_offset(offset)
 }
 
 #[cfg(test)]

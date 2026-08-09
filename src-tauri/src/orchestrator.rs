@@ -24,7 +24,7 @@ use backup_core::{
     destination::{
         DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition, DestinationPlan, plan_recording,
     },
-    error::{CoreError, PublicError},
+    error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
     recording::RecordingObservation,
     scanner::{ScanIssue, ScanResult, metadata_fingerprint, scan_stable},
@@ -85,7 +85,16 @@ impl DeviceOrchestrator {
                             }
                         }
                         Err(RecvTimeoutError::Timeout) => {}
-                        Err(RecvTimeoutError::Disconnected) => break,
+                        Err(RecvTimeoutError::Disconnected) => {
+                            let error = adapter_public_error("device_monitor_disconnected", true);
+                            state.report_public_failure(
+                                "device_lifecycle",
+                                "event_channel",
+                                &error,
+                                None,
+                            );
+                            break;
+                        }
                     }
                     let now = Instant::now();
                     let mounted_roots = state.mounted_roots();
@@ -98,11 +107,22 @@ impl DeviceOrchestrator {
                     }
                     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
                     for (transmitter, root) in &mounted_roots {
-                        if !scheduler.is_mounted(*transmitter)
-                            && let Ok(fingerprint) =
-                                metadata_fingerprint(root, *transmitter, local_offset)
-                        {
-                            scheduler.mount(*transmitter, fingerprint, now);
+                        if !scheduler.is_mounted(*transmitter) {
+                            match metadata_fingerprint(root, *transmitter, local_offset) {
+                                Ok(fingerprint) => {
+                                    scheduler.mount(*transmitter, fingerprint, now);
+                                }
+                                Err(error) => {
+                                    state.report_failure(
+                                        "device_lifecycle",
+                                        "initial_metadata_scan",
+                                        &error,
+                                        Some(*transmitter),
+                                        None,
+                                    );
+                                    state.set_error(&app, error, Some(*transmitter));
+                                }
+                            }
                         }
                     }
                     for transmitter in scheduler.due_transmitters(now) {
@@ -130,6 +150,13 @@ impl DeviceOrchestrator {
                             }
                             Err(error) => {
                                 scheduler.defer(transmitter, now);
+                                state.report_failure(
+                                    "automatic_rescan",
+                                    "metadata_scan",
+                                    &error,
+                                    Some(transmitter),
+                                    None,
+                                );
                                 state.set_error(&app, error, Some(transmitter));
                             }
                         }
@@ -145,6 +172,13 @@ impl DeviceOrchestrator {
                             }
                             Err(CoreError::Busy) => {}
                             Err(error) => {
+                                state.report_failure(
+                                    "automatic_backup",
+                                    "operation_start",
+                                    &error,
+                                    None,
+                                    None,
+                                );
                                 state.set_error(&app, error, None);
                                 scheduler.mark_backup_started();
                                 backup_pending = false;
@@ -183,6 +217,7 @@ pub fn start_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
         .invalidate(ProposalInvalidation::BackupStarted);
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = run_backup(&app, &state, &guard) {
+            state.report_failure("backup_run", "background_operation", &error, None, None);
             state.set_error(&app, error, None);
         }
     });
@@ -238,6 +273,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         ) {
             Ok(scan) => scan,
             Err(error) => {
+                state.report_failure("backup_run", "scan", &error, Some(transmitter), None);
                 let reason = error.public(Some(transmitter)).message_code;
                 let fields = [("reason", AuditValue::Text(&reason))];
                 state.append_audit(
@@ -288,6 +324,13 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         {
             Ok(plans) => plans,
             Err(error) => {
+                state.report_failure(
+                    "backup_run",
+                    "destination_planning",
+                    &error,
+                    Some(transmitter),
+                    None,
+                );
                 failed_transmitters.insert(transmitter);
                 last_error = Some(error.public(Some(transmitter)));
                 mark_transmitter_failed(app, state, transmitter);
@@ -492,50 +535,82 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                                     ("output", AuditValue::Text(output)),
                                     ("mode", AuditValue::Text("artifact_migration")),
                                 ];
-                                if state
-                                    .append_audit(
-                                        &AuditEvent {
-                                            occurred_at: audit_now(),
-                                            level: AuditLevel::Info,
-                                            code: "retirement.preflight",
-                                            transmitter: Some(prepared_tx.transmitter),
-                                            fields: &fields,
-                                        },
-                                        AuditDurability::SyncData,
-                                    )
-                                    .is_ok()
-                                {
-                                    let (level, code, reason) =
-                                        match MacTrash.move_to_trash(&superseded_path) {
-                                            Ok(()) => (
-                                                AuditLevel::Info,
-                                                "retirement.complete",
-                                                "moved_to_trash",
-                                            ),
-                                            Err(_) => (
-                                                AuditLevel::Warning,
-                                                "retirement.refused",
-                                                "trash_failed",
-                                            ),
-                                        };
-                                    let fields = [
-                                        ("output", AuditValue::Text(output)),
-                                        ("mode", AuditValue::Text("artifact_migration")),
-                                        ("reason", AuditValue::Text(reason)),
-                                    ];
-                                    let _ = state.append_audit(
-                                        &AuditEvent {
-                                            occurred_at: audit_now(),
-                                            level,
-                                            code,
-                                            transmitter: Some(prepared_tx.transmitter),
-                                            fields: &fields,
-                                        },
-                                        AuditDurability::Buffered,
-                                    );
+                                match state.append_audit(
+                                    &AuditEvent {
+                                        occurred_at: audit_now(),
+                                        level: AuditLevel::Info,
+                                        code: "retirement.preflight",
+                                        transmitter: Some(prepared_tx.transmitter),
+                                        fields: &fields,
+                                    },
+                                    AuditDurability::SyncData,
+                                ) {
+                                    Ok(_) => {
+                                        let (level, code, reason) =
+                                            match MacTrash.move_to_trash(&superseded_path) {
+                                                Ok(()) => (
+                                                    AuditLevel::Info,
+                                                    "retirement.complete",
+                                                    "moved_to_trash",
+                                                ),
+                                                Err(error) => {
+                                                    state.report_failure(
+                                                        "artifact_migration",
+                                                        "trash",
+                                                        &error,
+                                                        Some(prepared_tx.transmitter),
+                                                        plan.source.relative_path.to_str(),
+                                                    );
+                                                    (
+                                                        AuditLevel::Warning,
+                                                        "retirement.refused",
+                                                        "trash_failed",
+                                                    )
+                                                }
+                                            };
+                                        let fields = [
+                                            ("output", AuditValue::Text(output)),
+                                            ("mode", AuditValue::Text("artifact_migration")),
+                                            ("reason", AuditValue::Text(reason)),
+                                        ];
+                                        if let Err(error) = state.append_audit(
+                                            &AuditEvent {
+                                                occurred_at: audit_now(),
+                                                level,
+                                                code,
+                                                transmitter: Some(prepared_tx.transmitter),
+                                                fields: &fields,
+                                            },
+                                            AuditDurability::Buffered,
+                                        ) {
+                                            state.report_failure(
+                                                "artifact_migration",
+                                                "audit_log",
+                                                &error,
+                                                Some(prepared_tx.transmitter),
+                                                plan.source.relative_path.to_str(),
+                                            );
+                                        }
+                                    }
+                                    Err(error) => {
+                                        state.report_failure(
+                                            "artifact_migration",
+                                            "audit_log",
+                                            &error,
+                                            Some(prepared_tx.transmitter),
+                                            plan.source.relative_path.to_str(),
+                                        );
+                                    }
                                 }
                             }
                             Err(error) => {
+                                state.report_failure(
+                                    "backup_run",
+                                    "conversion",
+                                    &error,
+                                    Some(prepared_tx.transmitter),
+                                    plan.source.relative_path.to_str(),
+                                );
                                 failed_transmitters.insert(prepared_tx.transmitter);
                                 last_error = Some(error.public(Some(prepared_tx.transmitter)));
                                 continue;
@@ -575,6 +650,13 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         },
                         AuditDurability::Buffered,
                     ) {
+                        state.report_failure(
+                            "backup_run",
+                            "audit_log",
+                            &error,
+                            Some(prepared_tx.transmitter),
+                            recording.source_relative_path.to_str(),
+                        );
                         failed_transmitters.insert(prepared_tx.transmitter);
                         last_error = Some(error.public(Some(prepared_tx.transmitter)));
                         continue;
@@ -608,6 +690,13 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                     });
                 }
                 Err(error) => {
+                    state.report_failure(
+                        "backup_run",
+                        "copy_or_verification",
+                        &error,
+                        Some(prepared_tx.transmitter),
+                        plan.source.relative_path.to_str(),
+                    );
                     failed_transmitters.insert(prepared_tx.transmitter);
                     last_error = Some(error.public(Some(prepared_tx.transmitter)));
                     if guard.cancellation.check().is_err() {
@@ -751,11 +840,19 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
 
     for context in legacy_contexts {
         if let Err(error) = reconcile_legacy_sessions(app, state, &context) {
+            state.report_failure(
+                "legacy_session_cleanup",
+                "trash",
+                &error,
+                Some(context.transmitter),
+                None,
+            );
             state.set_error(app, error, Some(context.transmitter));
         }
     }
     for snapshot in automatic_snapshots {
         if let Err(error) = retire_automatically(app, state, snapshot) {
+            state.report_failure("automatic_trash", "trash", &error, None, None);
             state.set_error(app, error, None);
         }
     }
@@ -769,7 +866,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     } else {
         ("partial_failure", ActivitySeverity::Error)
     };
-    let _ = state.record_activity(
+    if let Err(error) = state.record_activity(
         app,
         ActivityEntry {
             occurred_at: finished_at,
@@ -779,7 +876,9 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             byte_value: Some(required_copy_bytes),
             severity,
         },
-    );
+    ) {
+        state.report_failure("backup_run", "activity_persistence", &error, None, None);
+    }
 
     let body = if failed_transmitters.is_empty() {
         if total_files == 0 || required_copy_bytes == 0 {
@@ -790,12 +889,17 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     } else {
         "일부 파일을 백업하지 못했습니다. 원본은 그대로 남아 있습니다."
     };
-    let _ = app
+    if app
         .notification()
         .builder()
         .title("DJI Mic Backup")
         .body(body)
-        .show();
+        .show()
+        .is_err()
+    {
+        let error = adapter_public_error("notification_failed", true);
+        state.report_public_failure("backup_run", "notification", &error, None);
+    }
     Ok(())
 }
 
@@ -843,7 +947,7 @@ fn reconcile_legacy_sessions(
         },
         AuditDurability::SyncData,
     )?;
-    let _ = state.record_activity(
+    if let Err(error) = state.record_activity(
         app,
         ActivityEntry {
             occurred_at: moved_at,
@@ -853,7 +957,15 @@ fn reconcile_legacy_sessions(
             byte_value: None,
             severity: ActivitySeverity::Success,
         },
-    );
+    ) {
+        state.report_failure(
+            "legacy_session_cleanup",
+            "activity_persistence",
+            &error,
+            Some(context.transmitter),
+            None,
+        );
+    }
     Ok(())
 }
 
@@ -947,7 +1059,7 @@ fn retire_automatically(
         },
         AuditDurability::SyncData,
     )?;
-    let _ = state.record_activity(
+    if let Err(error) = state.record_activity(
         app,
         ActivityEntry {
             occurred_at: finished_at,
@@ -966,7 +1078,15 @@ fn retire_automatically(
                 ActivitySeverity::Error
             },
         },
-    );
+    ) {
+        state.report_failure(
+            "automatic_trash",
+            "activity_persistence",
+            &error,
+            Some(transmitter),
+            None,
+        );
+    }
     Ok(())
 }
 
@@ -1162,7 +1282,7 @@ pub fn confirm_trash(
     runtime.snapshot.current_stage = None;
     publish_locked(app, &mut runtime);
     drop(runtime);
-    let _ = state.record_activity(
+    if let Err(error) = state.record_activity(
         app,
         ActivityEntry {
             occurred_at: now_string(),
@@ -1181,7 +1301,15 @@ pub fn confirm_trash(
                 DeletionOutcome::PartiallyDeleted => ActivitySeverity::Error,
             },
         },
-    );
+    ) {
+        state.report_failure(
+            "confirm_trash",
+            "activity_persistence",
+            &error,
+            Some(context.transmitter),
+            None,
+        );
+    }
     let fields = [
         ("files", AuditValue::Unsigned(report.deleted_files)),
         ("bytes", AuditValue::Unsigned(report.deleted_bytes)),
@@ -1289,6 +1417,15 @@ pub(crate) fn now_string() -> String {
 fn audit_now() -> OffsetDateTime {
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     OffsetDateTime::now_utc().to_offset(offset)
+}
+
+fn adapter_public_error(message_code: &str, retryable: bool) -> PublicError {
+    PublicError {
+        code: PublicErrorCode::Internal,
+        message_code: message_code.to_owned(),
+        retryable,
+        transmitter: None,
+    }
 }
 
 #[cfg(test)]

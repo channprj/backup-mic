@@ -87,6 +87,46 @@ pub enum CoreError {
 }
 
 impl CoreError {
+    pub fn diagnostic_code(&self) -> &'static str {
+        match self {
+            Self::IdentityMismatch => "identity_mismatch",
+            Self::SourceChanged => "source_changed",
+            Self::DestinationUnavailable => "destination_unavailable",
+            Self::InsufficientCapacity => "insufficient_capacity",
+            Self::CopyFailed(_) => "copy_failed",
+            Self::SyncFailed(_) => "sync_failed",
+            Self::HashMismatch => "hash_mismatch",
+            Self::ArtifactInvalid => "artifact_validation_failed",
+            Self::AudioToolFailed => "audio_conversion_failed",
+            Self::TrashFailed => "trash_move_failed",
+            Self::DeviceRemoved => "device_removed",
+            Self::LedgerCorrupt => "ledger_corrupt",
+            Self::Ledger(_) | Self::LedgerIo(_) => "ledger_operation_failed",
+            Self::AuditLogUnavailable(_) => "audit_log_unavailable",
+            Self::InvalidAuditEvent => "audit_event_invalid",
+            Self::ProposalExpired => "proposal_expired",
+            Self::ProposalInvalidated => "proposal_invalidated",
+            Self::DeletionPreflightRefused => "deletion_preflight_refused",
+            Self::Busy => "operation_busy",
+            Self::InvalidRequest => "invalid_request",
+            Self::Cancelled => "operation_cancelled",
+        }
+    }
+
+    pub fn diagnostic_io_kind(&self) -> Option<std::io::ErrorKind> {
+        match self {
+            Self::CopyFailed(error)
+            | Self::SyncFailed(error)
+            | Self::LedgerIo(error)
+            | Self::AuditLogUnavailable(error) => Some(error.kind()),
+            _ => None,
+        }
+    }
+
+    pub fn diagnostic_io_kind_code(&self) -> Option<&'static str> {
+        self.diagnostic_io_kind().map(io_kind_code)
+    }
+
     pub fn public(&self, transmitter: Option<Transmitter>) -> PublicError {
         let (code, message_code, retryable) = match self {
             Self::IdentityMismatch => (
@@ -151,5 +191,23 @@ impl CoreError {
             retryable,
             transmitter,
         }
+    }
+}
+
+fn io_kind_code(kind: std::io::ErrorKind) -> &'static str {
+    match kind {
+        std::io::ErrorKind::NotFound => "not_found",
+        std::io::ErrorKind::PermissionDenied => "permission_denied",
+        std::io::ErrorKind::AlreadyExists => "already_exists",
+        std::io::ErrorKind::WouldBlock => "would_block",
+        std::io::ErrorKind::InvalidInput => "invalid_input",
+        std::io::ErrorKind::InvalidData => "invalid_data",
+        std::io::ErrorKind::TimedOut => "timed_out",
+        std::io::ErrorKind::Interrupted => "interrupted",
+        std::io::ErrorKind::UnexpectedEof => "unexpected_eof",
+        std::io::ErrorKind::WriteZero => "write_zero",
+        std::io::ErrorKind::StorageFull => "storage_full",
+        std::io::ErrorKind::ReadOnlyFilesystem => "read_only_filesystem",
+        _ => "other",
     }
 }

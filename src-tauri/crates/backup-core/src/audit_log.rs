@@ -50,13 +50,19 @@ pub trait AuditSink: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct FileAuditLog {
-    destination_root: PathBuf,
+    log_root: PathBuf,
 }
 
 impl FileAuditLog {
     pub fn new(destination_root: impl AsRef<Path>) -> Self {
         Self {
-            destination_root: destination_root.as_ref().to_path_buf(),
+            log_root: destination_root.as_ref().join("logs"),
+        }
+    }
+
+    pub fn new_log_root(log_root: impl AsRef<Path>) -> Self {
+        Self {
+            log_root: log_root.as_ref().to_path_buf(),
         }
     }
 
@@ -64,8 +70,7 @@ impl FileAuditLog {
         let year = occurred_at.year();
         let month = u8::from(occurred_at.month());
         let day = occurred_at.day();
-        self.destination_root
-            .join("logs")
+        self.log_root
             .join(format!("{year:04}"))
             .join(format!("{month:02}"))
             .join(format!(
@@ -126,6 +131,12 @@ fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
                 | "sessions"
                 | "files"
                 | "bytes"
+                | "operation"
+                | "stage"
+                | "error_code"
+                | "os_kind"
+                | "retryable"
+                | "item"
         ) {
             return Err(CoreError::InvalidAuditEvent);
         }

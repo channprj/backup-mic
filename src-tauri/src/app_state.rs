@@ -27,6 +27,7 @@ use crate::{
         AppSnapshotDto, ArtifactFormatDto, BackupSettingsDto, NotificationStatusDto, ProgressDto,
         RetirementModeDto, SetupStateDto, TransmitterSnapshotDto,
     },
+    failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome},
     pairing::{PairingAssignment, PairingManager},
     platform::device_registry::{MountedVolume, VolumeLifecycleEvent},
 };
@@ -55,6 +56,7 @@ pub struct AppState {
     pub(crate) proposals: Arc<Mutex<DeletionProposalStore>>,
     operation_active: Arc<AtomicBool>,
     cancellation: Arc<Mutex<CancellationToken>>,
+    failure_reporter: FailureReporter,
     started: Instant,
 }
 
@@ -64,6 +66,23 @@ impl AppState {
         destination: PathBuf,
         destination_configured: bool,
         autostart_enabled: bool,
+    ) -> Result<Self, CoreError> {
+        let fallback_root = destination.join("fallback-logs");
+        Self::new_with_failure_root(
+            ledger,
+            destination,
+            destination_configured,
+            autostart_enabled,
+            fallback_root,
+        )
+    }
+
+    pub fn new_with_failure_root(
+        ledger: Ledger,
+        destination: PathBuf,
+        destination_configured: bool,
+        autostart_enabled: bool,
+        failure_root: PathBuf,
     ) -> Result<Self, CoreError> {
         let paired = ledger.paired_devices()?;
         let preferences = ledger.read_preferences()?;
@@ -127,6 +146,7 @@ impl AppState {
             proposals: Arc::new(Mutex::new(DeletionProposalStore::default())),
             operation_active: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(Mutex::new(CancellationToken::default())),
+            failure_reporter: FailureReporter::new(failure_root),
             started: Instant::now(),
         })
     }
@@ -157,6 +177,60 @@ impl AppState {
             runtime.destination.clone()
         };
         FileAuditLog::new(destination).append(event, durability)
+    }
+
+    pub fn report_failure(
+        &self,
+        operation: &'static str,
+        stage: &'static str,
+        error: &CoreError,
+        transmitter: Option<Transmitter>,
+        item_name: Option<&str>,
+    ) -> FailureWriteOutcome {
+        let primary_destination = {
+            let runtime = self.runtime.lock();
+            runtime
+                .destination_configured
+                .then(|| runtime.destination.clone())
+        };
+        let public = error.public(transmitter);
+        let event = FailureEvent {
+            operation,
+            stage,
+            transmitter,
+            item_name: sanitize_item_name(item_name),
+            error_code: error.diagnostic_code().to_owned(),
+            os_kind: error.diagnostic_io_kind_code().map(str::to_owned),
+            retryable: public.retryable,
+        };
+        self.failure_reporter
+            .report(primary_destination.as_deref(), local_now(), &event)
+    }
+
+    pub fn report_public_failure(
+        &self,
+        operation: &'static str,
+        stage: &'static str,
+        error: &PublicError,
+        item_name: Option<&str>,
+    ) -> FailureWriteOutcome {
+        let primary_destination = {
+            let runtime = self.runtime.lock();
+            runtime
+                .destination_configured
+                .then(|| runtime.destination.clone())
+        };
+        let event = FailureEvent {
+            operation,
+            stage,
+            transmitter: error.transmitter,
+            item_name: sanitize_item_name(item_name),
+            error_code: error.message_code.clone(),
+            os_kind: None,
+            retryable: error.retryable,
+        };
+        self.failure_reporter
+            .report(primary_destination.as_deref(), local_now(), &event)
     }
 
     pub fn backup_is_ready(&self) -> bool {
@@ -308,10 +382,18 @@ impl AppState {
                 publish_locked(app, &mut runtime);
                 drop(runtime);
                 if let Some(transmitter) = removed {
-                    let _ = self.record_activity(
+                    if let Err(error) = self.record_activity(
                         app,
                         activity_entry("device_removed", transmitter, ActivitySeverity::Warning),
-                    );
+                    ) {
+                        self.report_failure(
+                            "device_lifecycle",
+                            "activity_persistence",
+                            &error,
+                            Some(transmitter),
+                            None,
+                        );
+                    }
                     let fields = [("reason", AuditValue::Text("device_removed"))];
                     if self.runtime.lock().destination_configured
                         && let Err(error) = self.append_audit(
@@ -325,6 +407,13 @@ impl AppState {
                             AuditDurability::Buffered,
                         )
                     {
+                        self.report_failure(
+                            "device_lifecycle",
+                            "audit_log",
+                            &error,
+                            Some(transmitter),
+                            None,
+                        );
                         self.set_error(app, error, Some(transmitter));
                     }
                 }
@@ -339,6 +428,7 @@ impl AppState {
         runtime.observed.insert(volume_uuid, mounted.clone());
         let paired = runtime.paired.clone();
         let result = runtime.pairing.observe(mounted.clone(), &paired);
+        let mut rejected_error = None;
         let trusted = match result {
             DeviceMatch::Trusted(transmitter) => {
                 runtime.mounted.insert(transmitter, mounted);
@@ -352,6 +442,7 @@ impl AppState {
                 Some(transmitter)
             }
             DeviceMatch::Rejected(error) => {
+                rejected_error = Some(error.clone());
                 runtime.snapshot.phase = BackupPhase::Error;
                 runtime.snapshot.message_code = error.message_code.clone();
                 runtime.snapshot.error = Some(error);
@@ -370,11 +461,22 @@ impl AppState {
         });
         publish_locked(app, &mut runtime);
         drop(runtime);
+        if let Some(error) = rejected_error {
+            self.report_public_failure("device_lifecycle", "identity_validation", &error, None);
+        }
         if let Some(transmitter) = trusted {
-            let _ = self.record_activity(
+            if let Err(error) = self.record_activity(
                 app,
                 activity_entry("device_detected", transmitter, ActivitySeverity::Info),
-            );
+            ) {
+                self.report_failure(
+                    "device_lifecycle",
+                    "activity_persistence",
+                    &error,
+                    Some(transmitter),
+                    None,
+                );
+            }
             if self.runtime.lock().destination_configured
                 && let Err(error) = self.append_audit(
                     &AuditEvent {
@@ -387,6 +489,13 @@ impl AppState {
                     AuditDurability::Buffered,
                 )
             {
+                self.report_failure(
+                    "device_lifecycle",
+                    "audit_log",
+                    &error,
+                    Some(transmitter),
+                    None,
+                );
                 self.set_error(app, error, Some(transmitter));
             }
         }
@@ -618,6 +727,14 @@ fn activity_entry(
 fn local_now() -> time::OffsetDateTime {
     let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     time::OffsetDateTime::now_utc().to_offset(offset)
+}
+
+fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
+    item_name
+        .and_then(|item_name| std::path::Path::new(item_name).file_name())
+        .and_then(|item_name| item_name.to_str())
+        .map(|item_name| item_name.chars().take(180).collect())
+        .filter(|item_name: &String| !item_name.is_empty())
 }
 
 #[cfg(test)]

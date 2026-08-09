@@ -100,7 +100,7 @@ fn core_errors_expose_stable_codes_without_private_source_text() {
 
 - [ ] **Step 2: Write a failing integration test for primary and fallback logs**
 
-Create `src-tauri/tests/failure_reporting.rs` with a destination root made unusable by placing a regular file where a directory is expected. Assert the primary success path creates `logs/2026/08/260810-backup-mic.log`; assert the unavailable-primary path creates the same relative log under a temporary fallback root. Read the fallback text and require `operation="set_m4a_conversion"`, `stage="setting_persistence"`, `error_code="ledger_operation_failed"`, and absence of `/Volumes/`, a 64-character hex digest, and raw error prose.
+Create `src-tauri/tests/failure_reporting.rs` with a destination root made unusable by placing a regular file where a directory is expected. Assert the primary success path creates `logs/2026/08/260810-backup-mic.log`; assert the unavailable-primary path creates `2026/08/260810-backup-mic.log` directly under a temporary fallback root. Read the fallback text and require `operation="set_m4a_conversion"`, `stage="setting_persistence"`, `error_code="ledger_operation_failed"`, and absence of `/Volumes/`, a 64-character hex digest, and raw error prose.
 
 - [ ] **Step 3: Run the tests and verify the intended RED failures**
 
