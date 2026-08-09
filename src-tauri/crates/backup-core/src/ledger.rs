@@ -824,7 +824,11 @@ impl Ledger {
                        backup_run_id = ?13,
                        superseded_wav_relative_path = COALESCE(?14, superseded_wav_relative_path),
                        superseded_wav_size = COALESCE(?15, superseded_wav_size),
-                       superseded_wav_sha256 = COALESCE(?16, superseded_wav_sha256)
+                       superseded_wav_sha256 = COALESCE(?16, superseded_wav_sha256),
+                       superseded_wav_retirement_status = CASE
+                           WHEN ?14 IS NOT NULL THEN 'pending'
+                           ELSE superseded_wav_retirement_status
+                       END
                    WHERE id = ?17 AND transmitter = ?18 AND source_relative_path = ?19
                      AND source_size = ?20 AND source_mtime_ns = ?21
                      AND source_sha256 = ?22"#,
@@ -902,9 +906,7 @@ impl Ledger {
                 r#"SELECT id, transmitter, superseded_wav_relative_path,
                           superseded_wav_size, superseded_wav_sha256
                    FROM recordings
-                   WHERE superseded_wav_relative_path IS NOT NULL
-                      OR superseded_wav_size IS NOT NULL
-                      OR superseded_wav_sha256 IS NOT NULL
+                   WHERE superseded_wav_retirement_status = 'pending'
                    ORDER BY superseded_wav_relative_path, id"#,
             )
             .map_err(CoreError::Ledger)?;
@@ -943,18 +945,35 @@ impl Ledger {
         .collect()
     }
 
-    pub fn clear_superseded_wav_evidence(&mut self, recording_id: &str) -> Result<(), CoreError> {
+    pub fn mark_superseded_wav_moved_to_trash(
+        &mut self,
+        recording_id: &str,
+    ) -> Result<(), CoreError> {
+        self.mark_superseded_wav_retired(recording_id, "moved_to_trash")
+    }
+
+    pub fn mark_superseded_wav_absent_after_conversion(
+        &mut self,
+        recording_id: &str,
+    ) -> Result<(), CoreError> {
+        self.mark_superseded_wav_retired(recording_id, "absent_after_conversion")
+    }
+
+    fn mark_superseded_wav_retired(
+        &mut self,
+        recording_id: &str,
+        status: &str,
+    ) -> Result<(), CoreError> {
         let changed = self
             .connection
             .execute(
                 r#"UPDATE recordings
-                   SET superseded_wav_relative_path = NULL,
-                       superseded_wav_size = NULL,
-                       superseded_wav_sha256 = NULL
-                   WHERE id = ?1 AND superseded_wav_relative_path IS NOT NULL
+                   SET superseded_wav_retirement_status = ?2
+                   WHERE id = ?1 AND superseded_wav_retirement_status = 'pending'
+                     AND superseded_wav_relative_path IS NOT NULL
                      AND superseded_wav_size IS NOT NULL
                      AND superseded_wav_sha256 IS NOT NULL"#,
-                [recording_id],
+                params![recording_id, status],
             )
             .map_err(CoreError::Ledger)?;
         if changed != 1 {
@@ -1547,6 +1566,20 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
     if !version_three_applied {
         connection
             .execute_batch(include_str!("../migrations/0003_batch_manifests.sql"))
+            .map_err(CoreError::Ledger)?;
+    }
+    let version_four_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 4)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_four_applied {
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0004_durable_superseded_wav_evidence.sql"
+            ))
             .map_err(CoreError::Ledger)?;
     }
     Ok(())

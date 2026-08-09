@@ -150,8 +150,18 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
         prepared.push(artifact);
     }
     ledger.commit_m4a_barrier(RUN_ID).unwrap();
-    for artifact in &prepared {
+    let retired_wavs = fixture.path().join("retired-wavs");
+    fs::create_dir(&retired_wavs).unwrap();
+    for (index, artifact) in prepared.iter().enumerate() {
         finalize_prepared_m4a(artifact).unwrap();
+        fs::rename(
+            destination.join(&artifact.superseded_wav_relative_path),
+            retired_wavs.join(format!("{index}.wav")),
+        )
+        .unwrap();
+        ledger
+            .mark_superseded_wav_moved_to_trash(&artifact.recording.id)
+            .unwrap();
     }
     ledger
         .finish_backup_run(RUN_ID, "2026-08-10T00:02:00Z", "completed", None)

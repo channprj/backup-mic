@@ -946,7 +946,9 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         state
                             .ledger
                             .lock()
-                            .clear_superseded_wav_evidence(&superseded.recording_id)?;
+                            .mark_superseded_wav_absent_after_conversion(
+                                &superseded.recording_id,
+                            )?;
                         continue;
                     }
                     Err(error) => {
@@ -1013,7 +1015,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 state
                     .ledger
                     .lock()
-                    .clear_superseded_wav_evidence(&superseded.recording_id)?;
+                    .mark_superseded_wav_moved_to_trash(&superseded.recording_id)?;
             }
         }
     }

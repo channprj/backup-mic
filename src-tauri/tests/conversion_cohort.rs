@@ -161,8 +161,16 @@ fn current_and_historical_wavs_form_one_deterministic_all_or_nothing_cohort() {
         std::path::Path::new("2026/2026-08-08/TX01/historical.wav")
     );
     assert_eq!(ledger.pending_superseded_wavs().unwrap().len(), 3);
-    ledger.clear_superseded_wav_evidence("historical").unwrap();
+    ledger
+        .mark_superseded_wav_moved_to_trash("historical")
+        .unwrap();
     assert_eq!(ledger.pending_superseded_wavs().unwrap().len(), 2);
+    assert!(
+        ledger
+            .superseded_wav_evidence("historical")
+            .unwrap()
+            .is_some()
+    );
     assert_eq!(
         ledger.batch_run_evidence("current").unwrap().unwrap().phase,
         BatchPhase::M4aCohortVerified

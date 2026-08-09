@@ -108,14 +108,15 @@ run_sqlite() {
 }
 
 schema_version="$(run_sqlite "$query_ledger" 'SELECT COALESCE(MAX(version), 0) FROM schema_migrations;')"
-if [[ ! "$schema_version" =~ ^[0-9]+$ || "$schema_version" -lt 3 ]]; then
+if [[ ! "$schema_version" =~ ^[0-9]+$ || "$schema_version" -lt 4 ]]; then
   echo "Backup ledger is from an older app version; launch the updated app once first." >&2
   exit 1
 fi
 if ! run_sqlite "$query_ledger" \
   "SELECT batch_phase, frozen_m4a_conversion, m4a_profile_id FROM backup_runs LIMIT 0;
    SELECT classification, artifact_relative_path FROM additional_files LIMIT 0;
-   SELECT profile_id, status FROM conversion_cohort_items LIMIT 0;" >/dev/null 2>&1; then
+   SELECT profile_id, status FROM conversion_cohort_items LIMIT 0;
+   SELECT superseded_wav_retirement_status FROM recordings LIMIT 0;" >/dev/null 2>&1; then
   echo "Backup ledger does not contain complete batch evidence." >&2
   exit 1
 fi
@@ -185,6 +186,7 @@ run_sqlite -separator "$separator" "$query_ledger" \
           COALESCE(r.superseded_wav_relative_path, ''),
           COALESCE(r.superseded_wav_size, ''),
           COALESCE(r.superseded_wav_sha256, ''),
+          r.superseded_wav_retirement_status,
           r.backup_run_id, b.outcome, b.batch_phase, b.frozen_m4a_conversion,
           COALESCE(b.m4a_profile_id, ''),
           COALESCE((SELECT MIN(c.profile_id) FROM conversion_cohort_items c
@@ -208,6 +210,7 @@ while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded
   recorded_source_hash artifact_relative artifact_size artifact_hash artifact_format \
   artifact_codec artifact_sample_rate artifact_channels artifact_valid_frames artifact_duration \
   conversion_status superseded_wav_relative superseded_wav_size superseded_wav_hash \
+  superseded_wav_status \
   backup_run_id run_outcome batch_phase frozen_m4a run_profile cohort_profile cohort_status \
   cohort_count cohort_invalid_count; do
   [[ -n "$recording_id" ]] || continue
@@ -240,15 +243,24 @@ while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded
     m4a)
       case "$artifact_relative" in *.m4a|*.M4A) ;; *) echo "M4A extension verification failed (1 invalid artifact)." >&2; exit 1 ;; esac
       case "$batch_phase" in m4a_cohort_verified|sources_revalidated|completed) ;; *) echo "M4A cohort barrier verification failed (1 invalid run)." >&2; exit 1 ;; esac
+      case "$superseded_wav_status" in
+        moved_to_trash|absent_after_conversion) ;;
+        *) echo "M4A cohort barrier verification failed (1 invalid record)." >&2; exit 1 ;;
+      esac
       if ! is_safe_relative "$superseded_wav_relative" \
         || ! has_wav_extension "$superseded_wav_relative" \
         || [[ "$superseded_wav_size" != "$recorded_source_size" \
           || "$superseded_wav_hash" != "$recorded_source_hash" \
           || "$conversion_status" != "complete" || "$frozen_m4a" != "1" \
-        || "$run_outcome" != "completed" || "$run_profile" != "$PROFILE_ID" \
-        || "$cohort_profile" != "$PROFILE_ID" || "$cohort_status" != "verified_m4a" \
+          || "$run_outcome" != "completed" || "$run_profile" != "$PROFILE_ID" \
+          || "$cohort_profile" != "$PROFILE_ID" || "$cohort_status" != "verified_m4a" \
           || "$cohort_count" != "1" || "$cohort_invalid_count" != "0" ]]; then
         echo "M4A cohort barrier verification failed (1 invalid record)." >&2
+        exit 1
+      fi
+      superseded_wav_path="$destination/$superseded_wav_relative"
+      if [[ -e "$superseded_wav_path" || -L "$superseded_wav_path" ]]; then
+        echo "Superseded WAV retirement verification failed (1 remaining artifact)." >&2
         exit 1
       fi
       afinfo_xml="$temporary/afinfo-$row_index.xml"

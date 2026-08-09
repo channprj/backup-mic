@@ -91,7 +91,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 
 ## 독립 백업 확인
 
-검증 스크립트는 연결된 모든 in-scope WAV와 추가 파일의 SHA-256을 ledger source 증거와 비교합니다. 현재 원본이 휴지통으로 이동된 과거 녹음도 포함해 ledger의 모든 최종 artifact를 다시 해시하며, M4A는 `aac_lc_128k_v1` 코호트 배리어와 `/usr/bin/afinfo -x` 오디오 형상을 함께 대조합니다. 외부 M4A와 AppleDouble은 손실 변환 없이 raw copy의 크기와 SHA-256이 원본 증거와 같아야 합니다. WAV 모드에서만 source와 최종 artifact 해시가 같습니다.
+검증 스크립트는 연결된 모든 in-scope WAV와 추가 파일의 SHA-256을 ledger source 증거와 비교합니다. 현재 원본이 휴지통으로 이동된 과거 녹음도 포함해 ledger의 모든 최종 artifact를 다시 해시하며, M4A는 `aac_lc_128k_v1` 코호트 배리어와 `/usr/bin/afinfo -x` 오디오 형상을 함께 대조합니다. 외부 M4A와 AppleDouble은 손실 변환 없이 raw copy의 크기와 SHA-256이 원본 증거와 같아야 합니다. WAV 모드에서만 source와 최종 artifact 해시가 같습니다. 스키마 v4부터는 변환 전 목적지 WAV의 경로·크기·SHA-256과 휴지통 이동 상태도 삭제하지 않고 보존하므로, 목적지 WAV가 사라진 뒤에도 선복사 사실을 독립적으로 확인할 수 있습니다.
 
 ```bash
 ./scripts/verify-backup.sh \

@@ -202,6 +202,67 @@ fn upgrade_v2_preserves_historical_wav_evidence() {
 }
 
 #[test]
+fn upgrade_v3_restores_durable_evidence_for_already_retired_wavs() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0002_artifacts_and_preferences.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0003_batch_manifests.sql"))
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            INSERT INTO backup_runs(
+                id, started_at, finished_at, outcome, required_copy_bytes,
+                batch_phase, frozen_m4a_conversion, m4a_profile_id
+            ) VALUES (
+                'run-v3', '2026-08-10T00:00:00Z', '2026-08-10T00:01:00Z',
+                'completed', 4, 'm4a_cohort_verified', 1, 'aac_lc_128k_v1'
+            );
+            INSERT INTO recordings(
+                id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                source_sha256, destination_relative_path, destination_size,
+                destination_sha256, verified_at, backup_run_id, artifact_format,
+                artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                artifact_valid_frames, artifact_duration_micros, conversion_status
+            ) VALUES (
+                'recording-v3', 'TX01', 'TX_MIC001_20260810_010203/recording.wav',
+                4, '1',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                '2026/2026-08-10/TX01/recording.m4a', 2,
+                'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                '2026-08-10T00:01:00Z', 'run-v3', 'm4a', 'aac', 48000, 1,
+                48000, 1000000, 'complete'
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let (relative_path, byte_count, sha256) = ledger
+        .superseded_wav_evidence("recording-v3")
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        relative_path,
+        Path::new("2026/2026-08-10/TX01/recording.wav")
+    );
+    assert_eq!(byte_count, 4);
+    assert_eq!(sha256, "a".repeat(64));
+    assert!(ledger.pending_superseded_wavs().unwrap().is_empty());
+}
+
+#[test]
 fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("ledger.sqlite3");
