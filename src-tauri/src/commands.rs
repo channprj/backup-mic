@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 
 use backup_core::{
+    audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue},
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     preferences::PreferenceKey,
@@ -379,7 +380,7 @@ pub fn show_settings(app: AppHandle, state: State<'_, AppState>) -> Result<(), P
 }
 
 #[tauri::command]
-pub fn set_automatic_backup(
+pub async fn set_automatic_backup(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<AppSnapshotDto, PublicError> {
@@ -388,26 +389,21 @@ pub fn set_automatic_backup(
         "set_automatic_backup",
         PreferenceKey::AutomaticBackup,
         enabled,
-        &orchestrator::now_string(),
+        orchestrator::now_string(),
     )
+    .await
 }
 
 #[tauri::command]
-pub fn set_m4a_conversion(
+pub async fn set_m4a_conversion(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<AppSnapshotDto, PublicError> {
-    set_preference_for_state(
-        state.inner(),
-        "set_m4a_conversion",
-        PreferenceKey::M4aConversion,
-        enabled,
-        &orchestrator::now_string(),
-    )
+    set_m4a_conversion_for_state(state.inner(), enabled, orchestrator::now_string()).await
 }
 
 #[tauri::command]
-pub fn set_automatic_trash(
+pub async fn set_automatic_trash(
     state: State<'_, AppState>,
     enabled: bool,
     acknowledged: bool,
@@ -416,8 +412,9 @@ pub fn set_automatic_trash(
         state.inner(),
         enabled,
         acknowledged,
-        &orchestrator::now_string(),
+        orchestrator::now_string(),
     )
+    .await
 }
 
 #[tauri::command]
@@ -445,23 +442,83 @@ pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), Publi
         })
 }
 
-fn set_preference_for_state(
+pub(crate) async fn set_preference_for_state(
     state: &AppState,
     operation: &'static str,
     key: PreferenceKey,
     enabled: bool,
-    occurred_at: &str,
+    occurred_at: String,
 ) -> Result<AppSnapshotDto, PublicError> {
-    state
-        .set_preference(key, enabled, occurred_at)
-        .map_err(|error| reported_core_error(state, operation, "setting_persistence", error, None))
+    let _save_guard = state.preference_save.lock().await;
+    let worker_state = state.clone();
+    let joined = tauri::async_runtime::spawn_blocking(move || {
+        let mut ledger = worker_state.ledger.lock();
+        ledger.set_preference(key, enabled, &occurred_at)?;
+        ledger.read_preferences()
+    })
+    .await
+    .map_err(|_| {
+        reported_public_error(
+            state,
+            operation,
+            "setting_background_join",
+            adapter_error("setting_save_failed", true),
+        )
+    })?;
+    let preferences = joined.map_err(|error| {
+        reported_core_error(state, operation, "setting_persistence", error, None)
+    })?;
+    let snapshot = state.apply_persisted_preferences(preferences);
+    let setting = match key {
+        PreferenceKey::AutomaticBackup => "automatic_backup",
+        PreferenceKey::M4aConversion => "m4a_conversion",
+        PreferenceKey::AutomaticTrash => "automatic_trash",
+    };
+    let applies = if state.operation_is_active() {
+        "next_run"
+    } else {
+        "next_operation"
+    };
+    let fields = [
+        ("setting", AuditValue::Text(setting)),
+        ("enabled", AuditValue::Boolean(enabled)),
+        ("applies", AuditValue::Text(applies)),
+    ];
+    if let Err(error) = state.append_audit(
+        &AuditEvent {
+            occurred_at: local_now(),
+            level: AuditLevel::Info,
+            code: "setting.saved",
+            transmitter: None,
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    ) {
+        state.report_failure(operation, "setting_audit_log", &error, None, None);
+    }
+    Ok(snapshot)
 }
 
-fn set_automatic_trash_for_state(
+pub async fn set_m4a_conversion_for_state(
+    state: &AppState,
+    enabled: bool,
+    occurred_at: String,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_preference_for_state(
+        state,
+        "set_m4a_conversion",
+        PreferenceKey::M4aConversion,
+        enabled,
+        occurred_at,
+    )
+    .await
+}
+
+async fn set_automatic_trash_for_state(
     state: &AppState,
     enabled: bool,
     acknowledged: bool,
-    occurred_at: &str,
+    occurred_at: String,
 ) -> Result<AppSnapshotDto, PublicError> {
     if enabled && !acknowledged {
         return Err(reported_core_error(
@@ -479,6 +536,7 @@ fn set_automatic_trash_for_state(
         enabled,
         occurred_at,
     )
+    .await
 }
 
 #[tauri::command]
@@ -534,6 +592,11 @@ fn adapter_error(message_code: &str, retryable: bool) -> PublicError {
         retryable,
         transmitter: None,
     }
+}
+
+fn local_now() -> time::OffsetDateTime {
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    time::OffsetDateTime::now_utc().to_offset(offset)
 }
 
 fn reported_core_error(
@@ -592,15 +655,17 @@ mod tests {
         }
     }
 
-    #[test]
-    fn automatic_trash_requires_acknowledgement_before_persistence() {
+    #[tokio::test]
+    async fn automatic_trash_requires_acknowledgement_before_persistence() {
         let state_directory = tempfile::tempdir().unwrap();
         let destination = tempfile::tempdir().unwrap();
         let ledger_path = state_directory.path().join("ledger.sqlite3");
         let ledger = backup_core::ledger::Ledger::open(&ledger_path).unwrap();
         let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
 
-        let result = set_automatic_trash_for_state(&state, true, false, "2026-08-09T00:00:00Z");
+        let result =
+            set_automatic_trash_for_state(&state, true, false, "2026-08-09T00:00:00Z".to_owned())
+                .await;
 
         assert_eq!(
             result.unwrap_err().code,

@@ -11,6 +11,7 @@ use std::{
 use backup_core::{
     audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditSink, AuditValue, FileAuditLog},
     backup::CancellationToken,
+    batch::FrozenPreferences,
     deletion::{DeletionCandidate, DeletionProposalStore, ProposalInvalidation},
     device::{DeviceMatch, PairedDevice},
     error::{CoreError, PublicError},
@@ -54,6 +55,7 @@ pub struct AppState {
     pub(crate) runtime: Arc<Mutex<RuntimeState>>,
     pub(crate) ledger: Arc<Mutex<Ledger>>,
     pub(crate) proposals: Arc<Mutex<DeletionProposalStore>>,
+    pub(crate) preference_save: Arc<tokio::sync::Mutex<()>>,
     operation_active: Arc<AtomicBool>,
     cancellation: Arc<Mutex<CancellationToken>>,
     failure_reporter: FailureReporter,
@@ -144,6 +146,7 @@ impl AppState {
             })),
             ledger: Arc::new(Mutex::new(ledger)),
             proposals: Arc::new(Mutex::new(DeletionProposalStore::default())),
+            preference_save: Arc::new(tokio::sync::Mutex::new(())),
             operation_active: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(Mutex::new(CancellationToken::default())),
             failure_reporter: FailureReporter::new(failure_root),
@@ -254,6 +257,15 @@ impl AppState {
         self.runtime.lock().preferences.automatic_trash
     }
 
+    pub fn frozen_preferences(&self) -> FrozenPreferences {
+        let preferences = self.runtime.lock().preferences;
+        FrozenPreferences {
+            automatic_backup: preferences.automatic_backup,
+            m4a_conversion: preferences.m4a_conversion,
+            automatic_trash: preferences.automatic_trash,
+        }
+    }
+
     pub fn set_preference(
         &self,
         key: PreferenceKey,
@@ -291,6 +303,26 @@ impl AppState {
         }
         runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
         Ok(runtime.snapshot.clone())
+    }
+
+    pub fn apply_persisted_preferences(&self, preferences: BackupPreferences) -> AppSnapshotDto {
+        let mut runtime = self.runtime.lock();
+        runtime.preferences = preferences;
+        runtime.snapshot.settings.automatic_backup = preferences.automatic_backup;
+        runtime.snapshot.settings.m4a_conversion = preferences.m4a_conversion;
+        runtime.snapshot.settings.automatic_trash = preferences.automatic_trash;
+        runtime.snapshot.artifact_format = if preferences.m4a_conversion {
+            ArtifactFormatDto::M4a
+        } else {
+            ArtifactFormatDto::Wav
+        };
+        runtime.snapshot.retirement_mode = if preferences.automatic_trash {
+            RetirementModeDto::Automatic
+        } else {
+            RetirementModeDto::Manual
+        };
+        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
+        runtime.snapshot.clone()
     }
 
     pub fn log_directory(&self, occurred_at: time::OffsetDateTime) -> Result<PathBuf, CoreError> {

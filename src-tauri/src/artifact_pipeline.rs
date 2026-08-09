@@ -23,6 +23,14 @@ pub struct M4aPublishResult {
     pub superseded_wav: PathBuf,
 }
 
+pub struct PreparedM4aArtifact {
+    pub recording: VerifiedRecording,
+    pub superseded_wav_relative_path: PathBuf,
+    pub superseded_wav_size: u64,
+    pub superseded_wav_sha256: String,
+    recovery_marker: Option<PathBuf>,
+}
+
 pub fn publish_m4a(
     destination_root: &Path,
     wav: &VerifiedRecording,
@@ -31,6 +39,22 @@ pub fn publish_m4a(
     cancellation: &CancellationToken,
     observer: &mut dyn FnMut(CurrentStage),
 ) -> Result<M4aPublishResult, CoreError> {
+    let prepared = prepare_m4a(destination_root, wav, tools, cancellation, observer)?;
+    ledger.replace_verified_artifact(&prepared.recording)?;
+    finalize_prepared_m4a(&prepared)?;
+    Ok(M4aPublishResult {
+        recording: prepared.recording,
+        superseded_wav: prepared.superseded_wav_relative_path,
+    })
+}
+
+pub fn prepare_m4a(
+    destination_root: &Path,
+    wav: &VerifiedRecording,
+    tools: &dyn AudioTools,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(CurrentStage),
+) -> Result<PreparedM4aArtifact, CoreError> {
     cancellation.check()?;
     if wav.artifact.format != OutputFormat::Wav
         || wav.conversion_status != ConversionStatus::NotRequired
@@ -56,7 +80,6 @@ pub fn publish_m4a(
         &default_relative,
         wav,
         &source_audio,
-        ledger,
         tools,
         cancellation,
         observer,
@@ -123,12 +146,23 @@ pub fn publish_m4a(
     };
     recording.conversion_status = ConversionStatus::Complete;
     recording.conversion_error_code = None;
-    ledger.replace_verified_artifact(&recording)?;
-    cleanup_recovery_marker(&marker_path, parent)?;
-    Ok(M4aPublishResult {
+    Ok(PreparedM4aArtifact {
         recording,
-        superseded_wav: wav.artifact.relative_path.clone(),
+        superseded_wav_relative_path: wav.artifact.relative_path.clone(),
+        superseded_wav_size: wav.artifact.byte_count,
+        superseded_wav_sha256: wav.artifact.sha256.clone(),
+        recovery_marker: Some(marker_path),
     })
+}
+
+pub fn finalize_prepared_m4a(prepared: &PreparedM4aArtifact) -> Result<(), CoreError> {
+    let Some(marker_path) = &prepared.recovery_marker else {
+        return Ok(());
+    };
+    let parent = marker_path
+        .parent()
+        .ok_or(CoreError::DestinationUnavailable)?;
+    cleanup_recovery_marker(marker_path, parent)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -137,11 +171,10 @@ fn recover_finalized_m4a(
     final_relative: &Path,
     wav: &VerifiedRecording,
     source_audio: &backup_core::artifact::AudioDescription,
-    ledger: &mut Ledger,
     tools: &dyn AudioTools,
     cancellation: &CancellationToken,
     observer: &mut dyn FnMut(CurrentStage),
-) -> Result<Option<M4aPublishResult>, CoreError> {
+) -> Result<Option<PreparedM4aArtifact>, CoreError> {
     let final_path = destination_root.join(final_relative);
     let parent = final_path
         .parent()
@@ -180,11 +213,12 @@ fn recover_finalized_m4a(
     };
     recording.conversion_status = ConversionStatus::Complete;
     recording.conversion_error_code = None;
-    ledger.replace_verified_artifact(&recording)?;
-    cleanup_recovery_marker(&marker_path, parent)?;
-    Ok(Some(M4aPublishResult {
+    Ok(Some(PreparedM4aArtifact {
         recording,
-        superseded_wav: wav.artifact.relative_path.clone(),
+        superseded_wav_relative_path: wav.artifact.relative_path.clone(),
+        superseded_wav_size: wav.artifact.byte_count,
+        superseded_wav_sha256: wav.artifact.sha256.clone(),
+        recovery_marker: Some(marker_path),
     }))
 }
 

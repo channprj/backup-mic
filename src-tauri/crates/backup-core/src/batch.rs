@@ -1,4 +1,6 @@
-use crate::error::CoreError;
+use std::{collections::BTreeSet, path::PathBuf};
+
+use crate::{error::CoreError, filesystem::is_safe_additional_relative_path, state::Transmitter};
 
 pub const M4A_PROFILE_ID: &str = "aac_lc_128k_v1";
 
@@ -67,4 +69,71 @@ pub struct BatchRunEvidence {
     pub phase: BatchPhase,
     pub frozen_preferences: FrozenPreferences,
     pub m4a_profile_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum BatchItemKey {
+    Recording {
+        transmitter: Transmitter,
+        relative_path: PathBuf,
+    },
+    Additional {
+        transmitter: Transmitter,
+        relative_path: PathBuf,
+    },
+}
+
+impl BatchItemKey {
+    fn relative_path(&self) -> &PathBuf {
+        match self {
+            Self::Recording { relative_path, .. } | Self::Additional { relative_path, .. } => {
+                relative_path
+            }
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CopyBarrier {
+    expected: BTreeSet<BatchItemKey>,
+    verified: BTreeSet<BatchItemKey>,
+    failed: BTreeSet<BatchItemKey>,
+}
+
+impl CopyBarrier {
+    pub fn new(expected: BTreeSet<BatchItemKey>) -> Result<Self, CoreError> {
+        if expected
+            .iter()
+            .any(|key| !is_safe_additional_relative_path(key.relative_path()))
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(Self {
+            expected,
+            verified: BTreeSet::new(),
+            failed: BTreeSet::new(),
+        })
+    }
+
+    pub fn record_verified(&mut self, key: &BatchItemKey) -> Result<(), CoreError> {
+        if !self.expected.contains(key) || self.verified.contains(key) || self.failed.contains(key)
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        self.verified.insert(key.clone());
+        Ok(())
+    }
+
+    pub fn record_failed(&mut self, key: &BatchItemKey) -> Result<(), CoreError> {
+        if !self.expected.contains(key) || self.verified.contains(key) || self.failed.contains(key)
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        self.failed.insert(key.clone());
+        Ok(())
+    }
+
+    pub fn conversion_allowed(&self) -> bool {
+        self.failed.is_empty() && self.verified == self.expected
+    }
 }

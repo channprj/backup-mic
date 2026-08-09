@@ -127,6 +127,23 @@ pub fn execute_backup_item_observed(
     cancellation: &CancellationToken,
     observer: &mut dyn FnMut(&Progress, crate::state::CurrentStage),
 ) -> Result<VerifiedRecording, CoreError> {
+    let mut verified =
+        prepare_backup_item_observed(context, plan, progress, faults, cancellation, observer)?;
+    faults.check(CopyFaultPoint::LedgerCommit)?;
+    verified.id = ledger.commit_verified_recording(&verified)?;
+    progress.record_verified_file();
+    observer(progress, crate::state::CurrentStage::Sha256Verification);
+    Ok(verified)
+}
+
+pub fn prepare_backup_item_observed(
+    context: &BackupItemContext<'_>,
+    plan: &DestinationPlan,
+    progress: &mut Progress,
+    faults: &dyn CopyFaults,
+    cancellation: &CancellationToken,
+    observer: &mut dyn FnMut(&Progress, crate::state::CurrentStage),
+) -> Result<VerifiedRecording, CoreError> {
     cancellation.check()?;
     if !is_safe_relative_path(&plan.source.relative_path)
         || !is_safe_relative_path(&plan.relative_destination)
@@ -170,7 +187,7 @@ pub fn execute_backup_item_observed(
             observer,
         )?,
     };
-    let mut verified = VerifiedRecording {
+    Ok(VerifiedRecording {
         id: Uuid::new_v4().to_string(),
         transmitter: context.transmitter,
         source_relative_path: plan.source.relative_path.clone(),
@@ -190,12 +207,7 @@ pub fn execute_backup_item_observed(
         retired_session_relative_path: None,
         verified_at: context.verified_at.to_owned(),
         backup_run_id: context.backup_run_id.to_owned(),
-    };
-    faults.check(CopyFaultPoint::LedgerCommit)?;
-    verified.id = ledger.commit_verified_recording(&verified)?;
-    progress.record_verified_file();
-    observer(progress, crate::state::CurrentStage::Sha256Verification);
-    Ok(verified)
+    })
 }
 
 pub fn execute_additional_file_copy(
