@@ -29,6 +29,7 @@ use backup_core::{
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
     hash::hash_file,
+    layout::flatten_verified_recording_layout,
     scanner::{ScanIssue, ScanResult, metadata_fingerprint, scan_stable},
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
 };
@@ -257,6 +258,30 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     }
     std::fs::create_dir_all(&destination).map_err(CoreError::CopyFailed)?;
     cleanup_owned_partials(&destination)?;
+    let layout_migrations = flatten_verified_recording_layout(
+        &destination,
+        &mut state.ledger.lock(),
+        &MacTrash,
+        &guard.cancellation,
+    )?;
+    if !layout_migrations.is_empty() {
+        state.append_audit(
+            &AuditEvent {
+                occurred_at: audit_now(),
+                level: AuditLevel::Info,
+                code: "backup.layout_migrated",
+                transmitter: None,
+                fields: &[(
+                    "count",
+                    AuditValue::Unsigned(
+                        u64::try_from(layout_migrations.len())
+                            .map_err(|_| CoreError::InvalidRequest)?,
+                    ),
+                )],
+            },
+            AuditDurability::SyncData,
+        )?;
+    }
 
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let mut prepared = Vec::new();

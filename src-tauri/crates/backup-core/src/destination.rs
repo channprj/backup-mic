@@ -89,7 +89,7 @@ pub fn plan_additional_file(
 pub fn plan_recording(
     source_root: &Path,
     destination_root: &Path,
-    transmitter: Transmitter,
+    _transmitter: Transmitter,
     source: RecordingObservation,
 ) -> Result<DestinationPlan, CoreError> {
     if !is_safe_relative_path(&source.relative_path)
@@ -108,8 +108,7 @@ pub fn plan_recording(
         return Err(CoreError::SourceChanged);
     }
     let directory = PathBuf::from(source.parsed_name.destination_date.year().to_string())
-        .join(source.parsed_name.destination_date.to_string())
-        .join(transmitter_name(transmitter));
+        .join(source.parsed_name.destination_date.to_string());
     let default_relative = directory.join(&source.file_name);
     if !is_safe_relative_path(&default_relative) {
         return Err(CoreError::InvalidRequest);
@@ -269,7 +268,7 @@ mod tests {
     }
 
     #[test]
-    fn uses_the_approved_date_and_transmitter_layout() {
+    fn stores_all_transmitters_together_in_the_date_folder() {
         let source = tempdir().unwrap();
         let destination = tempdir().unwrap();
         let file_name = "TX01_MIC001_20260809_010203.wav";
@@ -286,7 +285,7 @@ mod tests {
         assert_eq!(plan.disposition, DestinationDisposition::Copy);
         assert_eq!(
             plan.relative_destination,
-            Path::new("2026/2026-08-09/TX01").join(file_name)
+            Path::new("2026/2026-08-09").join(file_name)
         );
     }
 
@@ -296,7 +295,7 @@ mod tests {
         let destination = tempdir().unwrap();
         let file_name = "TX01_MIC001_20260809_010203.wav";
         fs::write(source.path().join(file_name), b"source audio").unwrap();
-        let destination_directory = destination.path().join("2026/2026-08-09/TX01");
+        let destination_directory = destination.path().join("2026/2026-08-09");
         fs::create_dir_all(&destination_directory).unwrap();
         fs::write(destination_directory.join(file_name), b"different audio").unwrap();
 

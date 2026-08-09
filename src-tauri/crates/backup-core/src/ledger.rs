@@ -730,6 +730,72 @@ impl Ledger {
             .map_err(CoreError::Ledger)
     }
 
+    pub fn verified_recordings(&self) -> Result<Vec<VerifiedRecording>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings
+                   ORDER BY destination_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([], row_to_verified_recording)
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| {
+            let recording = row.map_err(CoreError::Ledger)?;
+            validate_verified_recording(&recording).map_err(|_| CoreError::LedgerCorrupt)?;
+            Ok(recording)
+        })
+        .collect()
+    }
+
+    pub fn relocate_verified_artifact(
+        &mut self,
+        recording_id: &str,
+        from_relative_path: &Path,
+        to_relative_path: &Path,
+        byte_count: u64,
+        sha256: &str,
+    ) -> Result<(), CoreError> {
+        if recording_id.is_empty()
+            || from_relative_path == to_relative_path
+            || !crate::filesystem::is_safe_relative_path(from_relative_path)
+            || !crate::filesystem::is_safe_relative_path(to_relative_path)
+            || byte_count == 0
+            || sha256.len() != 64
+            || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE recordings
+                   SET destination_relative_path = ?1
+                   WHERE id = ?2 AND destination_relative_path = ?3
+                     AND destination_size = ?4 AND destination_sha256 = ?5"#,
+                params![
+                    path_text(to_relative_path)?,
+                    recording_id,
+                    path_text(from_relative_path)?,
+                    to_i64(byte_count)?,
+                    sha256,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
     pub fn verified_recording_for_source(
         &self,
         transmitter: Transmitter,
