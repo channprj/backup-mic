@@ -1,4 +1,4 @@
-use std::{fs, path::Path, process::Command};
+use std::{fs, os::unix::fs::PermissionsExt as _, path::Path, process::Command};
 
 use backup_core::{
     additional_file::{AdditionalFileClass, VerifiedAdditionalFile},
@@ -168,12 +168,17 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
         .unwrap();
     drop(ledger);
 
+    let protected_metadata = source.join(".Spotlight-V100");
+    fs::create_dir(&protected_metadata).unwrap();
+    fs::set_permissions(&protected_metadata, fs::Permissions::from_mode(0o000)).unwrap();
     let success = run_verifier(&ledger_path, &destination, &source);
+    fs::set_permissions(&protected_metadata, fs::Permissions::from_mode(0o700)).unwrap();
     assert!(
         success.status.success(),
         "{}",
         String::from_utf8_lossy(&success.stderr)
     );
+    assert!(success.stderr.is_empty());
     let stdout = String::from_utf8_lossy(&success.stdout);
     assert!(stdout.contains("Live source WAV files: 2"));
     assert!(stdout.contains("Live additional files: 2"));

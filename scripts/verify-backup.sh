@@ -366,7 +366,9 @@ while IFS="$separator" read -r transmitter source_root; do
       echo "Live session safety verification failed (1 unsafe entry)." >&2
       exit 1
     fi
-  done < <(find "$source_root" -mindepth 1 \( -type l -o -type p -o -type s -o -type b -o -type c \) -print0)
+  done < <(find "$source_root" -mindepth 1 \
+    \( -type d -path "$source_root/.*" -prune \) -o \
+    \( -type l -o -type p -o -type s -o -type b -o -type c \) -print0)
   while IFS= read -r -d '' nested_directory; do
     nested_relative="${nested_directory#"$source_root"/}"
     first_component="${nested_relative%%/*}"
@@ -374,7 +376,8 @@ while IFS="$separator" read -r transmitter source_root; do
       echo "Live session safety verification failed (1 nested directory)." >&2
       exit 1
     fi
-  done < <(find "$source_root" -mindepth 2 -type d -print0)
+  done < <(find "$source_root" -mindepth 1 \
+    \( -type d -path "$source_root/.*" -prune \) -o -type d -print0)
   while IFS= read -r -d '' source_file; do
     source_relative="${source_file#"$source_root"/}"
     base="$(basename "$source_relative")"
