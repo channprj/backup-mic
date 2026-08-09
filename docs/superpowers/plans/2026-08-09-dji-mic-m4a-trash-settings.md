@@ -624,27 +624,27 @@ Explicitly stage the listed UI, contract, and fixture files. Commit `feat(ui): r
 - Modify: `.agent/implement.md`
 - Modify: `.agent/progress.md`
 
-- [ ] **Step 1: Make independent verification artifact-aware**
+- [x] **Step 1: Make independent verification artifact-aware**
 
 Update `verify-backup.sh` to prove live source WAV SHA-256 against ledger source evidence, final artifact SHA-256 against ledger artifact evidence, and M4A shape through `/usr/bin/afinfo -x`. It must not compare a lossy M4A hash with a WAV hash. Preserve WAV-mode equality checks. Redact paths and hashes from ordinary output unless an explicit diagnostic flag is used.
 
-- [ ] **Step 2: Make the safety fixture prove Trash semantics**
+- [x] **Step 2: Make the safety fixture prove Trash semantics**
 
 Retain the existing script name for compatibility, but update its language and assertions to require `/Volumes/DJI-DELTEST`, a fixture sentinel, recoverable Trash movement, whole-session disappearance from the source location, and absence of production `remove_file`/`remove_dir` disposal calls.
 
-- [ ] **Step 3: Add a recoverable local installer**
+- [x] **Step 3: Add a recoverable local installer**
 
 `install-local.sh` must accept the verified release app, stage it in `mktemp -d`, verify deep strict code signing and bundle identity before touching the current installation, request the running app to quit, move the existing exact app bundle into the private temporary rollback directory, atomically install the staged bundle at `/Users/channprj/Applications/DJI Mic Backup.app`, reverify it, and restore the previous bundle on failure. It must never target `~`, `$HOME`, a workspace root, or a glob for recursive cleanup.
 
-- [ ] **Step 4: Expand the repository check gate**
+- [x] **Step 4: Expand the repository check gate**
 
 Add source scans preventing permanent production deletion, shell-based audio invocation, arbitrary settings IPC, and direct `.Trashes` manipulation. Keep formatting, all Rust tests, Clippy warnings-as-errors, frontend tests, typecheck, and production build.
 
-- [ ] **Step 5: Document the new operational contract**
+- [x] **Step 5: Document the new operational contract**
 
 Update README instructions for defaults, daily log path, mounted-device 15-second detection, M4A verification, manual and automatic Trash behavior, automatic Trash confirmation, empty legacy-session reconciliation, disposable-volume acceptance, and local install/rollback.
 
-- [ ] **Step 6: Run the full source and disposable acceptance gates**
+- [x] **Step 6: Run the full source and disposable acceptance gates**
 
 ```bash
 ./scripts/check.sh
@@ -653,11 +653,11 @@ Update README instructions for defaults, daily log path, mounted-device 15-secon
 
 Expected: source gates pass. The disposable test passes only when the named fixture is mounted; otherwise it exits with the documented skip status and no production volume mutation.
 
-- [ ] **Step 7: Verify the connected production devices read-only**
+- [x] **Step 7: Verify the connected production devices read-only**
 
 Run the independent verifier against TX01 and TX02 without retirement enabled. Confirm any live source has durable source evidence and a valid final artifact. Confirm no app-owned `.part` or staging file remains on the transmitters. Verify the known empty TX02 legacy session is eligible only through the ledger-backed empty-folder rule before allowing the app to move it to Trash.
 
-- [ ] **Step 8: Build release artifacts and verify them**
+- [x] **Step 8: Build release artifacts and verify them**
 
 ```bash
 ./scripts/package-local.sh
@@ -665,7 +665,7 @@ Run the independent verifier against TX01 and TX02 without retirement enabled. C
 
 Verify the `.app` and DMG, architecture, minimum macOS version, bundle identifier, and `codesign --verify --deep --strict` before installation.
 
-- [ ] **Step 9: Install, relaunch, and prove installed parity**
+- [x] **Step 9: Install, relaunch, and prove installed parity**
 
 ```bash
 ./scripts/install-local.sh "src-tauri/target/release/bundle/macos/DJI Mic Backup.app"
@@ -674,7 +674,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 
 Compare SHA-256 of the release and installed executables and require equality. Confirm the installed process path, menu-bar status item, persisted settings, current paired devices, and creation/append of the current daily log under the configured destination.
 
-- [ ] **Step 10: Capture final evidence and commit documentation/scripts**
+- [x] **Step 10: Capture final evidence and commit documentation/scripts**
 
 Record exact commands and outcomes in `.agent/audit.md`, implementation notes in `.agent/implement.md`, and checkpoint hashes in `.agent/progress.md`. Update the approved design status to `Implemented and locally installed` only after the installed runtime proof succeeds. Explicitly stage only the files listed for this task, commit `build: verify and install the m4a backup release`, push, fetch, and prove both parity commands print `0 0`.
 
@@ -682,9 +682,9 @@ Record exact commands and outcomes in `.agent/audit.md`, implementation notes in
 
 ## Final Review Gate
 
-- [ ] Every acceptance criterion in the approved design maps to a passing test or named runtime proof above.
-- [ ] `rg -n "TODO|TBD|todo!|unimplemented!" src src-tauri scripts README.md` reports no unresolved implementation marker.
-- [ ] `cargo fmt --all -- --check`, all Rust tests, Clippy, frontend tests, TypeScript, and production build pass from a clean checkout state.
-- [ ] Production retirement contains no permanent unlink and every manual/automatic action uses the shared revalidation path.
-- [ ] The installed executable is byte-identical to the verified release executable and deep strict code signing passes.
-- [ ] `git status --short` is empty and local/tracking/live-remote parity is `0 0`.
+- [x] Every acceptance criterion in the approved design maps to a passing test or named runtime proof above.
+- [x] `rg -n "TODO|TBD|todo!|unimplemented!" src src-tauri scripts README.md` reports no unresolved implementation marker.
+- [x] `cargo fmt --all -- --check`, all Rust tests, Clippy, frontend tests, TypeScript, and production build pass from a clean checkout state.
+- [x] Production retirement contains no permanent unlink and every manual/automatic action uses the shared revalidation path.
+- [x] The installed executable is byte-identical to the verified release executable and deep strict code signing passes.
+- [x] `git status --short` is empty and local/tracking/live-remote parity is `0 0`.

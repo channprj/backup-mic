@@ -27,6 +27,8 @@ codesign --verify --deep --strict --verbose=2 "$app"
 identifier="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
 minimum_system="$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist")"
 architectures="$(lipo -archs "$executable")"
+executable_hash="$(shasum -a 256 "$executable" | awk '{print $1}')"
+dmg_hash="$(shasum -a 256 "$dmg" | awk '{print $1}')"
 hdiutil verify "$dmg"
 
 if [[ "$identifier" != "com.channprj.DJIMicBackup" ]]; then
@@ -37,9 +39,15 @@ if [[ "$minimum_system" != "13.0" ]]; then
   echo "Unexpected minimum macOS version: $minimum_system" >&2
   exit 1
 fi
+if [[ " $architectures " != *" arm64 "* ]]; then
+  echo "Release executable does not include arm64: $architectures" >&2
+  exit 1
+fi
 
 echo "App: $app"
 echo "DMG: $dmg"
 echo "Identifier: $identifier"
 echo "Minimum macOS: $minimum_system"
 echo "Architectures: $architectures"
+echo "Executable SHA-256: $executable_hash"
+echo "DMG SHA-256: $dmg_hash"

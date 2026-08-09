@@ -15,9 +15,11 @@ use backup_core::{
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
+    scanner::scan_once,
     state::Transmitter,
 };
 use tempfile::tempdir;
+use time::UtcOffset;
 
 const FIXTURE_ROOT: &str = "/Volumes/DJI-DELTEST";
 const MARKER: &str = ".dji-mic-backup-delete-fixture";
@@ -36,7 +38,7 @@ impl TrashAdapter for FixtureTrash {
 
 #[test]
 #[ignore = "requires scripts/accept-deletion-fixture.sh"]
-fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
+fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
     let requested = std::env::var_os("DJI_MIC_DELETION_FIXTURE")
         .map(PathBuf::from)
         .expect("fixture path is required");
@@ -45,7 +47,7 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
     assert_eq!(fixture, PathBuf::from(FIXTURE_ROOT));
     assert_eq!(
         fs::read_to_string(fixture.join(MARKER)).expect("fixture marker is required"),
-        "isolated-fat32-deletion-test\n"
+        "isolated-fat32-trash-test\n"
     );
 
     let source = fixture.join("source");
@@ -54,10 +56,12 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
     fs::create_dir(&source).unwrap();
     fs::create_dir(&destination).unwrap();
 
-    let source_relative = PathBuf::from("TX01_MIC001_20260809_010203.wav");
+    let session_relative = PathBuf::from("TX_MIC001_20260809_010203");
+    let source_relative = session_relative.join("TX01_MIC001_20260809_010203.wav");
     let destination_relative = PathBuf::from("2026/2026-08-09/TX01").join(&source_relative);
     let source_path = source.join(&source_relative);
     let destination_path = destination.join(&destination_relative);
+    fs::create_dir_all(source_path.parent().unwrap()).unwrap();
     fs::create_dir_all(destination_path.parent().unwrap()).unwrap();
     let audio = vec![0x5a; 8 * 1024];
     fs::write(&source_path, &audio).unwrap();
@@ -109,6 +113,20 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
         })
         .unwrap();
 
+    // macOS may materialize AppleDouble metadata beside a file created on a
+    // disposable FAT32 image. Remove only that generated fixture sidecar so
+    // the acceptance session represents the recorder's clean on-device shape.
+    for entry in fs::read_dir(source_path.parent().unwrap()).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.starts_with("._"))
+        {
+            fs::remove_file(entry.path()).unwrap();
+        }
+    }
+
     let context = DeletionContext {
         transmitter: Transmitter::Tx01,
         paired_volume_uuid: "isolated-fat32-fixture".to_owned(),
@@ -118,6 +136,17 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
         source_root: source.clone(),
         destination_root: destination,
     };
+    let observed = scan_once(&source, Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    assert_eq!(observed.recordings.len(), 1);
+    assert_eq!(observed.recordings[0].relative_path, source_relative);
+    assert_eq!(observed.recordings[0].size, candidate.source_size);
+    assert_eq!(
+        observed.recordings[0].modified_nanos,
+        candidate.source_mtime_ns
+    );
+    let canonical_source = fs::canonicalize(&source).unwrap();
+    let canonical_session = fs::canonicalize(source.join(&session_relative)).unwrap();
+    assert_eq!(canonical_session.parent(), Some(canonical_source.as_path()));
     let mut store = DeletionProposalStore::default();
     let proposal = store
         .prepare(
@@ -150,7 +179,13 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
 
     assert_eq!(report.outcome, DeletionOutcome::Deleted);
     assert_eq!(report.deleted_files, 1);
-    assert!(!source_path.exists());
+    assert!(!source.join(&session_relative).exists());
+    let trashed_session = fixture.join("recoverable-trash").join(&session_relative);
+    assert!(trashed_session.is_dir());
+    assert_eq!(
+        fs::read(trashed_session.join("TX01_MIC001_20260809_010203.wav")).unwrap(),
+        audio
+    );
     assert!(destination_path.exists());
     assert_eq!(fs::read(&destination_path).unwrap(), audio);
 }

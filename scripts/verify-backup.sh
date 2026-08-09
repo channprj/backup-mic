@@ -2,55 +2,241 @@
 
 set -euo pipefail
 
-if [[ $# -lt 2 ]]; then
-  echo "Usage: $0 DESTINATION SOURCE_VOLUME [SOURCE_VOLUME ...]" >&2
-  exit 2
-fi
+APP_LEDGER="/Users/channprj/Library/Application Support/com.channprj.DJIMicBackup/ledger.sqlite3"
+diagnostic=0
+ledger="$APP_LEDGER"
 
+usage() {
+  cat >&2 <<'EOF'
+Usage: verify-backup.sh [--diagnostic] [--ledger LEDGER] DESTINATION TX01=SOURCE_VOLUME [TX02=SOURCE_VOLUME]
+
+The default output contains counts only. --diagnostic additionally prints
+relative paths and SHA-256 evidence. The command is read-only.
+EOF
+  exit 2
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --diagnostic)
+      diagnostic=1
+      shift
+      ;;
+    --ledger)
+      [[ $# -ge 2 ]] || usage
+      ledger="$2"
+      shift 2
+      ;;
+    --)
+      shift
+      break
+      ;;
+    -*)
+      usage
+      ;;
+    *)
+      break
+      ;;
+  esac
+done
+
+[[ $# -ge 2 ]] || usage
 destination="$1"
 shift
 
-if [[ ! -d "$destination" ]]; then
-  echo "Backup destination is not a directory." >&2
+if [[ ! -d "$destination" || -L "$destination" ]]; then
+  echo "Backup destination is not a regular directory." >&2
   exit 2
 fi
-for source_root in "$@"; do
-  if [[ ! -d "$source_root" ]]; then
-    echo "A source volume is not mounted." >&2
-    exit 2
-  fi
-done
+if [[ ! -f "$ledger" || -L "$ledger" ]]; then
+  echo "Backup ledger is unavailable." >&2
+  exit 2
+fi
+
+destination="$(cd "$destination" && pwd -P)"
+ledger="$(cd "$(dirname "$ledger")" && pwd -P)/$(basename "$ledger")"
 
 temporary="$(mktemp -d -t dji-mic-verify)"
-trap 'rm -rf "$temporary"' EXIT
-source_hashes="$temporary/source-hashes"
-destination_hashes="$temporary/destination-hashes"
-missing_hashes="$temporary/missing-hashes"
+cleanup() {
+  case "$(basename "$temporary")" in
+    dji-mic-verify.*)
+      rm -rf -- "$temporary"
+      ;;
+    *)
+      echo "Refusing to clean an unexpected verification directory." >&2
+      ;;
+  esac
+}
+trap cleanup EXIT
 
-for source_root in "$@"; do
-  find "$source_root" -type d -name '.*' -prune -o -type f -iname '*.wav' -exec shasum -a 256 {} \;
-done | awk '{print $1}' | LC_ALL=C sort > "$source_hashes"
-
-find "$destination" -type d -name '.*' -prune -o -type f -iname '*.wav' -exec shasum -a 256 {} \; \
-  | awk '{print $1}' \
-  | LC_ALL=C sort > "$destination_hashes"
-
-LC_ALL=C comm -23 "$source_hashes" "$destination_hashes" > "$missing_hashes"
-source_count="$(wc -l < "$source_hashes" | tr -d ' ')"
-destination_count="$(wc -l < "$destination_hashes" | tr -d ' ')"
-missing_count="$(wc -l < "$missing_hashes" | tr -d ' ')"
-
-echo "Source WAV files: $source_count"
-echo "Destination WAV files: $destination_count"
-echo "Missing verified hashes: $missing_count"
-
-if [[ "$source_count" -eq 0 ]]; then
-  echo "No source WAV files were found." >&2
+if [[ "$(sqlite3 -readonly "$ledger" 'PRAGMA quick_check;')" != "ok" ]]; then
+  echo "Backup ledger integrity check failed." >&2
   exit 1
 fi
-if [[ "$missing_count" -ne 0 ]]; then
-  echo "Backup verification failed." >&2
+if ! sqlite3 -readonly "$ledger" \
+  "SELECT artifact_format, retirement_status FROM recordings LIMIT 0;" >/dev/null 2>&1; then
+  echo "Backup ledger is from an older app version; launch the updated app once first." >&2
   exit 1
 fi
 
-echo "Every source WAV has an independently verified destination copy."
+separator=$'\034'
+evidence="$temporary/ledger-evidence"
+sqlite3 -readonly -separator "$separator" "$ledger" \
+  "SELECT transmitter, source_relative_path, source_size, source_sha256,
+          destination_relative_path, destination_size, destination_sha256,
+          artifact_format, COALESCE(artifact_codec, ''),
+          COALESCE(artifact_sample_rate_hz, ''),
+          COALESCE(artifact_channel_count, ''),
+          COALESCE(artifact_valid_frames, ''),
+          COALESCE(artifact_duration_micros, '')
+     FROM recordings
+    ORDER BY verified_at DESC, id DESC;" > "$evidence"
+
+is_safe_relative() {
+  local value="$1"
+  local component
+  [[ -n "$value" && "$value" != /* && "$value" != *$'\n'* && "$value" != *$'\r'* && "$value" != *$'\t'* ]] || return 1
+  case "$value" in
+    *//*) return 1 ;;
+  esac
+  local IFS='/'
+  for component in $value; do
+    [[ -n "$component" && "$component" != "." && "$component" != ".." && "$component" != .* ]] || return 1
+  done
+  return 0
+}
+
+xml_value() {
+  /usr/bin/xmllint --xpath "string($1)" "$2" 2>/dev/null
+}
+
+live_source_count=0
+verified_artifact_count=0
+m4a_count=0
+wav_count=0
+
+for source_spec in "$@"; do
+  case "$source_spec" in
+    TX01=*) transmitter="TX01"; source_root="${source_spec#TX01=}" ;;
+    TX02=*) transmitter="TX02"; source_root="${source_spec#TX02=}" ;;
+    *) echo "Each source must be labeled TX01=PATH or TX02=PATH." >&2; exit 2 ;;
+  esac
+  if [[ ! -d "$source_root" || -L "$source_root" ]]; then
+    echo "A labeled source volume is not mounted as a regular directory." >&2
+    exit 2
+  fi
+  source_root="$(cd "$source_root" && pwd -P)"
+
+  while IFS= read -r -d '' source_file; do
+    live_source_count=$((live_source_count + 1))
+    source_relative="${source_file#"$source_root"/}"
+    if ! is_safe_relative "$source_relative"; then
+      echo "A live source path failed the relative-path safety policy." >&2
+      exit 1
+    fi
+    source_size="$(stat -f '%z' "$source_file")"
+    source_hash="$(shasum -a 256 "$source_file" | awk '{print $1}')"
+    matches="$temporary/matches-$live_source_count"
+    awk -F "$separator" \
+      -v tx="$transmitter" -v path="$source_relative" \
+      -v bytes="$source_size" -v digest="$source_hash" \
+      '$1 == tx && $2 == path && $3 == bytes && $4 == digest { print }' \
+      "$evidence" > "$matches"
+    match_count="$(wc -l < "$matches" | tr -d ' ')"
+    if [[ "$match_count" -ne 1 ]]; then
+      echo "A live source WAV does not have exactly one matching ledger record." >&2
+      [[ "$diagnostic" -eq 0 ]] || echo "source=$transmitter:$source_relative matches=$match_count" >&2
+      exit 1
+    fi
+
+    IFS="$separator" read -r recorded_tx recorded_source recorded_source_size recorded_source_hash \
+      artifact_relative artifact_size artifact_hash artifact_format artifact_codec \
+      artifact_sample_rate artifact_channels artifact_valid_frames artifact_duration < "$matches"
+    if [[ "$recorded_tx" != "$transmitter" || "$recorded_source" != "$source_relative" \
+      || "$recorded_source_size" != "$source_size" || "$recorded_source_hash" != "$source_hash" ]]; then
+      echo "Ledger source evidence changed during verification." >&2
+      exit 1
+    fi
+    if ! is_safe_relative "$artifact_relative"; then
+      echo "A ledger artifact path failed the relative-path safety policy." >&2
+      exit 1
+    fi
+    artifact_path="$destination/$artifact_relative"
+    if [[ ! -f "$artifact_path" || -L "$artifact_path" ]]; then
+      echo "A verified artifact is unavailable or is not a regular file." >&2
+      exit 1
+    fi
+    artifact_parent="$(cd "$(dirname "$artifact_path")" && pwd -P)"
+    case "$artifact_parent/" in
+      "$destination"/*) ;;
+      *) echo "A verified artifact resolved outside the destination." >&2; exit 1 ;;
+    esac
+    actual_artifact_size="$(stat -f '%z' "$artifact_path")"
+    actual_artifact_hash="$(shasum -a 256 "$artifact_path" | awk '{print $1}')"
+    if [[ "$actual_artifact_size" != "$artifact_size" || "$actual_artifact_hash" != "$artifact_hash" ]]; then
+      echo "A final artifact does not match its durable ledger evidence." >&2
+      exit 1
+    fi
+
+    case "$artifact_format" in
+      wav)
+        if [[ "$artifact_size" != "$source_size" || "$artifact_hash" != "$source_hash" ]]; then
+          echo "A WAV artifact does not match its live source WAV." >&2
+          exit 1
+        fi
+        wav_count=$((wav_count + 1))
+        ;;
+      m4a)
+        case "$artifact_relative" in
+          *.m4a|*.M4A) ;;
+          *) echo "An M4A ledger artifact has an unexpected extension." >&2; exit 1 ;;
+        esac
+        afinfo_xml="$temporary/afinfo-$live_source_count.xml"
+        if ! /usr/bin/afinfo -x "$artifact_path" > "$afinfo_xml" 2>/dev/null || [[ ! -s "$afinfo_xml" ]]; then
+          echo "Apple afinfo rejected an M4A artifact." >&2
+          exit 1
+        fi
+        audio_file_xpath="/*[local-name()='audio_info']/*[local-name()='audio_file']"
+        track_xpath="$audio_file_xpath/*[local-name()='tracks']/*[local-name()='track'][1]"
+        container="$(xml_value "$audio_file_xpath/*[local-name()='file_type']" "$afinfo_xml")"
+        codec="$(xml_value "$track_xpath/*[local-name()='format_type']" "$afinfo_xml")"
+        sample_rate="$(xml_value "$track_xpath/*[local-name()='sample_rate']" "$afinfo_xml")"
+        channels="$(xml_value "$track_xpath/*[local-name()='num_channels']" "$afinfo_xml")"
+        audio_bytes="$(xml_value "$track_xpath/*[local-name()='audio_bytes']" "$afinfo_xml")"
+        audio_packets="$(xml_value "$track_xpath/*[local-name()='audio_packets']" "$afinfo_xml")"
+        valid_frames="$(xml_value "$track_xpath/*[local-name()='packet_table_info']/*[local-name()='valid_frames']" "$afinfo_xml")"
+        container="${container//\'/}"
+        container="${container//[[:space:]]/}"
+        codec="${codec//[[:space:]]/}"
+        codec_lower="$(printf '%s' "$codec" | tr '[:upper:]' '[:lower:]')"
+        if [[ "$container" != "m4af" || "$codec_lower" != *aac* \
+          || ! "$audio_bytes" =~ ^[1-9][0-9]*$ || ! "$audio_packets" =~ ^[1-9][0-9]*$ \
+          || "$sample_rate" != "$artifact_sample_rate" || "$channels" != "$artifact_channels" \
+          || "$valid_frames" != "$artifact_valid_frames" \
+          || ! "$artifact_duration" =~ ^[1-9][0-9]*$ || "$artifact_codec" != "$codec" ]]; then
+          echo "An M4A artifact does not match its ledger audio shape." >&2
+          exit 1
+        fi
+        m4a_count=$((m4a_count + 1))
+        ;;
+      *)
+        echo "A ledger artifact has an unsupported format." >&2
+        exit 1
+        ;;
+    esac
+    verified_artifact_count=$((verified_artifact_count + 1))
+    if [[ "$diagnostic" -eq 1 ]]; then
+      echo "verified source=$transmitter:$source_relative source_sha256=$source_hash artifact=$artifact_relative artifact_sha256=$artifact_hash format=$artifact_format"
+    fi
+  done < <(find "$source_root" -type d -name '.*' -prune -o -type f -iname '*.wav' -print0)
+done
+
+echo "Live source WAV files: $live_source_count"
+echo "Ledger-matched final artifacts: $verified_artifact_count"
+echo "Verified WAV artifacts: $wav_count"
+echo "Verified M4A artifacts: $m4a_count"
+if [[ "$live_source_count" -eq 0 ]]; then
+  echo "No live source WAV files required verification."
+else
+  echo "Every live source WAV and its final artifact match durable ledger evidence."
+fi

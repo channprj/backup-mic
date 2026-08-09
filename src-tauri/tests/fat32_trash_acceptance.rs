@@ -17,7 +17,7 @@ fn foundation_moves_a_whole_session_on_the_isolated_fat32_fixture() {
     assert_eq!(fixture, PathBuf::from(FIXTURE_ROOT));
     assert_eq!(
         fs::read_to_string(fixture.join(MARKER)).expect("fixture marker is required"),
-        "isolated-fat32-deletion-test\n"
+        "isolated-fat32-trash-test\n"
     );
     let session = fixture.join("TX_MIC001_20260809_021747");
     assert!(!session.exists());

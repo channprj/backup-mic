@@ -1,7 +1,7 @@
 # DJI Mic Backup M4A, Trash, Logging, and Settings Design
 
 **Date:** 2026-08-09
-**Status:** Approved for implementation
+**Status:** Implemented and locally installed
 **Target platform:** macOS 13 or newer
 **Product:** DJI Mic Backup
 **Relationship to the baseline:** This document supersedes the scheduling, destination-artifact, deletion, settings, and presentation behavior in `2026-08-09-dji-mic-mini-tauri-rust-backup-design.md`. The baseline device-identity, canonical-path, no-clobber, SQLite, and narrow-IPC trust boundaries remain in force.

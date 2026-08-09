@@ -34,11 +34,22 @@ if ! diskutil info "$FIXTURE_MOUNT" | rg -q 'File System Personality:.*MS-DOS FA
   exit 1
 fi
 
-printf 'isolated-fat32-deletion-test\n' > "$FIXTURE_MOUNT/.dji-mic-backup-delete-fixture"
+printf 'isolated-fat32-trash-test\n' > "$FIXTURE_MOUNT/.dji-mic-backup-delete-fixture"
 cd "$PROJECT_ROOT"
+DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
+  cargo test --manifest-path src-tauri/Cargo.toml -p backup-core \
+  --test fat32_deletion_acceptance -- --ignored --exact \
+  moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume
 DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
   cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
   --test fat32_trash_acceptance -- --ignored --exact \
   foundation_moves_a_whole_session_on_the_isolated_fat32_fixture
 
-echo "Isolated FAT32 macOS Trash acceptance passed."
+if rg -n 'remove_file|remove_dir|\.Trashes|Command::|AppleScript|Finder' \
+  src-tauri/crates/backup-core/src/deletion.rs \
+  src-tauri/src/platform/macos/trash.rs; then
+  echo "Production source retirement contains a permanent-delete or Trash-bypass token." >&2
+  exit 1
+fi
+
+echo "Isolated FAT32 recoverable Trash acceptance passed."
