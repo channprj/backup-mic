@@ -1,6 +1,6 @@
 {
   "name": "dji-mic-backup",
-  "version": "0.260810.4",
+  "version": "0.260810.5",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.33.4",
