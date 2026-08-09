@@ -165,7 +165,7 @@ export function SettingsView({
           <p>DJI Mic Backup</p>
           <h1>설정</h1>
         </div>
-        <span>v0.260810.0</span>
+        <span>v0.260810.1</span>
       </header>
 
       {actionError ? (
