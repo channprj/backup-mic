@@ -6,10 +6,12 @@ DJI Mic Mini 2S 케이스를 USB-C로 연결하면 두 송신기의 녹음을 �
 
 - TX01과 TX02를 볼륨 이름이나 마운트 경로가 아닌 페어링된 장치 UUID와 물리 속성으로 식별합니다.
 - 자동 백업과 M4A 변환은 기본으로 켜져 있고, `백업 후 휴지통으로 이동`은 기본으로 꺼져 있습니다.
-- 연결된 녹음이 2초 동안 변하지 않은 일반 WAV 파일인지 확인한 뒤 처리합니다.
+- 연결된 녹음과 같은 세션의 외부 M4A, AppleDouble(`._…`) 및 기타 일반 파일이 2초 동안 변하지 않았는지 확인한 뒤 처리합니다.
 - 장치가 계속 연결되어 있어도 15초마다 파일 메타데이터를 확인하므로 새 녹음을 감지합니다. 변경이 없으면 백업 작업이나 로그를 만들지 않습니다.
-- M4A는 AAC-LC 192 kbps 프로필로 변환하며, `/usr/bin/afinfo -x`로 컨테이너, 코덱, 채널, 샘플레이트, 프레임과 재생 시간을 확인합니다.
-- M4A 변환을 끄면 원본과 SHA-256이 같은 WAV를 최종 산출물로 보관합니다.
+- 모든 새 WAV와 추가 파일을 먼저 백업 폴더로 복사하고 SHA-256으로 검증합니다. 하나라도 실패하면 그 실행에서는 M4A 변환을 시작하지 않습니다.
+- M4A는 백업 폴더의 WAV만 AAC-LC 128 kbps 프로필로 변환하며, `/usr/bin/afinfo -x`로 컨테이너, 코덱, 채널, 샘플레이트, 프레임과 재생 시간을 확인합니다.
+- 새 WAV뿐 아니라 이전 버전이 백업 폴더에 남긴 모든 ledger-검증 WAV도 같은 변환 코호트에 포함합니다.
+- M4A 변환을 끄면 원본과 SHA-256이 같은 WAV를 최종 산출물로 보관하고 외장 디스크 원본에는 수동·자동 휴지통 이동 권한을 부여하지 않습니다.
 - 같은 녹음을 다시 연결하면 ledger와 파일을 재검증하며 중복 복사본을 만들지 않습니다.
 - 네트워크 통신, 클라우드 업로드, 분석 도구, 전사 기능은 없습니다.
 
@@ -21,6 +23,12 @@ DJI Mic Mini 2S 케이스를 USB-C로 연결하면 두 송신기의 녹음을 �
 
 로그에는 절대 원본 경로, 볼륨 UUID, 전체 해시, 제안 ID나 오디오 데이터가 기록되지 않습니다. SQLite ledger가 권위 있는 기록이며, 일일 로그를 쓸 수 없으면 원본 휴지통 이동은 잠깁니다.
 
+백업 위치의 로그를 만들 수 없는 시작·설정·목적지 오류는 다음 사용자 로그 폴더에 같은 개인정보 보호 형식으로 기록됩니다.
+
+```text
+~/Library/Logs/com.channprj.DJIMicBackup/YYYY/MM/YYMMDD-backup-mic.log
+```
+
 ## 빌드와 로컬 설치
 
 요구 사항은 macOS 13 이상과 Apple Silicon Mac입니다. 이 로컬 패키지는 Developer ID 서명이나 공증을 하지 않는 개인용 ad-hoc 빌드입니다.
@@ -28,12 +36,15 @@ DJI Mic Mini 2S 케이스를 USB-C로 연결하면 두 송신기의 녹음을 �
 ```bash
 pnpm install --frozen-lockfile
 ./scripts/check.sh
-./scripts/package-local.sh
-./scripts/install-local.sh "src-tauri/target/release/bundle/macos/DJI Mic Backup.app"
+headatever init 0 --dry-run
+# package.json, Cargo.toml, tauri.conf.json 등의 버전을 미리 맞춘 뒤
+headatever init 0 --push
+./scripts/package-local.sh "$(tr -d '\r\n' < VERSION)"
+./scripts/install-local.sh "src-tauri/target/release/bundle/macos/DJI Mic Backup.app" "$(tr -d '\r\n' < VERSION)"
 open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 ```
 
-패키징 스크립트는 앱과 DMG의 번들 식별자, 최소 macOS 버전, arm64 아키텍처, deep strict 코드 서명, DMG와 SHA-256을 검사합니다.
+`VERSION`은 직접 만들거나 수정하지 않고 Headatever가 생성합니다. Headatever 릴리스 커밋과 annotated tag를 먼저 일반 push한 뒤에만 패키징합니다. 패키징 스크립트는 앱과 DMG의 번들 식별자, `CFBundleShortVersionString`, 최소 macOS 버전, arm64 아키텍처, deep strict 코드 서명, DMG와 SHA-256을 검사합니다.
 
 설치 스크립트는 새 앱을 `/Users/channprj/Applications` 안의 권한이 제한된 임시 디렉터리에 먼저 복사해 검증합니다. 실행 중인 앱에 종료를 요청한 뒤 기존의 정확한 앱 번들을 임시 롤백 위치로 옮기고 새 앱을 원자적으로 설치합니다. 설치 후 검증이나 실행 파일 해시 비교가 실패하면 이전 앱을 복원합니다. 성공하면 이전 앱은 영구 삭제하지 않고 macOS 휴지통으로 이동합니다.
 
@@ -46,7 +57,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 5. 첫 백업이 끝날 때까지 케이스를 분리하지 않습니다.
 6. `백업 검증 완료`와 녹음 수·용량·완료 시간이 표시되는지 확인합니다.
 
-`설정…` 창에서 백업 위치, 자동 백업, M4A 변환, 백업 후 휴지통 이동, 로그인할 때 시작을 바꿀 수 있습니다. 설정은 Rust가 SQLite에 저장한 뒤에만 UI에 확정됩니다. `로그 열기`는 현재 날짜의 로그 폴더를 엽니다.
+`설정…` 창에서 백업 위치, 자동 백업, `WAV 백업 후 M4A로 변환`, 백업 후 휴지통 이동, 로그인할 때 시작을 바꿀 수 있습니다. 설정은 Rust가 SQLite에 저장하고 다시 읽은 뒤에만 UI에 확정됩니다. 백업 중 저장한 설정은 현재 실행을 바꾸지 않고 `다음 백업부터 적용됩니다`. 실패 카드의 안전한 오류 코드와 `로그 열기`로 원인 기록을 바로 확인할 수 있습니다.
 
 ## 원본을 휴지통으로 이동
 
@@ -57,9 +68,9 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 1. 완전히 검증된 송신기의 `휴지통으로 이동`을 누릅니다.
 2. 세션 수, 파일 수와 용량을 확인합니다.
 3. 확인 창에서 다시 `휴지통으로 이동`을 누릅니다.
-4. 앱이 장치 정체성, 마운트/스캔 세대, 현재 원본 전체, source SHA-256, 최종 artifact SHA-256과 오디오 형상, ledger와 일일 로그를 다시 확인합니다.
+4. 앱이 장치 정체성, 마운트/스캔 세대, 현재 원본 전체, source SHA-256, 최종 artifact SHA-256과 오디오 형상, 128kbps run barrier, ledger와 일일 로그를 다시 확인합니다.
 
-`TX_MIC001_20260809_021747`처럼 인식된 세션 폴더에는 검증된 WAV만 있어야 합니다. 조건을 만족하면 개별 WAV가 아니라 폴더 전체를 한 항목으로 외장 볼륨의 macOS 휴지통에 이동하므로 폴더 구조까지 복구할 수 있습니다. 숨김 파일, 알 수 없는 파일, 하위 폴더, 심볼릭 링크가 하나라도 있으면 세션 전체를 그대로 두고 거부합니다. 세션 밖의 검증된 루트 WAV는 파일별로 휴지통에 이동합니다.
+`TX_MIC001_20260809_021747`처럼 인식된 세션 폴더의 WAV, 외부 M4A, AppleDouble 및 기타 일반 파일은 각각 백업·검증 증거를 가져야 합니다. 조건을 만족하면 개별 파일이 아니라 폴더 전체를 한 항목으로 외장 볼륨의 macOS 휴지통에 이동하므로 빈 원본 폴더를 남기지 않고 폴더 구조까지 복구할 수 있습니다. 백업 후 새로 생기거나 바뀐 파일, 하위 폴더, 심볼릭 링크가 하나라도 있으면 세션 전체를 그대로 두고 거부합니다. 세션 밖의 검증된 루트 WAV는 파일별로 휴지통에 이동합니다.
 
 자동 정리를 켜면 TX01과 TX02가 서로 독립적으로 처리됩니다. 한 송신기의 전체 snapshot이 끝났더라도 다른 송신기의 실패 상태를 덮어쓰지 않습니다. 앱은 Finder, AppleScript, 셸, `rm` 또는 `.Trashes` 직접 조작 없이 Foundation의 macOS Trash API만 사용하며 휴지통을 비우지 않습니다.
 
@@ -70,6 +81,8 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 ## 장애와 복구
 
 - 백업 중 장치가 분리되거나 파일이 바뀌면 원본은 유지되고 다음 15초 검사나 다음 연결에서 다시 시도합니다.
+- 복사, ledger, 로그, Apple 변환, M4A 검증, 원본 재검증 또는 휴지통 이동이 실패하면 안전한 단계와 오류 코드가 기본 또는 fallback 로그에 남습니다.
+- 전체 복사 배리어나 전체 M4A 코호트가 완료되지 않으면 어느 송신기의 원본에도 휴지통 이동 권한이 생기지 않습니다.
 - 앱이 소유한 `.part-<uuid>`, staging WAV와 recovery marker만 제한적으로 복구·정리합니다. 기존 대상 파일은 덮어쓰지 않습니다.
 - 앱이 강제 종료되면 진행 중 작업은 중단으로 기록되고 다음 실행에서 안전하게 재검증합니다.
 - ledger가 손상되면 격리한 뒤 새 기록을 만들며, 원본 휴지통 이동은 artifact를 다시 색인할 때까지 잠깁니다.
@@ -78,7 +91,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 
 ## 독립 백업 확인
 
-검증 스크립트는 live source WAV의 SHA-256을 ledger의 source 증거와 비교하고, 최종 artifact의 SHA-256을 별도의 artifact 증거와 비교합니다. WAV 모드에서만 source와 artifact 해시가 같아야 합니다. M4A 모드는 손실 압축이므로 두 해시를 비교하지 않고 `/usr/bin/afinfo -x`의 오디오 형상을 ledger와 대조합니다.
+검증 스크립트는 연결된 모든 in-scope WAV와 추가 파일의 SHA-256을 ledger source 증거와 비교합니다. 현재 원본이 휴지통으로 이동된 과거 녹음도 포함해 ledger의 모든 최종 artifact를 다시 해시하며, M4A는 `aac_lc_128k_v1` 코호트 배리어와 `/usr/bin/afinfo -x` 오디오 형상을 함께 대조합니다. 외부 M4A와 AppleDouble은 손실 변환 없이 raw copy의 크기와 SHA-256이 원본 증거와 같아야 합니다. WAV 모드에서만 source와 최종 artifact 해시가 같습니다.
 
 ```bash
 ./scripts/verify-backup.sh \
@@ -87,7 +100,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
   "TX02=/Volumes/DJI-MIC-2"
 ```
 
-일반 출력은 경로와 해시를 숨기고 파일 수만 보여 줍니다. 로컬 진단에 꼭 필요할 때만 `--diagnostic`을 추가합니다. 별도 ledger를 검사하려면 `--ledger /absolute/path/to/ledger.sqlite3`를 사용할 수 있습니다. 이 스크립트는 source, destination, ledger를 읽기만 합니다.
+일반 출력은 경로와 해시를 숨기고 파일 수만 보여 줍니다. 누락된 추가 파일, 변조된 M4A, 불완전한 배리어도 경로나 해시 없이 실패합니다. 로컬 진단에 꼭 필요할 때만 `--diagnostic`을 추가합니다. 별도 ledger를 검사하려면 `--ledger /absolute/path/to/ledger.sqlite3`를 사용할 수 있습니다. 이 스크립트는 source, destination, ledger 원본을 변경하지 않으며, 닫힌 WAL ledger가 read-only로 열리지 않을 때는 임시 복사본만 검사합니다.
 
 ## 개발과 안전 수용 테스트
 
@@ -98,9 +111,9 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-`check.sh`는 Rust 포맷/테스트/Clippy, frontend 테스트/typecheck/build와 함께 영구 원본 삭제, 셸 기반 오디오 실행, 임의 settings IPC, `.Trashes` 직접 조작을 검사합니다.
+`check.sh`는 Rust 포맷/테스트/Clippy, frontend 테스트/typecheck/build와 함께 128kbps 명령, 전체 복사 배리어, 변환-off 원본 유지, fallback 로그, 동시 설정 저장, 독립 검증기, 영구 원본 삭제, 셸 기반 오디오 실행, 임의 settings IPC, `.Trashes` 직접 조작을 검사합니다.
 
-`accept-deletion-fixture.sh`는 새 64 MiB MS-DOS FAT32 이미지를 정확히 `/Volumes/DJI-DELTEST`로 마운트하고 sentinel을 기록한 뒤에만 실행됩니다. 테스트는 `TX_MIC…` 세션이 source 위치에서 사라지고 폐기용 이미지 안의 복구 가능 Trash fixture에 폴더 전체로 존재하며 destination이 유지되는지 확인합니다. 이미 같은 이름의 마운트가 있으면 실행을 거부하고, 연결된 `DJI-MIC-1/2`는 대상으로 허용하지 않습니다.
+`accept-deletion-fixture.sh`는 새 64 MiB MS-DOS FAT32 이미지를 정확히 `/Volumes/DJI-DELTEST`로 마운트하고 sentinel을 기록한 뒤에만 실행됩니다. 테스트는 두 PCM WAV, 외부 M4A, 명시적·FAT32 생성 AppleDouble을 모두 백업한 상태에서 한 `TX_MIC…` 세션이 source 위치에서 사라지고 복구 가능 Trash에 폴더 전체로 존재하는지 확인합니다. 생산 Apple 도구로 FAT32 위에서 128kbps M4A를 만들고 검사하며, raw 추가 파일과 destination이 유지되고 ledger 증거가 있는 빈 세션 폴더도 휴지통으로 이동하는지 증명합니다. 이미 같은 이름의 마운트가 있으면 실행을 거부하고, 연결된 `DJI-MIC-1/2`는 대상으로 허용하지 않습니다.
 
 브라우저에서 네이티브 IPC 없이 UI 상태만 확인하려면 `pnpm dev` 실행 후 `preview.html?state=copying`, `complete`, `error`, `pairing`을 엽니다.
 

@@ -42,6 +42,24 @@ if rg -n 'TO''DO|TB''D|todo''!|unimplemented''!' src src-tauri scripts README.md
 fi
 
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
+cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
+  --test apple_audio_tools -- --exact \
+  afconvert_profile_is_exact_aac_lc_128k_without_a_shell_or_old_bitrate
+cargo test --manifest-path src-tauri/Cargo.toml -p backup-core \
+  --test batch_barrier -- --exact \
+  conversion_requires_every_expected_copy_and_verification
+cargo test --manifest-path src-tauri/Cargo.toml -p backup-core \
+  --test run_retirement -- --exact \
+  any_live_backup_or_barrier_mutation_refuses_before_trash
+cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
+  --test failure_reporting -- --exact \
+  failure_reporter_uses_a_privacy_safe_fallback_when_primary_is_unavailable
+cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
+  --test concurrent_settings -- --exact \
+  m4a_setting_saves_while_an_operation_keeps_its_frozen_preferences
+cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
+  --test verify_backup_script -- --exact \
+  independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failures
 cargo test --manifest-path src-tauri/Cargo.toml --workspace --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
 pnpm test

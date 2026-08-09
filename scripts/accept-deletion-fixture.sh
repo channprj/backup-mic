@@ -33,6 +33,19 @@ if ! diskutil info "$FIXTURE_MOUNT" | rg -q 'File System Personality:.*MS-DOS FA
   echo "Deletion fixture is not FAT32." >&2
   exit 1
 fi
+VOLUME_INFO="$FIXTURE_TEMP/volume-info.plist"
+diskutil info -plist "$FIXTURE_MOUNT" > "$VOLUME_INFO"
+if [[ "$(plutil -extract MountPoint raw -o - "$VOLUME_INFO")" != "$FIXTURE_MOUNT" \
+  || "$(plutil -extract VolumeName raw -o - "$VOLUME_INFO")" != "DJI-DELTEST" \
+  || "$(plutil -extract FilesystemName raw -o - "$VOLUME_INFO")" != "MS-DOS FAT32" \
+  || "$(plutil -extract BusProtocol raw -o - "$VOLUME_INFO")" != "Disk Image" \
+  || "$(plutil -extract Internal raw -o - "$VOLUME_INFO")" != "false" \
+  || "$(plutil -extract Removable raw -o - "$VOLUME_INFO")" != "true" \
+  || "$(plutil -extract Ejectable raw -o - "$VOLUME_INFO")" != "true" \
+  || "$(plutil -extract WritableVolume raw -o - "$VOLUME_INFO")" != "true" ]]; then
+  echo "Deletion fixture identity is not the expected writable removable disk image." >&2
+  exit 1
+fi
 
 printf 'isolated-fat32-trash-test\n' > "$FIXTURE_MOUNT/.dji-mic-backup-delete-fixture"
 cd "$PROJECT_ROOT"

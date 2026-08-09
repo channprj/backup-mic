@@ -2,18 +2,31 @@
 
 set -euo pipefail
 
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET_APP="/Users/channprj/Applications/DJI Mic Backup.app"
 TARGET_PARENT="/Users/channprj/Applications"
 EXPECTED_IDENTIFIER="com.channprj.DJIMicBackup"
 EXPECTED_EXECUTABLE="dji-mic-backup"
 EXPECTED_MINIMUM_SYSTEM="13.0"
 
-if [[ $# -ne 1 ]]; then
-  echo "Usage: $0 RELEASE_APP" >&2
+if [[ $# -lt 1 || $# -gt 2 ]]; then
+  echo "Usage: $0 RELEASE_APP [EXPECTED_VERSION]" >&2
   exit 2
 fi
 
 release_app="$1"
+expected_version="${2:-}"
+if [[ -z "$expected_version" ]]; then
+  [[ -f "$PROJECT_ROOT/VERSION" && ! -L "$PROJECT_ROOT/VERSION" ]] || {
+    echo "VERSION is unavailable; run Headatever before installation." >&2
+    exit 2
+  }
+  expected_version="$(tr -d '\r\n' < "$PROJECT_ROOT/VERSION")"
+fi
+if [[ ! "$expected_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+  echo "Expected version is not a valid release version." >&2
+  exit 2
+fi
 if [[ ! -d "$release_app" || -L "$release_app" ]]; then
   echo "Release app is not a regular app bundle." >&2
   exit 2
@@ -22,13 +35,15 @@ release_app="$(cd "$(dirname "$release_app")" && pwd -P)/$(basename "$release_ap
 
 verify_app() {
   local app="$1"
-  local identifier minimum_system executable architectures
+  local identifier bundle_version minimum_system executable architectures
   [[ -d "$app" && ! -L "$app" ]] || return 1
   codesign --verify --deep --strict --verbose=2 "$app"
   identifier="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
+  bundle_version="$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")"
   minimum_system="$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist")"
   executable="$app/Contents/MacOS/$EXPECTED_EXECUTABLE"
-  [[ "$identifier" == "$EXPECTED_IDENTIFIER" && "$minimum_system" == "$EXPECTED_MINIMUM_SYSTEM" \
+  [[ "$identifier" == "$EXPECTED_IDENTIFIER" && "$bundle_version" == "$expected_version" \
+    && "$minimum_system" == "$EXPECTED_MINIMUM_SYSTEM" \
     && -f "$executable" && ! -L "$executable" && -x "$executable" ]] || return 1
   architectures="$(lipo -archs "$executable")"
   [[ " $architectures " == *" arm64 "* ]] || return 1
@@ -134,5 +149,6 @@ rmdir "$install_temp"
 completed=1
 
 echo "Installed app: $TARGET_APP"
+echo "Version: $expected_version"
 echo "Executable SHA-256: $installed_hash"
 echo "The previous app bundle was moved to macOS Trash when one existed."
