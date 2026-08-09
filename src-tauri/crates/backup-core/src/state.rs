@@ -48,6 +48,7 @@ pub enum CurrentStage {
     Sha256Verification,
     Conversion,
     ArtifactVerification,
+    SourceRevalidation,
     Trash,
 }
 

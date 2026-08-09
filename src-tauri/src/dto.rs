@@ -96,6 +96,8 @@ pub struct AppSnapshotDto {
     pub overall_progress: ProgressDto,
     pub transmitters: Vec<TransmitterSnapshotDto>,
     pub current_stage: Option<CurrentStage>,
+    pub failure_stage: Option<CurrentStage>,
+    pub setting_applies_next_run: bool,
     pub current_item_ordinal: Option<u64>,
     pub last_success_at: Option<String>,
     pub artifact_format: ArtifactFormatDto,
@@ -153,6 +155,8 @@ mod tests {
             overall_progress: ProgressDto::from(&Progress::default()),
             transmitters: Vec::new(),
             current_stage: None,
+            failure_stage: None,
+            setting_applies_next_run: false,
             current_item_ordinal: None,
             last_success_at: None,
             artifact_format: ArtifactFormatDto::M4a,
@@ -207,5 +211,13 @@ mod tests {
                 "found {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn source_revalidation_has_a_stable_public_stage_name() {
+        assert_eq!(
+            serde_json::to_value(CurrentStage::SourceRevalidation).unwrap(),
+            "source_revalidation"
+        );
     }
 }

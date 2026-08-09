@@ -58,19 +58,27 @@ interface BackupPopoverProps {
   actions: BackupActions;
 }
 
-function commandMessage(error: unknown) {
+interface ActionError {
+  messageCode: string;
+  title: string;
+  detail: string;
+}
+
+function commandError(error: unknown): ActionError {
   if (typeof error === "object" && error !== null && "message_code" in error) {
-    return errorCopy(String(error.message_code)).detail;
+    const messageCode = String(error.message_code);
+    return { messageCode, ...errorCopy(messageCode) };
   }
-  return "작업을 완료하지 못했습니다. 원본은 그대로 유지됩니다.";
+  const messageCode = "operation_failed";
+  return { messageCode, ...errorCopy(messageCode) };
 }
 
 export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const [pending, setPending] = useState<string | null>(null);
   const [proposal, setProposal] = useState<TrashProposalSummary | null>(null);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ActionError | null>(null);
   const pendingRef = useRef<string | null>(null);
-  const active = activePhases.has(snapshot.phase) || snapshot.current_stage === "trash";
+  const active = activePhases.has(snapshot.phase) || snapshot.current_stage !== null;
   const failed = snapshot.phase === "error" || snapshot.phase === "partial_failure";
   const mountedCount = snapshot.transmitters.filter(({ mounted }) => mounted).length;
 
@@ -103,7 +111,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
     try {
       await operation();
     } catch (error) {
-      setActionError(commandMessage(error));
+      setActionError(commandError(error));
       throw error;
     } finally {
       pendingRef.current = null;
@@ -196,14 +204,21 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
             {!active && !failed ? (
               <SettledStatus snapshot={snapshot} onPrepare={prepare} pending={pending} />
             ) : null}
-            {failed ? <FailureStatus snapshot={snapshot} /> : null}
+            {failed ? (
+              <FailureStatus
+                snapshot={snapshot}
+                busy={pending !== null}
+                onOpenLogs={() => void run("logs", actions.openLogs).catch(() => undefined)}
+              />
+            ) : null}
             <StageSequence snapshot={snapshot} />
             {actionError ? (
-              <Alert variant="destructive">
-                <CircleAlertIcon aria-hidden="true" />
-                <AlertTitle>작업을 완료하지 못했습니다</AlertTitle>
-                <AlertDescription>{actionError}</AlertDescription>
-              </Alert>
+              <FailureAlert
+                failure={actionError}
+                logAvailable={snapshot.current_log_available}
+                busy={pending !== null}
+                onOpenLogs={() => void run("logs", actions.openLogs).catch(() => undefined)}
+              />
             ) : null}
           </section>
 
@@ -292,7 +307,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
       <TrashDialog
         proposal={proposal}
         busy={pending === "confirm-trash"}
-        error={proposal ? actionError : null}
+        error={proposal ? actionError?.detail ?? null : null}
         onOpenChange={(open) => {
           if (!open && pending !== "confirm-trash") {
             setProposal(null);
@@ -340,36 +355,50 @@ function ActiveStatus({ snapshot }: { snapshot: AppSnapshot }) {
 }
 
 const backupStages = [
-  ["copy", "복사"],
-  ["source_verification", "원본 검증"],
-  ["conversion", "M4A 변환"],
-  ["artifact_verification", "M4A 검증"],
+  ["copy", "전체 WAV 복사"],
+  ["source_verification", "WAV 검증"],
+  ["conversion", "128kbps M4A 변환"],
+  ["artifact_verification", "전체 M4A 검증"],
+  ["source_revalidation", "원본 재검증"],
   ["trash", "휴지통 이동"],
 ] as const;
 
 function StageSequence({ snapshot }: { snapshot: AppSnapshot }) {
-  const activeIndex = backupStages.findIndex(([stage]) => stage === snapshot.current_stage);
+  const visibleStage = snapshot.current_stage ?? snapshot.failure_stage;
+  const activeIndex = backupStages.findIndex(([stage]) => stage === visibleStage);
   const backupComplete = ["completed_deletion_pending", "nothing_new"].includes(snapshot.phase);
   return (
-    <ol className="stage-sequence" aria-label="백업 단계">
-      {backupStages.map(([stage, label], index) => {
-        const complete = backupComplete
-          ? stage !== "trash" || snapshot.retirement_mode === "automatic"
-          : activeIndex > index;
-        return (
-          <li
-            key={stage}
-            className={
-              activeIndex === index ? "is-current" : complete ? "is-complete" : undefined
-            }
-            aria-current={activeIndex === index ? "step" : undefined}
-          >
-            <span aria-hidden="true" />
-            {label}
-          </li>
-        );
-      })}
-    </ol>
+    <>
+      <ol className="stage-sequence" aria-label="백업 단계">
+        {backupStages.map(([stage, label], index) => {
+          const complete = backupComplete
+            ? stage !== "trash" || snapshot.retirement_mode === "automatic"
+            : activeIndex > index;
+          const failed = snapshot.failure_stage === stage;
+          return (
+            <li
+              key={stage}
+              className={
+                failed
+                  ? "is-failed"
+                  : activeIndex === index
+                    ? "is-current"
+                    : complete
+                      ? "is-complete"
+                      : undefined
+              }
+              aria-current={activeIndex === index ? "step" : undefined}
+            >
+              <span aria-hidden="true" />
+              {label}
+            </li>
+          );
+        })}
+      </ol>
+      {!snapshot.settings.m4a_conversion ? (
+        <p className="source-retention-note">외장 디스크 원본을 유지합니다</p>
+      ) : null}
+    </>
   );
 }
 
@@ -449,13 +478,57 @@ function SettledStatus({
   );
 }
 
-function FailureStatus({ snapshot }: { snapshot: AppSnapshot }) {
-  const copy = errorCopy(snapshot.error?.message_code ?? snapshot.message_code);
+function FailureStatus({
+  snapshot,
+  busy,
+  onOpenLogs,
+}: {
+  snapshot: AppSnapshot;
+  busy: boolean;
+  onOpenLogs: () => void;
+}) {
+  const messageCode = snapshot.error?.message_code ?? snapshot.message_code;
+  return (
+    <FailureAlert
+      failure={{ messageCode, ...errorCopy(messageCode) }}
+      logAvailable={snapshot.current_log_available}
+      busy={busy}
+      onOpenLogs={onOpenLogs}
+    />
+  );
+}
+
+function FailureAlert({
+  failure,
+  logAvailable,
+  busy,
+  onOpenLogs,
+}: {
+  failure: ActionError;
+  logAvailable: boolean;
+  busy: boolean;
+  onOpenLogs: () => void;
+}) {
   return (
     <Alert variant="destructive">
       <CircleAlertIcon aria-hidden="true" />
-      <AlertTitle>{copy.title}</AlertTitle>
-      <AlertDescription>{copy.detail}</AlertDescription>
+      <AlertTitle>{failure.title}</AlertTitle>
+      <AlertDescription>
+        <p>{failure.detail}</p>
+        <p className="support-code">오류 코드: {failure.messageCode}</p>
+        {logAvailable ? (
+          <Button
+            variant="outline"
+            size="sm"
+            aria-label="오류 로그 열기"
+            disabled={busy}
+            onClick={onOpenLogs}
+          >
+            <FileTextIcon data-icon="inline-start" />
+            로그 열기
+          </Button>
+        ) : null}
+      </AlertDescription>
     </Alert>
   );
 }

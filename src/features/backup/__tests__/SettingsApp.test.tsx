@@ -54,11 +54,31 @@ describe("SettingsView", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("설정을 저장하지 못했습니다");
   });
 
+  it("clears a failed-setting alert after a successful retry and keeps the persisted value", async () => {
+    const { actions } = renderSettings();
+    actions.setAutomaticBackup
+      .mockRejectedValueOnce({ message_code: "settings_persist_failed" })
+      .mockResolvedValueOnce({
+        ...complete,
+        revision: complete.revision + 1,
+        settings: { ...complete.settings, automatic_backup: false },
+      });
+    const toggle = screen.getByRole("switch", { name: "자동으로 백업" });
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
+    expect(toggle).toBeChecked();
+
+    fireEvent.click(toggle);
+    await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+    expect(toggle).not.toBeChecked();
+  });
+
   it("opens the current log and keeps controls keyboard reachable", () => {
     const { actions } = renderSettings();
     const openLogs = screen.getByRole("button", { name: "로그 열기" });
     expect(openLogs).not.toHaveAttribute("tabindex", "-1");
-    expect(screen.getByRole("switch", { name: "M4A로 변환" })).not.toHaveAttribute(
+    expect(screen.getByRole("switch", { name: "WAV 백업 후 M4A로 변환" })).not.toHaveAttribute(
       "tabindex",
       "-1",
     );
@@ -81,7 +101,7 @@ describe("SettingsView", () => {
       }),
     );
     const automatic = screen.getByRole("switch", { name: "자동으로 백업" });
-    const m4a = screen.getByRole("switch", { name: "M4A로 변환" });
+    const m4a = screen.getByRole("switch", { name: "WAV 백업 후 M4A로 변환" });
 
     fireEvent.click(automatic);
     fireEvent.click(m4a);
@@ -111,5 +131,16 @@ describe("SettingsView", () => {
       }),
     );
     await waitFor(() => expect(m4a).not.toBeChecked());
+  });
+
+  it("describes the 128kbps backup-folder conversion and next-run behavior", () => {
+    const { actions, unmount } = renderSettings();
+    const switchControl = screen.getByRole("switch", { name: "WAV 백업 후 M4A로 변환" });
+    expect(switchControl.closest(".settings-row")).toHaveTextContent("AAC-LC 128kbps");
+    expect(switchControl.closest(".settings-row")).toHaveTextContent("백업 폴더");
+    unmount();
+
+    render(<SettingsView snapshot={{ ...complete, setting_applies_next_run: true }} actions={actions} />);
+    expect(screen.getByText("다음 백업부터 적용됩니다")).toBeInTheDocument();
   });
 });

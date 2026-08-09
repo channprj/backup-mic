@@ -40,6 +40,8 @@
     }
   ],
   "current_stage": null,
+  "failure_stage": null,
+  "setting_applies_next_run": false,
   "current_item_ordinal": null,
   "last_success_at": "2026-08-09T02:18:02Z",
   "artifact_format": "m4a",

@@ -28,6 +28,7 @@ export const currentStageSchema = z.enum([
   "source_verification",
   "conversion",
   "artifact_verification",
+  "source_revalidation",
   "trash",
 ]);
 export const backupSettingsSchema = z
@@ -90,6 +91,8 @@ export const appSnapshotSchema = z
     overall_progress: progressSchema,
     transmitters: z.array(transmitterSnapshotSchema).length(2),
     current_stage: currentStageSchema.nullable(),
+    failure_stage: currentStageSchema.nullable(),
+    setting_applies_next_run: z.boolean(),
     current_item_ordinal: z.number().int().positive().nullable(),
     last_success_at: z.string().nullable(),
     artifact_format: z.enum(["wav", "m4a"]),

@@ -32,6 +32,8 @@ const baseSnapshot = {
     deletion_ready: false,
   })),
   current_stage: null,
+  failure_stage: null,
+  setting_applies_next_run: false,
   current_item_ordinal: null,
   last_success_at: null,
   artifact_format: "m4a",
@@ -58,12 +60,13 @@ describe("app snapshot contract", () => {
     expect(trashProposalSummarySchema.safeParse(trashProposal).success).toBe(true);
   });
 
-  test("accepts exactly the five public backup stages", () => {
+  test("accepts exactly the six public backup stages", () => {
     for (const current_stage of [
       "copy",
       "source_verification",
       "conversion",
       "artifact_verification",
+      "source_revalidation",
       "trash",
     ]) {
       expect(appSnapshotSchema.safeParse({ ...baseSnapshot, current_stage }).success).toBe(true);
@@ -78,6 +81,8 @@ describe("app snapshot contract", () => {
     expect(parsed.artifact_format).toBe("m4a");
     expect(parsed.retirement_mode).toBe("manual");
     expect(parsed.current_log_available).toBe(false);
+    expect(parsed.failure_stage).toBeNull();
+    expect(parsed.setting_applies_next_run).toBe(false);
     expect(parsed.settings.automatic_trash).toBe(false);
     expect(parsed.transmitters[0].retirement_outcome).toBe("inactive");
   });
@@ -104,5 +109,25 @@ describe("app snapshot contract", () => {
       source_path: "/Volumes/example/recording.wav",
     });
     expect(result.success).toBe(false);
+  });
+
+  test("keeps fixtures free from sensitive diagnostics and deletion authority", () => {
+    const serialized = JSON.stringify([
+      backupComplete,
+      backupCopying,
+      destinationFull,
+      partialTrash,
+    ]);
+    for (const forbidden of [
+      "/Volumes/",
+      "source_path",
+      "destination_path",
+      "sha256",
+      "device_uuid",
+      "proposal_context",
+      "tool_output",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
   });
 });

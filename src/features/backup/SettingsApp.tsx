@@ -28,11 +28,19 @@ import { useBackupSnapshot } from "./useBackupSnapshot";
 
 type SettingKey = keyof AppSnapshot["settings"];
 
-function commandMessage(error: unknown) {
+interface ActionError {
+  messageCode: string;
+  title: string;
+  detail: string;
+}
+
+function commandError(error: unknown): ActionError {
   if (typeof error === "object" && error !== null && "message_code" in error) {
-    return errorCopy(String(error.message_code)).detail;
+    const messageCode = String(error.message_code);
+    return { messageCode, ...errorCopy(messageCode) };
   }
-  return "변경 전 값으로 되돌렸습니다. 잠시 후 다시 시도해 주세요.";
+  const messageCode = "setting_save_failed";
+  return { messageCode, ...errorCopy(messageCode) };
 }
 
 export function SettingsApp() {
@@ -77,7 +85,7 @@ export function SettingsView({
   const [viewSnapshot, setViewSnapshot] = useState(snapshot);
   const [pending, setPending] = useState<Set<SettingKey>>(new Set());
   const [destinationPending, setDestinationPending] = useState(false);
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<ActionError | null>(null);
   const [confirmAutomaticTrash, setConfirmAutomaticTrash] = useState(false);
 
   useEffect(() => {
@@ -127,7 +135,7 @@ export function SettingsView({
         ...current,
         settings: { ...current.settings, [key]: previous },
       }));
-      setActionError(commandMessage(error));
+      setActionError({ ...commandError(error), title: "설정을 저장하지 못했습니다" });
     } finally {
       markPending(key, false);
     }
@@ -140,7 +148,7 @@ export function SettingsView({
     try {
       setViewSnapshot(await actions.chooseDestination());
     } catch (error) {
-      setActionError(commandMessage(error));
+      setActionError(commandError(error));
     } finally {
       setDestinationPending(false);
     }
@@ -162,8 +170,17 @@ export function SettingsView({
 
       {actionError ? (
         <Alert variant="destructive">
-          <AlertTitle>설정을 저장하지 못했습니다</AlertTitle>
-          <AlertDescription>{actionError}</AlertDescription>
+          <AlertTitle>{actionError.title}</AlertTitle>
+          <AlertDescription>
+            <p>{actionError.detail}</p>
+            <p className="support-code">오류 코드: {actionError.messageCode}</p>
+            {viewSnapshot.current_log_available ? (
+              <Button variant="outline" size="sm" onClick={() => void actions.openLogs()}>
+                <FileTextIcon data-icon="inline-start" />
+                로그 열기
+              </Button>
+            ) : null}
+          </AlertDescription>
         </Alert>
       ) : null}
 
@@ -204,8 +221,8 @@ export function SettingsView({
           />
           <SettingRow
             id="m4a-conversion"
-            label="M4A로 변환"
-            description="AAC-LC · 48kHz · 음성과 일반 녹음에 맞춘 고품질 프로필"
+            label="WAV 백업 후 M4A로 변환"
+            description="백업 폴더의 WAV를 AAC-LC 128kbps M4A로 변환합니다."
             checked={viewSnapshot.settings.m4a_conversion}
             pending={pending.has("m4a_conversion")}
             onChange={(enabled) =>
@@ -214,6 +231,9 @@ export function SettingsView({
               )
             }
           />
+          {viewSnapshot.setting_applies_next_run ? (
+            <p className="settings-status-note is-info">다음 백업부터 적용됩니다</p>
+          ) : null}
         </div>
       </section>
 

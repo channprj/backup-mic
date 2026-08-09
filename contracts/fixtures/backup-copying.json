@@ -40,6 +40,8 @@
     }
   ],
   "current_stage": "copy",
+  "failure_stage": null,
+  "setting_applies_next_run": true,
   "current_item_ordinal": 3,
   "last_success_at": null,
   "artifact_format": "m4a",

@@ -285,8 +285,8 @@ button:not(:disabled):active {
 
 .stage-sequence {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 3px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px 8px;
   margin: 8px 0 0;
   padding: 0;
   list-style: none;
@@ -312,7 +312,8 @@ button:not(:disabled):active {
 }
 
 .stage-sequence li.is-complete,
-.stage-sequence li.is-current {
+.stage-sequence li.is-current,
+.stage-sequence li.is-failed {
   color: var(--foreground);
 }
 
@@ -325,6 +326,29 @@ button:not(:disabled):active {
   border-color: var(--primary);
   background: var(--primary);
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.stage-sequence li.is-failed span {
+  border-color: var(--destructive);
+  background: var(--destructive);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--destructive) 16%, transparent);
+}
+
+.source-retention-note {
+  margin: 8px 0 0;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.support-code {
+  margin-top: 6px;
+  font-family: "SF Mono", ui-monospace, monospace;
+  font-size: 9px;
+  overflow-wrap: anywhere;
+}
+
+[data-slot="alert-description"] > button {
+  margin-top: 8px;
 }
 
 .progress-meta span:last-child,
@@ -829,6 +853,10 @@ button:not(:disabled):active {
   padding: 10px 14px;
   color: var(--warning);
   font-size: 10px;
+}
+
+.settings-status-note.is-info {
+  color: var(--primary);
 }
 
 .settings-shortcuts {

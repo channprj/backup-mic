@@ -50,8 +50,35 @@ describe("BackupPopover", () => {
     expect(screen.getByText("TX01")).toBeInTheDocument();
     expect(screen.getByText("TX02")).toBeInTheDocument();
     expect(screen.getByLabelText("백업 단계")).toHaveTextContent(
-      "복사원본 검증M4A 변환M4A 검증휴지통 이동",
+      "전체 WAV 복사WAV 검증128kbps M4A 변환전체 M4A 검증원본 재검증휴지통 이동",
     );
+  });
+
+  it("explains that disabling conversion retains external-disk originals", () => {
+    renderPopover({
+      ...complete,
+      artifact_format: "wav",
+      settings: { ...complete.settings, m4a_conversion: false },
+    });
+    expect(screen.getByText("외장 디스크 원본을 유지합니다")).toBeInTheDocument();
+  });
+
+  it("shows the failed revalidation stage, safe support code, and current log action", () => {
+    renderPopover({
+      ...error,
+      message_code: "session_contains_unverified_file",
+      failure_stage: "source_revalidation",
+      error: {
+        code: "session_contains_unverified_file",
+        message_code: "session_contains_unverified_file",
+        retryable: true,
+        transmitter: "TX01",
+      },
+    });
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent("세션에 검증되지 않은 파일이 있습니다");
+    expect(alert).toHaveTextContent("오류 코드: session_contains_unverified_file");
+    expect(screen.getByRole("button", { name: "오류 로그 열기" })).toBeEnabled();
   });
 
   it("opens Settings and the current log through narrow commands", async () => {

@@ -111,6 +111,8 @@ impl AppState {
                         transmitter_snapshot(Transmitter::Tx02),
                     ],
                     current_stage: None,
+                    failure_stage: None,
+                    setting_applies_next_run: false,
                     current_item_ordinal: None,
                     last_success_at: None,
                     artifact_format: if preferences.m4a_conversion {
@@ -333,6 +335,7 @@ impl AppState {
         if !preferences.m4a_conversion {
             clear_retirement_authority(&mut runtime);
         }
+        runtime.snapshot.setting_applies_next_run = self.operation_is_active();
         runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
         runtime.snapshot.clone()
     }
@@ -630,7 +633,9 @@ impl AppState {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = public.message_code.clone();
         runtime.snapshot.error = Some(public);
+        runtime.snapshot.failure_stage = runtime.snapshot.current_stage;
         runtime.snapshot.current_stage = None;
+        runtime.snapshot.setting_applies_next_run = false;
         if let Some(transmitter) = transmitter {
             update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
                 snapshot.phase = BackupPhase::Error;
@@ -646,7 +651,9 @@ impl AppState {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = public.message_code.clone();
         runtime.snapshot.error = Some(public);
+        runtime.snapshot.failure_stage = runtime.snapshot.current_stage;
         runtime.snapshot.current_stage = None;
+        runtime.snapshot.setting_applies_next_run = false;
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Refused;
             snapshot.deletion_ready = false;
@@ -955,6 +962,23 @@ mod tests {
         drop(state);
         let reopened = Ledger::open(ledger_path).unwrap();
         assert!(reopened.read_preferences().unwrap().automatic_trash);
+    }
+
+    #[test]
+    fn setting_changed_during_an_operation_is_marked_for_the_next_run() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+        let _operation = state.begin_operation().unwrap();
+
+        let snapshot = state.apply_persisted_preferences(BackupPreferences {
+            automatic_backup: false,
+            ..BackupPreferences::default()
+        });
+
+        assert!(snapshot.setting_applies_next_run);
+        assert!(!snapshot.settings.automatic_backup);
     }
 
     #[test]

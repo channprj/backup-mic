@@ -237,6 +237,8 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         runtime.snapshot.phase = BackupPhase::Scanning;
         runtime.snapshot.message_code = "scanning".to_owned();
         runtime.snapshot.error = None;
+        runtime.snapshot.failure_stage = None;
+        runtime.snapshot.setting_applies_next_run = true;
         for snapshot in &mut runtime.snapshot.transmitters {
             if snapshot.mounted {
                 snapshot.phase = BackupPhase::Scanning;
@@ -852,9 +854,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 runtime.snapshot.message_code = match stage {
                     CurrentStage::Conversion => "converting_m4a",
                     CurrentStage::ArtifactVerification => "verifying_m4a",
-                    CurrentStage::Copy | CurrentStage::Sha256Verification | CurrentStage::Trash => {
-                        "backup_in_progress"
-                    }
+                    CurrentStage::Copy
+                    | CurrentStage::Sha256Verification
+                    | CurrentStage::SourceRevalidation
+                    | CurrentStage::Trash => "backup_in_progress",
                 }
                 .to_owned();
                 runtime.snapshot.current_stage = Some(stage);
@@ -1154,6 +1157,8 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     }
     .to_owned();
     runtime.snapshot.current_stage = None;
+    runtime.snapshot.failure_stage = None;
+    runtime.snapshot.setting_applies_next_run = false;
     runtime.snapshot.current_item_ordinal = None;
     runtime.snapshot.last_success_at = failed_transmitters
         .is_empty()
@@ -1303,7 +1308,7 @@ fn retire_automatically(
     let transmitter = snapshot.context.transmitter;
     {
         let mut runtime = state.runtime.lock();
-        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
+        runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         update_transmitter(&mut runtime.snapshot, transmitter, |transmitter_snapshot| {
             transmitter_snapshot.deletion_phase = DeletionPhase::Revalidating;
         });
@@ -1337,6 +1342,11 @@ fn retire_automatically(
         },
         AuditDurability::SyncData,
     )?;
+    {
+        let mut runtime = state.runtime.lock();
+        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
+        publish_locked(app, &mut runtime);
+    }
     let started_at = now_string();
     let finished_at = now_string();
     let report = state.proposals.lock().confirm(
@@ -1429,7 +1439,7 @@ pub fn prepare_trash(
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Preparing;
         });
-        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
+        runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         publish_locked(app, &mut runtime);
     }
     let (mounted, destination, destination_generation, verified, additional_files, barrier_run) = {
@@ -1549,7 +1559,7 @@ pub fn confirm_trash(
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Revalidating;
         });
-        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
+        runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         let mounted = runtime
             .mounted
             .get(&transmitter)
@@ -1572,6 +1582,7 @@ pub fn confirm_trash(
     let transmitter = context.transmitter;
     let mut observer = move || {
         let mut runtime = state_for_deletion.runtime.lock();
+        runtime.snapshot.current_stage = Some(CurrentStage::Trash);
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Deleting;
         });
