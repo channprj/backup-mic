@@ -16,6 +16,7 @@ use backup_core::{
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     ledger::Ledger,
+    preferences::BackupPreferences,
     state::{BackupPhase, DeletionPhase, Progress, Transmitter},
 };
 use parking_lot::Mutex;
@@ -43,6 +44,7 @@ pub(crate) struct RuntimeState {
     pub scan_generations: HashMap<Transmitter, u64>,
     pub verified: HashMap<Transmitter, Vec<DeletionCandidate>>,
     pub current_source_paths: HashMap<Transmitter, BTreeSet<PathBuf>>,
+    pub preferences: BackupPreferences,
 }
 
 #[derive(Clone)]
@@ -63,6 +65,7 @@ impl AppState {
         autostart_enabled: bool,
     ) -> Result<Self, CoreError> {
         let paired = ledger.paired_devices()?;
+        let preferences = ledger.read_preferences()?;
         let setup_state = if !destination_configured {
             SetupStateDto::NeedsDestination
         } else if paired.len() == 2 {
@@ -101,6 +104,7 @@ impl AppState {
                 scan_generations: HashMap::new(),
                 verified: HashMap::new(),
                 current_source_paths: HashMap::new(),
+                preferences,
             })),
             ledger: Arc::new(Mutex::new(ledger)),
             proposals: Arc::new(Mutex::new(DeletionProposalStore::default())),
@@ -145,6 +149,23 @@ impl AppState {
             runtime.paired.len(),
             runtime.mounted.len(),
         )
+    }
+
+    pub fn automatic_backup_enabled(&self) -> bool {
+        self.runtime.lock().preferences.automatic_backup
+    }
+
+    pub fn operation_is_active(&self) -> bool {
+        self.operation_active.load(Ordering::SeqCst)
+    }
+
+    pub fn mounted_roots(&self) -> HashMap<Transmitter, PathBuf> {
+        self.runtime
+            .lock()
+            .mounted
+            .iter()
+            .map(|(transmitter, mounted)| (*transmitter, mounted.descriptor.mount_root.clone()))
+            .collect()
     }
 
     pub fn cancel_active_operation(&self) {
@@ -264,11 +285,12 @@ impl AppState {
         };
         sync_pairing_snapshot(&mut runtime);
         let should_schedule = trusted.filter(|_| {
-            backup_requirements_met(
-                runtime.destination_configured,
-                runtime.paired.len(),
-                runtime.mounted.len(),
-            )
+            runtime.preferences.automatic_backup
+                && backup_requirements_met(
+                    runtime.destination_configured,
+                    runtime.paired.len(),
+                    runtime.mounted.len(),
+                )
         });
         publish_locked(app, &mut runtime);
         drop(runtime);
@@ -522,6 +544,7 @@ fn local_now() -> time::OffsetDateTime {
 #[cfg(test)]
 mod tests {
     use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
+    use backup_core::preferences::PreferenceKey;
     use tempfile::tempdir;
     use time::macros::datetime;
 
@@ -628,5 +651,23 @@ mod tests {
 
         assert!(matches!(result, Err(CoreError::InvalidRequest)));
         assert!(!destination.path().join("logs").exists());
+    }
+
+    #[test]
+    fn automatic_backup_uses_the_persisted_typed_preference() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let mut ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        ledger
+            .set_preference(
+                PreferenceKey::AutomaticBackup,
+                false,
+                "2026-08-09T00:00:00Z",
+            )
+            .unwrap();
+
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        assert!(!state.automatic_backup_enabled());
     }
 }

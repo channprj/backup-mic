@@ -92,7 +92,7 @@ pub(crate) async fn choose_destination_for_state(
         activity("destination_changed", None, None, ActivitySeverity::Info),
     );
     drop(guard);
-    if state.backup_is_ready() {
+    if state.automatic_backup_enabled() && state.backup_is_ready() {
         match orchestrator::start_backup(app.clone(), state.clone()) {
             Ok(())
             | Err(backup_core::error::CoreError::Busy)
@@ -127,7 +127,7 @@ pub fn pair_devices(
         ),
     );
     drop(guard);
-    if !mounted.is_empty() {
+    if state.automatic_backup_enabled() && !mounted.is_empty() {
         match orchestrator::start_backup(app, state.inner().clone()) {
             Ok(())
             | Err(backup_core::error::CoreError::Busy)

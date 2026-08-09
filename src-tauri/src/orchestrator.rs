@@ -6,6 +6,7 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread::{self, JoinHandle},
+    time::{Duration, Instant},
 };
 
 use backup_core::{
@@ -23,7 +24,7 @@ use backup_core::{
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     recording::RecordingObservation,
-    scanner::{ScanIssue, ScanResult, scan_stable},
+    scanner::{ScanIssue, ScanResult, metadata_fingerprint, scan_stable},
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
 };
 use tauri::AppHandle;
@@ -35,7 +36,10 @@ use crate::{
     app_state::{AppState, OperationGuard, publish_locked, update_transmitter},
     dto::{DeletionProposalSummaryDto, ProgressDto},
     platform::{device_registry::DeviceRegistry, macos::DiskArbitrationMonitor},
+    rescan::{RescanDecision, RescanScheduler},
 };
+
+const RESCAN_INTERVAL: Duration = Duration::from_secs(15);
 
 struct PreparedTransmitter {
     transmitter: Transmitter,
@@ -61,6 +65,7 @@ impl DeviceOrchestrator {
             .name("dji-device-events".to_owned())
             .spawn(move || {
                 let mut registry = DeviceRegistry::default();
+                let mut scheduler = RescanScheduler::new(RESCAN_INTERVAL);
                 let mut backup_pending = false;
                 while !thread_stop.load(Ordering::SeqCst) {
                     match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -74,12 +79,66 @@ impl DeviceOrchestrator {
                         Err(RecvTimeoutError::Timeout) => {}
                         Err(RecvTimeoutError::Disconnected) => break,
                     }
+                    let now = Instant::now();
+                    let mounted_roots = state.mounted_roots();
+                    for transmitter in [Transmitter::Tx01, Transmitter::Tx02] {
+                        if !mounted_roots.contains_key(&transmitter)
+                            && scheduler.is_mounted(transmitter)
+                        {
+                            scheduler.unmount(transmitter);
+                        }
+                    }
+                    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+                    for (transmitter, root) in &mounted_roots {
+                        if !scheduler.is_mounted(*transmitter)
+                            && let Ok(fingerprint) =
+                                metadata_fingerprint(root, *transmitter, local_offset)
+                        {
+                            scheduler.mount(*transmitter, fingerprint, now);
+                        }
+                    }
+                    for transmitter in scheduler.due_transmitters(now) {
+                        if !state.automatic_backup_enabled() {
+                            scheduler.defer(transmitter, now);
+                            continue;
+                        }
+                        let Some(root) = mounted_roots.get(&transmitter) else {
+                            scheduler.unmount(transmitter);
+                            continue;
+                        };
+                        match metadata_fingerprint(root, transmitter, local_offset) {
+                            Ok(fingerprint) => {
+                                if matches!(
+                                    scheduler.observe(
+                                        transmitter,
+                                        fingerprint,
+                                        now,
+                                        state.operation_is_active(),
+                                    ),
+                                    RescanDecision::RequestBackup | RescanDecision::KeepPending
+                                ) {
+                                    backup_pending = true;
+                                }
+                            }
+                            Err(error) => {
+                                scheduler.defer(transmitter, now);
+                                state.set_error(&app, error, Some(transmitter));
+                            }
+                        }
+                    }
+                    if mounted_roots.is_empty() {
+                        backup_pending = false;
+                    }
                     if backup_pending {
                         match start_backup(app.clone(), state.clone()) {
-                            Ok(()) => backup_pending = false,
+                            Ok(()) => {
+                                scheduler.mark_backup_started();
+                                backup_pending = false;
+                            }
                             Err(CoreError::Busy) => {}
                             Err(error) => {
                                 state.set_error(&app, error, None);
+                                scheduler.mark_backup_started();
                                 backup_pending = false;
                             }
                         }

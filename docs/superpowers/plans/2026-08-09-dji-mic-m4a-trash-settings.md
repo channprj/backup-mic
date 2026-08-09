@@ -233,29 +233,29 @@ pub struct RescanScheduler {
 pub enum RescanDecision { Unchanged, RequestBackup, KeepPending }
 ```
 
-- [ ] **Step 1: Add deterministic scheduler tests**
+- [x] **Step 1: Add deterministic scheduler tests**
 
 Prove mount schedules an immediate scan; unchanged metadata at the deadline yields `Unchanged`; added, removed, resized, or modification-time-changed visible WAVs yield one `RequestBackup`; repeated changes while the operation guard is busy preserve exactly one pending request; unmount clears the deadline, fingerprint, and pending authority; and disabling automatic backup prevents deadline work while `지금 백업` remains forceful.
 
-- [ ] **Step 2: Run the focused tests and observe the missing scheduler failure**
+- [x] **Step 2: Run the focused tests and observe the missing scheduler failure**
 
 ```bash
 cargo test -p dji-mic-backup --test rescan_scheduler
 ```
 
-- [ ] **Step 3: Implement metadata-only fingerprints**
+- [x] **Step 3: Implement metadata-only fingerprints**
 
 Reuse canonical scanner policy but do not open or hash audio. Sort `(relative_path, byte_count, modified_at)` deterministically. Hidden paths, symlinks, non-WAV files, and unstable metadata remain outside the fingerprint in the same way they remain outside discovery.
 
-- [ ] **Step 4: Integrate deadline polling and operation coalescing**
+- [x] **Step 4: Integrate deadline polling and operation coalescing**
 
 While at least one trusted device is mounted, poll the scheduler without blocking lifecycle messages. On change, set the existing `backup_pending` flag; if an operation is active, retain one pending bit and start it when the guard releases. On unmount, invalidate the associated mount and scan generations before clearing work.
 
-- [ ] **Step 5: Prove the original stuck-mounted scenario**
+- [x] **Step 5: Prove the original stuck-mounted scenario**
 
 Use a temporary mounted-volume fixture: observe the initial fingerprint, create a stable DJI-named WAV without a lifecycle event, advance the fake clock by 15 seconds, and assert a backup request is issued. Assert the following unchanged interval creates neither a run nor an activity item.
 
-- [ ] **Step 6: Run suites, commit, and push**
+- [x] **Step 6: Run suites, commit, and push**
 
 ```bash
 cargo fmt --all -- --check

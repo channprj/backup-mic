@@ -7,6 +7,7 @@ pub mod lifecycle;
 pub mod orchestrator;
 pub mod pairing;
 pub mod platform;
+pub mod rescan;
 pub mod tray;
 pub mod window;
 

@@ -29,6 +29,35 @@ pub struct ScanResult {
     pub issues: Vec<ScanIssue>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ScanFingerprint(Vec<(PathBuf, u64, i128)>);
+
+impl ScanFingerprint {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+}
+
+pub fn metadata_fingerprint(
+    root: &Path,
+    transmitter: Transmitter,
+    local_offset: UtcOffset,
+) -> Result<ScanFingerprint, CoreError> {
+    let scan = scan_once(root, transmitter, local_offset)?;
+    Ok(ScanFingerprint(
+        scan.recordings
+            .into_iter()
+            .map(|recording| {
+                (
+                    recording.relative_path,
+                    recording.size,
+                    recording.modified_nanos,
+                )
+            })
+            .collect(),
+    ))
+}
+
 pub fn scan_once(
     root: &Path,
     transmitter: Transmitter,
