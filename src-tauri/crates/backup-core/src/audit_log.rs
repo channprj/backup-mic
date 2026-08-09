@@ -110,10 +110,9 @@ impl AuditSink for FileAuditLog {
 
 fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
     if event.code.is_empty()
-        || !event
-            .code
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'.')
+        || !event.code.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_')
+        })
     {
         return Err(CoreError::InvalidAuditEvent);
     }
@@ -217,5 +216,31 @@ fn transmitter_name(transmitter: Transmitter) -> &'static str {
     match transmitter {
         Transmitter::Tx01 => "TX01",
         Transmitter::Tx02 => "TX02",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tempfile::tempdir;
+    use time::macros::datetime;
+
+    use super::*;
+
+    #[test]
+    fn accepts_namespaced_codes_with_snake_case_segments() {
+        let directory = tempdir().unwrap();
+        let log = FileAuditLog::new_log_root(directory.path());
+        let event = AuditEvent {
+            occurred_at: datetime!(2026-08-10 03:00 +09:00),
+            level: AuditLevel::Info,
+            code: "backup.copy_cohort_verified",
+            transmitter: None,
+            fields: &[],
+        };
+
+        let path = log.append(&event, AuditDurability::SyncData).unwrap();
+        let written = fs::read_to_string(path).unwrap();
+
+        assert!(written.contains("INFO backup.copy_cohort_verified"));
     }
 }
