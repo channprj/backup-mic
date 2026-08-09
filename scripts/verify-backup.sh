@@ -73,9 +73,15 @@ if [[ "$(sqlite3 -readonly "$ledger" 'PRAGMA quick_check;')" != "ok" ]]; then
   echo "Backup ledger integrity check failed." >&2
   exit 1
 fi
-if ! sqlite3 -readonly "$ledger" \
-  "SELECT artifact_format, retirement_status FROM recordings LIMIT 0;" >/dev/null 2>&1; then
+schema_version="$(sqlite3 -readonly "$ledger" 'SELECT COALESCE(MAX(version), 0) FROM schema_migrations;')"
+if [[ ! "$schema_version" =~ ^[0-9]+$ || "$schema_version" -lt 3 ]]; then
   echo "Backup ledger is from an older app version; launch the updated app once first." >&2
+  exit 1
+fi
+if ! sqlite3 -readonly "$ledger" \
+  "SELECT batch_phase, frozen_m4a_conversion, m4a_profile_id FROM backup_runs LIMIT 0;
+   SELECT classification, artifact_relative_path FROM additional_files LIMIT 0;" >/dev/null 2>&1; then
+  echo "Backup ledger does not contain complete batch evidence." >&2
   exit 1
 fi
 
@@ -106,6 +112,18 @@ is_safe_relative() {
   return 0
 }
 
+is_safe_additional_relative() {
+  local value="$1"
+  local parent base
+  if is_safe_relative "$value"; then
+    return 0
+  fi
+  parent="$(dirname "$value")"
+  base="$(basename "$value")"
+  [[ "$base" == ._* && "$base" != "." && "$base" != ".." ]] || return 1
+  is_safe_relative "$parent"
+}
+
 xml_value() {
   /usr/bin/xmllint --xpath "string($1)" "$2" 2>/dev/null
 }
@@ -126,6 +144,7 @@ for source_spec in "$@"; do
     exit 2
   fi
   source_root="$(cd "$source_root" && pwd -P)"
+  printf '%s' "$source_root" > "$temporary/source-$transmitter"
 
   while IFS= read -r -d '' source_file; do
     live_source_count=$((live_source_count + 1))
@@ -231,10 +250,86 @@ for source_spec in "$@"; do
   done < <(find "$source_root" -type d -name '.*' -prune -o -type f -iname '*.wav' -print0)
 done
 
+additional_evidence="$temporary/additional-evidence"
+sqlite3 -readonly -separator "$separator" "$ledger" \
+  "SELECT transmitter, source_relative_path, source_size, source_sha256,
+          artifact_relative_path, artifact_size, artifact_sha256, classification
+     FROM additional_files
+    ORDER BY transmitter, source_relative_path, id;" > "$additional_evidence"
+
+verified_additional_count=0
+while IFS="$separator" read -r additional_tx additional_source additional_source_size \
+  additional_source_hash additional_artifact additional_artifact_size \
+  additional_artifact_hash additional_classification; do
+  [[ -n "$additional_tx" ]] || continue
+  case "$additional_tx" in
+    TX01|TX02) ;;
+    *) echo "Additional-file evidence has an invalid transmitter." >&2; exit 1 ;;
+  esac
+  case "$additional_classification" in
+    m4a|apple_double|other) ;;
+    *) echo "Additional-file evidence has an invalid classification." >&2; exit 1 ;;
+  esac
+  if ! is_safe_additional_relative "$additional_source" \
+    || ! is_safe_additional_relative "$additional_artifact"; then
+    echo "An additional-file path failed the relative-path safety policy." >&2
+    exit 1
+  fi
+  if [[ "$additional_source_size" != "$additional_artifact_size" \
+    || "$additional_source_hash" != "$additional_artifact_hash" ]]; then
+    echo "Additional-file ledger evidence is not source-equal." >&2
+    exit 1
+  fi
+  additional_artifact_path="$destination/$additional_artifact"
+  if [[ ! -f "$additional_artifact_path" || -L "$additional_artifact_path" ]]; then
+    echo "A verified additional-file artifact is unavailable." >&2
+    exit 1
+  fi
+  additional_artifact_parent="$(cd "$(dirname "$additional_artifact_path")" && pwd -P)"
+  case "$additional_artifact_parent/" in
+    "$destination"/*) ;;
+    *) echo "An additional-file artifact resolved outside the destination." >&2; exit 1 ;;
+  esac
+  actual_additional_size="$(stat -f '%z' "$additional_artifact_path")"
+  actual_additional_hash="$(shasum -a 256 "$additional_artifact_path" | awk '{print $1}')"
+  if [[ "$actual_additional_size" != "$additional_artifact_size" \
+    || "$actual_additional_hash" != "$additional_artifact_hash" ]]; then
+    echo "An additional-file artifact does not match durable ledger evidence." >&2
+    exit 1
+  fi
+  if [[ -f "$temporary/source-$additional_tx" ]]; then
+    additional_source_root="$(<"$temporary/source-$additional_tx")"
+    live_additional_path="$additional_source_root/$additional_source"
+    if [[ -e "$live_additional_path" || -L "$live_additional_path" ]]; then
+      if [[ ! -f "$live_additional_path" || -L "$live_additional_path" ]]; then
+        echo "A live additional source is not a regular file." >&2
+        exit 1
+      fi
+      live_additional_parent="$(cd "$(dirname "$live_additional_path")" && pwd -P)"
+      case "$live_additional_parent/" in
+        "$additional_source_root"/*) ;;
+        *) echo "A live additional source resolved outside its volume." >&2; exit 1 ;;
+      esac
+      live_additional_size="$(stat -f '%z' "$live_additional_path")"
+      live_additional_hash="$(shasum -a 256 "$live_additional_path" | awk '{print $1}')"
+      if [[ "$live_additional_size" != "$additional_source_size" \
+        || "$live_additional_hash" != "$additional_source_hash" ]]; then
+        echo "A live additional source changed after backup." >&2
+        exit 1
+      fi
+    fi
+  fi
+  verified_additional_count=$((verified_additional_count + 1))
+  if [[ "$diagnostic" -eq 1 ]]; then
+    echo "verified additional=$additional_tx:$additional_source source_sha256=$additional_source_hash artifact=$additional_artifact artifact_sha256=$additional_artifact_hash classification=$additional_classification"
+  fi
+done < "$additional_evidence"
+
 echo "Live source WAV files: $live_source_count"
 echo "Ledger-matched final artifacts: $verified_artifact_count"
 echo "Verified WAV artifacts: $wav_count"
 echo "Verified M4A artifacts: $m4a_count"
+echo "Verified additional-file artifacts: $verified_additional_count"
 if [[ "$live_source_count" -eq 0 ]]; then
   echo "No live source WAV files required verification."
 else

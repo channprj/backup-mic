@@ -151,6 +151,57 @@ fn artifact_and_preferences_migrate_a_version_one_ledger_without_rewriting_hashe
 }
 
 #[test]
+fn upgrade_v2_preserves_historical_wav_evidence() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0002_artifacts_and_preferences.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            INSERT INTO backup_runs(id, started_at, finished_at, outcome, required_copy_bytes)
+            VALUES ('run-v2', '2026-08-09T00:00:00Z', '2026-08-09T00:01:00Z', 'complete', 4);
+            INSERT INTO recordings(
+                id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                source_sha256, destination_relative_path, destination_size,
+                destination_sha256, verified_at, backup_run_id, retirement_status
+            ) VALUES (
+                'recording-v2', 'TX01', 'TX_MIC001_20260809_021747/legacy.wav', 4, '1',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                '2026/2026-08-09/TX01/legacy.wav', 4,
+                'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                '2026-08-09T00:01:00Z', 'run-v2', 'legacy_deleted'
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let recordings = ledger.historical_wav_recordings().unwrap();
+    assert_eq!(recordings.len(), 1);
+    assert_eq!(
+        recordings[0].source_sha256,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(
+        recordings[0].artifact.sha256,
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    );
+    assert_eq!(
+        recordings[0].retirement_status,
+        RetirementStatus::LegacyDeleted
+    );
+}
+
+#[test]
 fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("ledger.sqlite3");

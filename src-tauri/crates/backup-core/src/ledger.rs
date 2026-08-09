@@ -7,9 +7,11 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
+    additional_file::{AdditionalFileClass, VerifiedAdditionalFile},
     artifact::{
         ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties,
     },
+    batch::{BatchPhase, BatchRunEvidence, FrozenPreferences},
     device::PairedDevice,
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
@@ -356,6 +358,183 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn begin_batch_run(
+        &mut self,
+        id: &str,
+        started_at: &str,
+        required_copy_bytes: u64,
+        preferences: FrozenPreferences,
+    ) -> Result<(), CoreError> {
+        self.connection
+            .execute(
+                r#"INSERT INTO backup_runs(
+                     id, started_at, outcome, required_copy_bytes, batch_phase,
+                     frozen_automatic_backup, frozen_m4a_conversion, frozen_automatic_trash
+                   ) VALUES (?1, ?2, 'running', ?3, 'inventory', ?4, ?5, ?6)"#,
+                params![
+                    id,
+                    started_at,
+                    to_i64(required_copy_bytes)?,
+                    preferences.automatic_backup,
+                    preferences.m4a_conversion,
+                    preferences.automatic_trash,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        Ok(())
+    }
+
+    pub fn advance_batch_phase(&mut self, id: &str, next: BatchPhase) -> Result<(), CoreError> {
+        let predecessor = next.predecessor().ok_or(CoreError::InvalidRequest)?;
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE backup_runs SET batch_phase = ?1
+                   WHERE id = ?2 AND outcome = 'running' AND batch_phase = ?3"#,
+                params![next.storage_name(), id, predecessor.storage_name()],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    pub fn batch_run_evidence(&self, id: &str) -> Result<Option<BatchRunEvidence>, CoreError> {
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT batch_phase, frozen_automatic_backup, frozen_m4a_conversion,
+                          frozen_automatic_trash, m4a_profile_id
+                   FROM backup_runs WHERE id = ?1"#,
+                [id],
+                |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, bool>(2)?,
+                        row.get::<_, bool>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        row.map(
+            |(phase, automatic_backup, m4a_conversion, automatic_trash, m4a_profile_id)| {
+                Ok(BatchRunEvidence {
+                    phase: BatchPhase::parse(&phase)?,
+                    frozen_preferences: FrozenPreferences {
+                        automatic_backup,
+                        m4a_conversion,
+                        automatic_trash,
+                    },
+                    m4a_profile_id,
+                })
+            },
+        )
+        .transpose()
+    }
+
+    pub fn begin_conversion_cohort(
+        &mut self,
+        backup_run_id: &str,
+        recording_ids: &[String],
+        profile_id: &str,
+    ) -> Result<(), CoreError> {
+        if recording_ids.is_empty()
+            || profile_id != crate::batch::M4A_PROFILE_ID
+            || recording_ids
+                .iter()
+                .collect::<std::collections::HashSet<_>>()
+                .len()
+                != recording_ids.len()
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE backup_runs
+                   SET batch_phase = 'converting', m4a_profile_id = ?1
+                   WHERE id = ?2 AND outcome = 'running' AND batch_phase = 'copies_verified'
+                     AND m4a_profile_id IS NULL"#,
+                params![profile_id, backup_run_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        for recording_id in recording_ids {
+            transaction
+                .execute(
+                    r#"INSERT INTO conversion_cohort_items(
+                         backup_run_id, recording_id, profile_id, status
+                       ) VALUES (?1, ?2, ?3, 'pending')"#,
+                    params![backup_run_id, recording_id, profile_id],
+                )
+                .map_err(CoreError::Ledger)?;
+        }
+        transaction.commit().map_err(CoreError::Ledger)
+    }
+
+    pub fn mark_conversion_item_verified(
+        &mut self,
+        backup_run_id: &str,
+        recording_id: &str,
+    ) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE conversion_cohort_items
+                   SET status = 'verified_m4a', error_code = NULL
+                   WHERE backup_run_id = ?1 AND recording_id = ?2 AND status = 'pending'
+                     AND profile_id = (
+                       SELECT m4a_profile_id FROM backup_runs
+                       WHERE id = ?1 AND batch_phase = 'converting'
+                     )
+                     AND EXISTS (
+                       SELECT 1 FROM recordings
+                       WHERE id = ?2 AND artifact_format = 'm4a'
+                         AND conversion_status = 'complete'
+                         AND artifact_codec = 'aac'
+                         AND artifact_sample_rate_hz > 0
+                         AND artifact_channel_count > 0
+                         AND artifact_valid_frames > 0
+                         AND artifact_duration_micros > 0
+                     )"#,
+                params![backup_run_id, recording_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    pub fn commit_m4a_barrier(&mut self, backup_run_id: &str) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE backup_runs SET batch_phase = 'm4a_cohort_verified'
+                   WHERE id = ?1 AND outcome = 'running' AND batch_phase = 'converting'
+                     AND m4a_profile_id IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM conversion_cohort_items WHERE backup_run_id = ?1
+                     )
+                     AND NOT EXISTS (
+                       SELECT 1 FROM conversion_cohort_items
+                       WHERE backup_run_id = ?1 AND status != 'verified_m4a'
+                     )"#,
+                [backup_run_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
     pub fn mark_interrupted_runs(&mut self, finished_at: &str) -> Result<usize, CoreError> {
         self.connection
             .execute(
@@ -635,6 +814,140 @@ impl Ledger {
             })
             .map_err(CoreError::Ledger)?;
         u64::try_from(count).map_err(|_| CoreError::LedgerCorrupt)
+    }
+
+    pub fn commit_verified_additional_file(
+        &mut self,
+        file: &VerifiedAdditionalFile,
+    ) -> Result<String, CoreError> {
+        validate_verified_additional_file(file)?;
+        if let Some(existing) = self.verified_additional_file(&file.id)?
+            && !additional_file_evidence_matches(&existing, file)
+        {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        if let Some(existing) = self.verified_additional_file_for_source(
+            file.transmitter,
+            &file.source_relative_path,
+            file.source_size,
+            file.source_mtime_ns,
+            &file.source_sha256,
+        )? {
+            if !additional_file_evidence_matches(&existing, file) {
+                return Err(CoreError::LedgerCorrupt);
+            }
+            self.connection
+                .execute(
+                    "UPDATE additional_files SET backup_run_id = ?1 WHERE id = ?2",
+                    params![file.backup_run_id, existing.id],
+                )
+                .map_err(CoreError::Ledger)?;
+            return Ok(existing.id);
+        }
+        self.connection
+            .execute(
+                r#"INSERT INTO additional_files(
+                     id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                     source_sha256, artifact_relative_path, artifact_size, artifact_sha256,
+                     classification, backup_run_id
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+                params![
+                    file.id,
+                    transmitter_name(file.transmitter),
+                    path_text(&file.source_relative_path)?,
+                    to_i64(file.source_size)?,
+                    file.source_mtime_ns.to_string(),
+                    file.source_sha256,
+                    path_text(&file.artifact_relative_path)?,
+                    to_i64(file.artifact_size)?,
+                    file.artifact_sha256,
+                    file.classification.storage_name(),
+                    file.backup_run_id,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        Ok(file.id.clone())
+    }
+
+    pub fn verified_additional_file(
+        &self,
+        id: &str,
+    ) -> Result<Option<VerifiedAdditionalFile>, CoreError> {
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, artifact_relative_path, artifact_size,
+                          artifact_sha256, classification, backup_run_id
+                   FROM additional_files WHERE id = ?1"#,
+                [id],
+                row_to_verified_additional_file,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        if let Some(file) = &row {
+            validate_verified_additional_file(file).map_err(|_| CoreError::LedgerCorrupt)?;
+        }
+        Ok(row)
+    }
+
+    pub fn verified_additional_file_for_source(
+        &self,
+        transmitter: Transmitter,
+        source_relative_path: &Path,
+        source_size: u64,
+        source_mtime_ns: i128,
+        source_sha256: &str,
+    ) -> Result<Option<VerifiedAdditionalFile>, CoreError> {
+        if !crate::filesystem::is_safe_relative_path(source_relative_path) {
+            return Err(CoreError::InvalidRequest);
+        }
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, artifact_relative_path, artifact_size,
+                          artifact_sha256, classification, backup_run_id
+                   FROM additional_files
+                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                     AND source_size = ?3 AND source_mtime_ns = ?4 AND source_sha256 = ?5"#,
+                params![
+                    transmitter_name(transmitter),
+                    path_text(source_relative_path)?,
+                    to_i64(source_size)?,
+                    source_mtime_ns.to_string(),
+                    source_sha256,
+                ],
+                row_to_verified_additional_file,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        if let Some(file) = &row {
+            validate_verified_additional_file(file).map_err(|_| CoreError::LedgerCorrupt)?;
+        }
+        Ok(row)
+    }
+
+    pub fn historical_wav_recordings(&self) -> Result<Vec<VerifiedRecording>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings
+                   WHERE artifact_format = 'wav'
+                   ORDER BY destination_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([], row_to_verified_recording)
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| row.map_err(CoreError::Ledger)).collect()
     }
 
     pub fn legacy_retired_recordings(
@@ -949,6 +1262,18 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
             ))
             .map_err(CoreError::Ledger)?;
     }
+    let version_three_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 3)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_three_applied {
+        connection
+            .execute_batch(include_str!("../migrations/0003_batch_manifests.sql"))
+            .map_err(CoreError::Ledger)?;
+    }
     Ok(())
 }
 
@@ -1089,6 +1414,36 @@ fn validate_verified_recording(recording: &VerifiedRecording) -> Result<(), Core
     }
 }
 
+fn validate_verified_additional_file(file: &VerifiedAdditionalFile) -> Result<(), CoreError> {
+    if file.id.is_empty()
+        || !crate::filesystem::is_safe_relative_path(&file.source_relative_path)
+        || !crate::filesystem::is_safe_relative_path(&file.artifact_relative_path)
+        || file.source_size == 0
+        || file.source_size != file.artifact_size
+        || file.source_sha256.len() != 64
+        || file.source_sha256 != file.artifact_sha256
+        || file.backup_run_id.is_empty()
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn additional_file_evidence_matches(
+    existing: &VerifiedAdditionalFile,
+    candidate: &VerifiedAdditionalFile,
+) -> bool {
+    existing.transmitter == candidate.transmitter
+        && existing.source_relative_path == candidate.source_relative_path
+        && existing.source_size == candidate.source_size
+        && existing.source_mtime_ns == candidate.source_mtime_ns
+        && existing.source_sha256 == candidate.source_sha256
+        && existing.artifact_relative_path == candidate.artifact_relative_path
+        && existing.artifact_size == candidate.artifact_size
+        && existing.artifact_sha256 == candidate.artifact_sha256
+        && existing.classification == candidate.classification
+}
+
 fn row_to_verified_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<VerifiedRecording> {
     let source_size = u64::try_from(row.get::<_, i64>(3)?)
         .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, 0))?;
@@ -1189,6 +1544,48 @@ fn row_to_verified_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Verifi
         conversion_error_code: row.get(18)?,
         retirement_status,
         retired_session_relative_path: row.get::<_, Option<String>>(20)?.map(PathBuf::from),
+    })
+}
+
+fn row_to_verified_additional_file(
+    row: &rusqlite::Row<'_>,
+) -> rusqlite::Result<VerifiedAdditionalFile> {
+    let source_size = u64::try_from(row.get::<_, i64>(3)?)
+        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, 0))?;
+    let source_mtime_ns = row.get::<_, String>(4)?.parse::<i128>().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid source mtime",
+            )),
+        )
+    })?;
+    let artifact_size = u64::try_from(row.get::<_, i64>(7)?)
+        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(7, 0))?;
+    let classification = AdditionalFileClass::parse(&row.get::<_, String>(9)?).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            9,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid additional file classification",
+            )),
+        )
+    })?;
+    Ok(VerifiedAdditionalFile {
+        id: row.get(0)?,
+        transmitter: parse_transmitter_sql(&row.get::<_, String>(1)?, 1)?,
+        source_relative_path: PathBuf::from(row.get::<_, String>(2)?),
+        source_size,
+        source_mtime_ns,
+        source_sha256: row.get(5)?,
+        artifact_relative_path: PathBuf::from(row.get::<_, String>(6)?),
+        artifact_size,
+        artifact_sha256: row.get(8)?,
+        classification,
+        backup_run_id: row.get(10)?,
     })
 }
 
