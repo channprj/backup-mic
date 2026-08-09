@@ -16,7 +16,7 @@ use backup_core::{
         BackupItemContext, NoCopyFaults, cleanup_owned_partials, ensure_capacity,
         execute_additional_file_copy, prepare_backup_item_observed, progress_for_plans,
     },
-    batch::{BatchItemKey, BatchPhase, CopyBarrier},
+    batch::{BatchItemKey, BatchPhase, CopyBarrier, M4A_PROFILE_ID},
     deletion::{
         CompleteDeletionSnapshot, DeletionCandidate, DeletionConfirmation, DeletionContext,
         DeletionOutcome, NoDeletionFaults, ProposalInvalidation, TrashAdapter,
@@ -28,6 +28,7 @@ use backup_core::{
     },
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
+    hash::hash_file,
     recording::RecordingObservation,
     scanner::{ScanIssue, ScanResult, metadata_fingerprint, scan_stable},
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
@@ -40,7 +41,7 @@ use uuid::Uuid;
 use crate::{
     app_state::{AppState, OperationGuard, publish_locked, update_transmitter},
     artifact_pipeline::{
-        finalize_prepared_m4a, prepare_m4a, publish_m4a, verify_published_artifact,
+        finalize_prepared_m4a, order_conversion_cohort, prepare_m4a, verify_published_artifact,
     },
     dto::{ProgressDto, TrashProposalSummaryDto},
     platform::{
@@ -476,7 +477,6 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     let mut verified_by_tx = HashMap::new();
     let mut verified_additional_by_tx = HashMap::new();
     let mut current_ordinal = 0_u64;
-    let conversion_deferred_until_copy_barrier = true;
 
     for prepared_tx in &prepared {
         let mut verified_count = 0_usize;
@@ -648,150 +648,6 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         transmitter: prepared_tx.transmitter,
                         relative_path: plan.source.relative_path.clone(),
                     })?;
-                    if !conversion_deferred_until_copy_barrier
-                        && m4a_conversion_enabled
-                        && recording.artifact.format == OutputFormat::Wav
-                    {
-                        let mut ledger = state.ledger.lock();
-                        let source_name = recording
-                            .source_relative_path
-                            .file_name()
-                            .and_then(|name| name.to_str())
-                            .ok_or(CoreError::InvalidAuditEvent)?;
-                        let fields = [
-                            ("source", AuditValue::Text(source_name)),
-                            ("format", AuditValue::Text("m4a")),
-                        ];
-                        state.append_audit(
-                            &AuditEvent {
-                                occurred_at: audit_now(),
-                                level: AuditLevel::Info,
-                                code: "conversion.started",
-                                transmitter: Some(prepared_tx.transmitter),
-                                fields: &fields,
-                            },
-                            AuditDurability::Buffered,
-                        )?;
-                        let app_for_artifact = app.clone();
-                        let state_for_artifact = state.clone();
-                        let transmitter = prepared_tx.transmitter;
-                        let mut artifact_observer = move |stage: CurrentStage| {
-                            let mut runtime = state_for_artifact.runtime.lock();
-                            runtime.snapshot.phase = BackupPhase::Verifying;
-                            runtime.snapshot.message_code = match stage {
-                                CurrentStage::Conversion => "converting_m4a",
-                                CurrentStage::ArtifactVerification => "verifying_m4a",
-                                CurrentStage::Copy
-                                | CurrentStage::Sha256Verification
-                                | CurrentStage::Trash => "backup_in_progress",
-                            }
-                            .to_owned();
-                            runtime.snapshot.current_stage = Some(stage);
-                            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                                snapshot.phase = BackupPhase::Verifying
-                            });
-                            publish_locked(&app_for_artifact, &mut runtime);
-                        };
-                        match publish_m4a(
-                            &destination,
-                            &recording,
-                            &mut ledger,
-                            &AppleAudioTools,
-                            &guard.cancellation,
-                            &mut artifact_observer,
-                        ) {
-                            Ok(result) => {
-                                let superseded = result.superseded_wav;
-                                recording = result.recording;
-                                let superseded_path = destination.join(&superseded);
-                                let output =
-                                    superseded.to_str().ok_or(CoreError::InvalidAuditEvent)?;
-                                let fields = [
-                                    ("output", AuditValue::Text(output)),
-                                    ("mode", AuditValue::Text("artifact_migration")),
-                                ];
-                                match state.append_audit(
-                                    &AuditEvent {
-                                        occurred_at: audit_now(),
-                                        level: AuditLevel::Info,
-                                        code: "retirement.preflight",
-                                        transmitter: Some(prepared_tx.transmitter),
-                                        fields: &fields,
-                                    },
-                                    AuditDurability::SyncData,
-                                ) {
-                                    Ok(_) => {
-                                        let (level, code, reason) =
-                                            match MacTrash.move_to_trash(&superseded_path) {
-                                                Ok(()) => (
-                                                    AuditLevel::Info,
-                                                    "retirement.complete",
-                                                    "moved_to_trash",
-                                                ),
-                                                Err(error) => {
-                                                    state.report_failure(
-                                                        "artifact_migration",
-                                                        "trash",
-                                                        &error,
-                                                        Some(prepared_tx.transmitter),
-                                                        plan.source.relative_path.to_str(),
-                                                    );
-                                                    (
-                                                        AuditLevel::Warning,
-                                                        "retirement.refused",
-                                                        "trash_failed",
-                                                    )
-                                                }
-                                            };
-                                        let fields = [
-                                            ("output", AuditValue::Text(output)),
-                                            ("mode", AuditValue::Text("artifact_migration")),
-                                            ("reason", AuditValue::Text(reason)),
-                                        ];
-                                        if let Err(error) = state.append_audit(
-                                            &AuditEvent {
-                                                occurred_at: audit_now(),
-                                                level,
-                                                code,
-                                                transmitter: Some(prepared_tx.transmitter),
-                                                fields: &fields,
-                                            },
-                                            AuditDurability::Buffered,
-                                        ) {
-                                            state.report_failure(
-                                                "artifact_migration",
-                                                "audit_log",
-                                                &error,
-                                                Some(prepared_tx.transmitter),
-                                                plan.source.relative_path.to_str(),
-                                            );
-                                        }
-                                    }
-                                    Err(error) => {
-                                        state.report_failure(
-                                            "artifact_migration",
-                                            "audit_log",
-                                            &error,
-                                            Some(prepared_tx.transmitter),
-                                            plan.source.relative_path.to_str(),
-                                        );
-                                    }
-                                }
-                            }
-                            Err(error) => {
-                                state.report_failure(
-                                    "backup_run",
-                                    "conversion",
-                                    &error,
-                                    Some(prepared_tx.transmitter),
-                                    plan.source.relative_path.to_str(),
-                                );
-                                failed_transmitters.insert(prepared_tx.transmitter);
-                                last_error = Some(error.public(Some(prepared_tx.transmitter)));
-                                continue;
-                            }
-                        }
-                    }
                     let artifact = recording.artifact;
                     let source_name = recording
                         .source_relative_path
@@ -909,129 +765,241 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     }
 
     if copy_barrier.conversion_allowed() && m4a_conversion_enabled {
-        state
-            .ledger
-            .lock()
-            .advance_batch_phase(&run_id, BatchPhase::Converting)?;
-        let mut superseded_wavs = Vec::new();
-        'conversion: for (transmitter, candidates) in &mut verified_by_tx {
-            for candidate in candidates {
-                let Some(recording) = state
+        let current_recording_ids = verified_by_tx
+            .values()
+            .flatten()
+            .map(|candidate| candidate.recording_id.clone())
+            .collect::<BTreeSet<_>>();
+        let mut cohort_by_id = {
+            let ledger = state.ledger.lock();
+            ledger
+                .historical_wav_recordings()?
+                .into_iter()
+                .map(|recording| (recording.id.clone(), recording))
+                .collect::<HashMap<_, _>>()
+        };
+        for recording_id in current_recording_ids {
+            if let std::collections::hash_map::Entry::Vacant(entry) =
+                cohort_by_id.entry(recording_id)
+            {
+                let recording = state
                     .ledger
                     .lock()
-                    .verified_recording(&candidate.recording_id)?
-                else {
-                    let error = CoreError::LedgerCorrupt;
-                    state.report_failure(
-                        "backup_run",
-                        "conversion_evidence_read",
-                        &error,
-                        Some(*transmitter),
-                        candidate.source_relative_path.to_str(),
-                    );
-                    last_error = Some(error.public(Some(*transmitter)));
-                    for prepared_tx in &prepared {
-                        failed_transmitters.insert(prepared_tx.transmitter);
-                    }
-                    break 'conversion;
-                };
-                if recording.artifact.format == OutputFormat::M4a {
-                    continue;
-                }
-                let source_name = recording
-                    .source_relative_path
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .ok_or(CoreError::InvalidAuditEvent)?;
-                let fields = [
-                    ("source", AuditValue::Text(source_name)),
-                    ("format", AuditValue::Text("m4a")),
-                ];
-                state.append_audit(
-                    &AuditEvent {
-                        occurred_at: audit_now(),
-                        level: AuditLevel::Info,
-                        code: "conversion.started",
-                        transmitter: Some(*transmitter),
-                        fields: &fields,
-                    },
-                    AuditDurability::Buffered,
-                )?;
-                let app_for_artifact = app.clone();
-                let state_for_artifact = state.clone();
-                let observed_transmitter = *transmitter;
-                let mut artifact_observer = move |stage: CurrentStage| {
-                    let mut runtime = state_for_artifact.runtime.lock();
-                    runtime.snapshot.phase = BackupPhase::Verifying;
-                    runtime.snapshot.message_code = match stage {
-                        CurrentStage::Conversion => "converting_m4a",
-                        CurrentStage::ArtifactVerification => "verifying_m4a",
-                        CurrentStage::Copy
-                        | CurrentStage::Sha256Verification
-                        | CurrentStage::Trash => "backup_in_progress",
-                    }
-                    .to_owned();
-                    runtime.snapshot.current_stage = Some(stage);
-                    update_transmitter(&mut runtime.snapshot, observed_transmitter, |snapshot| {
-                        snapshot.phase = BackupPhase::Verifying
-                    });
-                    publish_locked(&app_for_artifact, &mut runtime);
-                };
-                match prepare_m4a(
-                    &destination,
-                    &recording,
-                    &AppleAudioTools,
-                    &guard.cancellation,
-                    &mut artifact_observer,
-                ) {
-                    Ok(prepared_artifact) => {
-                        state
-                            .ledger
-                            .lock()
-                            .replace_verified_artifact(&prepared_artifact.recording)?;
-                        finalize_prepared_m4a(&prepared_artifact)?;
-                        candidate.destination_relative_path =
-                            prepared_artifact.recording.artifact.relative_path.clone();
-                        candidate.destination_size =
-                            prepared_artifact.recording.artifact.byte_count;
-                        candidate.destination_sha256 =
-                            prepared_artifact.recording.artifact.sha256.clone();
-                        superseded_wavs
-                            .push((*transmitter, prepared_artifact.superseded_wav_relative_path));
-                    }
-                    Err(error) => {
-                        state.report_failure(
-                            "backup_run",
-                            "conversion",
-                            &error,
-                            Some(*transmitter),
-                            candidate.source_relative_path.to_str(),
-                        );
-                        last_error = Some(error.public(Some(*transmitter)));
-                        for prepared_tx in &prepared {
-                            failed_transmitters.insert(prepared_tx.transmitter);
-                        }
-                        break 'conversion;
-                    }
-                }
+                    .verified_recording(entry.key())?
+                    .ok_or(CoreError::LedgerCorrupt)?;
+                entry.insert(recording);
             }
         }
-        if failed_transmitters.is_empty() {
-            for (transmitter, superseded) in superseded_wavs {
-                if let Err(error) = MacTrash.move_to_trash(&destination.join(&superseded)) {
+        let conversion_cohort = if cohort_by_id.is_empty() {
+            Vec::new()
+        } else {
+            order_conversion_cohort(cohort_by_id.into_values().collect())?
+        };
+        let recording_ids = conversion_cohort
+            .iter()
+            .map(|recording| recording.id.clone())
+            .collect::<Vec<_>>();
+        if !conversion_cohort.is_empty() {
+            state
+                .ledger
+                .lock()
+                .begin_conversion_cohort(&run_id, &recording_ids, M4A_PROFILE_ID)?;
+        }
+        'conversion: for mut recording in conversion_cohort {
+            let transmitter = recording.transmitter;
+            if recording.artifact.format == OutputFormat::M4a {
+                state
+                    .ledger
+                    .lock()
+                    .mark_conversion_item_verified(&run_id, &recording.id)?;
+                continue;
+            }
+            let source_name = recording
+                .source_relative_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or(CoreError::InvalidAuditEvent)?;
+            let fields = [
+                ("source", AuditValue::Text(source_name)),
+                ("format", AuditValue::Text("m4a")),
+            ];
+            state.append_audit(
+                &AuditEvent {
+                    occurred_at: audit_now(),
+                    level: AuditLevel::Info,
+                    code: "conversion.started",
+                    transmitter: Some(transmitter),
+                    fields: &fields,
+                },
+                AuditDurability::Buffered,
+            )?;
+            let app_for_artifact = app.clone();
+            let state_for_artifact = state.clone();
+            let mut artifact_observer = move |stage: CurrentStage| {
+                let mut runtime = state_for_artifact.runtime.lock();
+                runtime.snapshot.phase = BackupPhase::Verifying;
+                runtime.snapshot.message_code = match stage {
+                    CurrentStage::Conversion => "converting_m4a",
+                    CurrentStage::ArtifactVerification => "verifying_m4a",
+                    CurrentStage::Copy | CurrentStage::Sha256Verification | CurrentStage::Trash => {
+                        "backup_in_progress"
+                    }
+                }
+                .to_owned();
+                runtime.snapshot.current_stage = Some(stage);
+                update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                    snapshot.phase = BackupPhase::Verifying
+                });
+                publish_locked(&app_for_artifact, &mut runtime);
+            };
+            recording.backup_run_id.clone_from(&run_id);
+            recording.verified_at = now_string();
+            match prepare_m4a(
+                &destination,
+                &recording,
+                &AppleAudioTools,
+                &guard.cancellation,
+                &mut artifact_observer,
+            ) {
+                Ok(prepared_artifact) => {
+                    {
+                        let mut ledger = state.ledger.lock();
+                        ledger.replace_verified_artifact_with_superseded_wav(
+                            &prepared_artifact.recording,
+                            &prepared_artifact.superseded_wav_relative_path,
+                            prepared_artifact.superseded_wav_size,
+                            &prepared_artifact.superseded_wav_sha256,
+                        )?;
+                        ledger.mark_conversion_item_verified(
+                            &run_id,
+                            &prepared_artifact.recording.id,
+                        )?;
+                    }
+                    finalize_prepared_m4a(&prepared_artifact)?;
+                    for candidate in verified_by_tx.values_mut().flatten() {
+                        if candidate.recording_id == prepared_artifact.recording.id {
+                            candidate.destination_relative_path =
+                                prepared_artifact.recording.artifact.relative_path.clone();
+                            candidate.destination_size =
+                                prepared_artifact.recording.artifact.byte_count;
+                            candidate.destination_sha256 =
+                                prepared_artifact.recording.artifact.sha256.clone();
+                        }
+                    }
+                }
+                Err(error) => {
                     state.report_failure(
-                        "artifact_migration",
-                        "trash",
+                        "backup_run",
+                        "conversion",
                         &error,
                         Some(transmitter),
-                        superseded.to_str(),
+                        recording.source_relative_path.to_str(),
                     );
                     last_error = Some(error.public(Some(transmitter)));
                     for prepared_tx in &prepared {
                         failed_transmitters.insert(prepared_tx.transmitter);
                     }
+                    break 'conversion;
+                }
+            }
+        }
+        if failed_transmitters.is_empty() {
+            if !recording_ids.is_empty() {
+                state.ledger.lock().commit_m4a_barrier(&run_id)?;
+                state.append_audit(
+                    &AuditEvent {
+                        occurred_at: audit_now(),
+                        level: AuditLevel::Info,
+                        code: "backup.m4a_cohort_verified",
+                        transmitter: None,
+                        fields: &[(
+                            "count",
+                            AuditValue::Unsigned(
+                                u64::try_from(recording_ids.len())
+                                    .map_err(|_| CoreError::InvalidRequest)?,
+                            ),
+                        )],
+                    },
+                    AuditDurability::SyncData,
+                )?;
+            }
+            let pending_superseded = state.ledger.lock().pending_superseded_wavs()?;
+            for superseded in pending_superseded {
+                let path = destination.join(&superseded.relative_path);
+                let metadata = match std::fs::symlink_metadata(&path) {
+                    Ok(metadata) => metadata,
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        state
+                            .ledger
+                            .lock()
+                            .clear_superseded_wav_evidence(&superseded.recording_id)?;
+                        continue;
+                    }
+                    Err(error) => {
+                        let error = CoreError::CopyFailed(error);
+                        state.report_failure(
+                            "artifact_migration",
+                            "superseded_wav_revalidation",
+                            &error,
+                            Some(superseded.transmitter),
+                            superseded.relative_path.to_str(),
+                        );
+                        last_error = Some(error.public(Some(superseded.transmitter)));
+                        for prepared_tx in &prepared {
+                            failed_transmitters.insert(prepared_tx.transmitter);
+                        }
+                        break;
+                    }
+                };
+                if !metadata.file_type().is_file() {
+                    let error = CoreError::DestinationUnavailable;
+                    state.report_failure(
+                        "artifact_migration",
+                        "superseded_wav_revalidation",
+                        &error,
+                        Some(superseded.transmitter),
+                        superseded.relative_path.to_str(),
+                    );
+                    last_error = Some(error.public(Some(superseded.transmitter)));
+                    for prepared_tx in &prepared {
+                        failed_transmitters.insert(prepared_tx.transmitter);
+                    }
                     break;
                 }
+                let digest = hash_file(&path)?;
+                if digest.size != superseded.byte_count || digest.sha256 != superseded.sha256 {
+                    let error = CoreError::HashMismatch;
+                    state.report_failure(
+                        "artifact_migration",
+                        "superseded_wav_revalidation",
+                        &error,
+                        Some(superseded.transmitter),
+                        superseded.relative_path.to_str(),
+                    );
+                    last_error = Some(error.public(Some(superseded.transmitter)));
+                    for prepared_tx in &prepared {
+                        failed_transmitters.insert(prepared_tx.transmitter);
+                    }
+                    break;
+                }
+                if let Err(error) = MacTrash.move_to_trash(&path) {
+                    state.report_failure(
+                        "artifact_migration",
+                        "trash",
+                        &error,
+                        Some(superseded.transmitter),
+                        superseded.relative_path.to_str(),
+                    );
+                    last_error = Some(error.public(Some(superseded.transmitter)));
+                    for prepared_tx in &prepared {
+                        failed_transmitters.insert(prepared_tx.transmitter);
+                    }
+                    break;
+                }
+                state
+                    .ledger
+                    .lock()
+                    .clear_superseded_wav_evidence(&superseded.recording_id)?;
             }
         }
     }

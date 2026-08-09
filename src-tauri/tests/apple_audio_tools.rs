@@ -1,6 +1,8 @@
-use std::{fs, path::Path};
+use std::{ffi::OsString, fs, path::Path};
 
-use dji_mic_backup_lib::platform::macos::audio::{AppleAudioTools, AudioTools};
+use dji_mic_backup_lib::platform::macos::audio::{
+    AppleAudioTools, AudioTools, afconvert_arguments,
+};
 use tempfile::tempdir;
 
 #[test]
@@ -12,7 +14,7 @@ fn production_apple_tools_convert_and_inspect_a_pcm_wav() {
     let tools = AppleAudioTools;
 
     let source = tools.inspect(&wav).unwrap();
-    tools.convert_aac_lc_192k(&wav, &m4a).unwrap();
+    tools.convert_aac_lc_128k(&wav, &m4a).unwrap();
     let converted = tools.inspect(&m4a).unwrap();
 
     assert_eq!(source.container, "WAVE");
@@ -25,6 +27,35 @@ fn production_apple_tools_convert_and_inspect_a_pcm_wav() {
     assert_eq!(converted.valid_frames, 48_000);
     assert!(converted.audio_bytes > 0);
     assert!(converted.packets > 0);
+}
+
+#[test]
+fn afconvert_profile_is_exact_aac_lc_128k_without_a_shell_or_old_bitrate() {
+    let input = Path::new("/tmp/source.wav");
+    let output = Path::new("/tmp/output.m4a");
+    let arguments = afconvert_arguments(input, output);
+
+    assert_eq!(
+        arguments,
+        [
+            input.as_os_str().to_owned(),
+            OsString::from("-o"),
+            output.as_os_str().to_owned(),
+            OsString::from("-f"),
+            OsString::from("m4af"),
+            OsString::from("-d"),
+            OsString::from("aac"),
+            OsString::from("-b"),
+            OsString::from("128000"),
+            OsString::from("-q"),
+            OsString::from("127"),
+            OsString::from("-s"),
+            OsString::from("2"),
+        ]
+    );
+    assert!(!arguments.iter().any(|argument| argument == "-c"));
+    assert!(!arguments.iter().any(|argument| argument == "192000"));
+    assert!(!arguments.iter().any(|argument| argument == "/bin/sh"));
 }
 
 fn write_pcm_wav(path: &Path, sample_rate: u32, channels: u16, frames: u32) {

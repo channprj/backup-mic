@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -31,6 +32,29 @@ pub struct PreparedM4aArtifact {
     recovery_marker: Option<PathBuf>,
 }
 
+pub fn order_conversion_cohort(
+    mut recordings: Vec<VerifiedRecording>,
+) -> Result<Vec<VerifiedRecording>, CoreError> {
+    if recordings.is_empty()
+        || recordings.iter().any(|recording| recording.id.is_empty())
+        || recordings
+            .iter()
+            .map(|recording| recording.id.as_str())
+            .collect::<HashSet<_>>()
+            .len()
+            != recordings.len()
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    recordings.sort_by(|left, right| {
+        left.artifact
+            .relative_path
+            .cmp(&right.artifact.relative_path)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    Ok(recordings)
+}
+
 pub fn publish_m4a(
     destination_root: &Path,
     wav: &VerifiedRecording,
@@ -40,7 +64,12 @@ pub fn publish_m4a(
     observer: &mut dyn FnMut(CurrentStage),
 ) -> Result<M4aPublishResult, CoreError> {
     let prepared = prepare_m4a(destination_root, wav, tools, cancellation, observer)?;
-    ledger.replace_verified_artifact(&prepared.recording)?;
+    ledger.replace_verified_artifact_with_superseded_wav(
+        &prepared.recording,
+        &prepared.superseded_wav_relative_path,
+        prepared.superseded_wav_size,
+        &prepared.superseded_wav_sha256,
+    )?;
     finalize_prepared_m4a(&prepared)?;
     Ok(M4aPublishResult {
         recording: prepared.recording,
@@ -104,7 +133,7 @@ pub fn prepare_m4a(
 
     observer(CurrentStage::Conversion);
     cancellation.check()?;
-    if let Err(error) = tools.convert_aac_lc_192k(&wav_path, &part_path) {
+    if let Err(error) = tools.convert_aac_lc_128k(&wav_path, &part_path) {
         cleanup_owned_part(&part_path);
         return Err(error);
     }

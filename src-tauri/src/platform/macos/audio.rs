@@ -1,13 +1,16 @@
-use std::{path::Path, process::Command};
+use std::{ffi::OsString, path::Path, process::Command};
 
-use backup_core::{artifact::AudioDescription, error::CoreError};
+use backup_core::{
+    artifact::{AudioDescription, M4A_TARGET_BITRATE_BPS},
+    error::CoreError,
+};
 use serde::Deserialize;
 
 const MAX_TOOL_OUTPUT_BYTES: usize = 4 * 1024 * 1024;
 
 pub trait AudioTools: Send + Sync {
     fn inspect(&self, path: &Path) -> Result<AudioDescription, CoreError>;
-    fn convert_aac_lc_192k(&self, input: &Path, output: &Path) -> Result<(), CoreError>;
+    fn convert_aac_lc_128k(&self, input: &Path, output: &Path) -> Result<(), CoreError>;
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -33,16 +36,12 @@ impl AudioTools for AppleAudioTools {
         parse_afinfo(&output.stdout)
     }
 
-    fn convert_aac_lc_192k(&self, input: &Path, output: &Path) -> Result<(), CoreError> {
+    fn convert_aac_lc_128k(&self, input: &Path, output: &Path) -> Result<(), CoreError> {
         if !input.is_absolute() || !output.is_absolute() || output.exists() {
             return Err(CoreError::InvalidRequest);
         }
         let result = Command::new("/usr/bin/afconvert")
-            .arg(input)
-            .arg("-o")
-            .arg(output)
-            .args(["-f", "m4af", "-d", "aac", "-b", "192000"])
-            .args(["-q", "127", "-s", "2"])
+            .args(afconvert_arguments(input, output))
             .output()
             .map_err(|_| CoreError::AudioToolFailed)?;
         if !result.status.success()
@@ -57,6 +56,24 @@ impl AudioTools for AppleAudioTools {
         }
         Ok(())
     }
+}
+
+pub fn afconvert_arguments(input: &Path, output: &Path) -> Vec<OsString> {
+    vec![
+        input.as_os_str().to_owned(),
+        OsString::from("-o"),
+        output.as_os_str().to_owned(),
+        OsString::from("-f"),
+        OsString::from("m4af"),
+        OsString::from("-d"),
+        OsString::from("aac"),
+        OsString::from("-b"),
+        OsString::from(M4A_TARGET_BITRATE_BPS.to_string()),
+        OsString::from("-q"),
+        OsString::from("127"),
+        OsString::from("-s"),
+        OsString::from("2"),
+    ]
 }
 
 #[derive(Debug, Deserialize)]

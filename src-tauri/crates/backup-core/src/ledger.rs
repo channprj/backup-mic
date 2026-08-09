@@ -40,6 +40,15 @@ pub struct VerifiedRecording {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SupersededWavEvidence {
+    pub recording_id: String,
+    pub transmitter: Transmitter,
+    pub relative_path: PathBuf,
+    pub byte_count: u64,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PendingDeletionItem {
     pub recording_id: String,
     pub source_size: u64,
@@ -756,6 +765,36 @@ impl Ledger {
         &mut self,
         recording: &VerifiedRecording,
     ) -> Result<(), CoreError> {
+        self.replace_verified_artifact_evidence(recording, None)
+    }
+
+    pub fn replace_verified_artifact_with_superseded_wav(
+        &mut self,
+        recording: &VerifiedRecording,
+        superseded_relative_path: &Path,
+        superseded_size: u64,
+        superseded_sha256: &str,
+    ) -> Result<(), CoreError> {
+        if !crate::filesystem::is_safe_relative_path(superseded_relative_path)
+            || superseded_size == 0
+            || superseded_sha256.len() != 64
+            || !superseded_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        self.replace_verified_artifact_evidence(
+            recording,
+            Some((superseded_relative_path, superseded_size, superseded_sha256)),
+        )
+    }
+
+    fn replace_verified_artifact_evidence(
+        &mut self,
+        recording: &VerifiedRecording,
+        superseded: Option<(&Path, u64, &str)>,
+    ) -> Result<(), CoreError> {
         validate_verified_recording(recording)?;
         let destination_relative_path = path_text(&recording.artifact.relative_path)?;
         let audio = recording
@@ -763,6 +802,9 @@ impl Ledger {
             .audio
             .as_ref()
             .ok_or(CoreError::InvalidRequest)?;
+        let superseded_path = superseded.map(|value| path_text(value.0)).transpose()?;
+        let superseded_size = superseded.map(|value| to_i64(value.1)).transpose()?;
+        let superseded_sha256 = superseded.map(|value| value.2);
         let changed = self
             .connection
             .execute(
@@ -773,10 +815,13 @@ impl Ledger {
                        artifact_channel_count = ?7, artifact_valid_frames = ?8,
                        artifact_duration_micros = ?9, conversion_status = ?10,
                        conversion_error_code = ?11, verified_at = ?12,
-                       backup_run_id = ?13
-                   WHERE id = ?14 AND transmitter = ?15 AND source_relative_path = ?16
-                     AND source_size = ?17 AND source_mtime_ns = ?18
-                     AND source_sha256 = ?19"#,
+                       backup_run_id = ?13,
+                       superseded_wav_relative_path = COALESCE(?14, superseded_wav_relative_path),
+                       superseded_wav_size = COALESCE(?15, superseded_wav_size),
+                       superseded_wav_sha256 = COALESCE(?16, superseded_wav_sha256)
+                   WHERE id = ?17 AND transmitter = ?18 AND source_relative_path = ?19
+                     AND source_size = ?20 AND source_mtime_ns = ?21
+                     AND source_sha256 = ?22"#,
                 params![
                     destination_relative_path,
                     to_i64(recording.artifact.byte_count)?,
@@ -791,6 +836,9 @@ impl Ledger {
                     recording.conversion_error_code,
                     recording.verified_at,
                     recording.backup_run_id,
+                    superseded_path,
+                    superseded_size,
+                    superseded_sha256,
                     recording.id,
                     transmitter_name(recording.transmitter),
                     path_text(&recording.source_relative_path)?,
@@ -802,6 +850,109 @@ impl Ledger {
             .map_err(CoreError::Ledger)?;
         if changed != 1 {
             return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
+    pub fn superseded_wav_evidence(
+        &self,
+        recording_id: &str,
+    ) -> Result<Option<(PathBuf, u64, String)>, CoreError> {
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT superseded_wav_relative_path, superseded_wav_size,
+                          superseded_wav_sha256
+                   FROM recordings WHERE id = ?1"#,
+                [recording_id],
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, Option<i64>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        let Some((path, size, sha256)) = row else {
+            return Ok(None);
+        };
+        match (path, size, sha256) {
+            (Some(path), Some(size), Some(sha256)) => Ok(Some((
+                PathBuf::from(path),
+                u64::try_from(size).map_err(|_| CoreError::LedgerCorrupt)?,
+                sha256,
+            ))),
+            (None, None, None) => Ok(None),
+            _ => Err(CoreError::LedgerCorrupt),
+        }
+    }
+
+    pub fn pending_superseded_wavs(&self) -> Result<Vec<SupersededWavEvidence>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, transmitter, superseded_wav_relative_path,
+                          superseded_wav_size, superseded_wav_sha256
+                   FROM recordings
+                   WHERE superseded_wav_relative_path IS NOT NULL
+                      OR superseded_wav_size IS NOT NULL
+                      OR superseded_wav_sha256 IS NOT NULL
+                   ORDER BY superseded_wav_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                ))
+            })
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| {
+            let (recording_id, transmitter, path, size, sha256) = row.map_err(CoreError::Ledger)?;
+            let (Some(path), Some(size), Some(sha256)) = (path, size, sha256) else {
+                return Err(CoreError::LedgerCorrupt);
+            };
+            let relative_path = PathBuf::from(path);
+            let byte_count = u64::try_from(size).map_err(|_| CoreError::LedgerCorrupt)?;
+            if !crate::filesystem::is_safe_relative_path(&relative_path)
+                || byte_count == 0
+                || sha256.len() != 64
+            {
+                return Err(CoreError::LedgerCorrupt);
+            }
+            Ok(SupersededWavEvidence {
+                recording_id,
+                transmitter: parse_transmitter(&transmitter)?,
+                relative_path,
+                byte_count,
+                sha256,
+            })
+        })
+        .collect()
+    }
+
+    pub fn clear_superseded_wav_evidence(&mut self, recording_id: &str) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE recordings
+                   SET superseded_wav_relative_path = NULL,
+                       superseded_wav_size = NULL,
+                       superseded_wav_sha256 = NULL
+                   WHERE id = ?1 AND superseded_wav_relative_path IS NOT NULL
+                     AND superseded_wav_size IS NOT NULL
+                     AND superseded_wav_sha256 IS NOT NULL"#,
+                [recording_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
         }
         Ok(())
     }

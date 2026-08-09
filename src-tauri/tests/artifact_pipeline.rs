@@ -55,7 +55,7 @@ impl AudioTools for FakeAudioTools {
         }
     }
 
-    fn convert_aac_lc_192k(
+    fn convert_aac_lc_128k(
         &self,
         _input: &Path,
         output: &Path,
