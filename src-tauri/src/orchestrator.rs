@@ -356,6 +356,11 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                     plan.source.modified_nanos,
                     &plan.source_sha256,
                 )? && existing.artifact.format == OutputFormat::M4a
+                    && artifact_candidate_exists(
+                        &destination,
+                        &existing.artifact.relative_path,
+                        existing.artifact.byte_count,
+                    )
                 {
                     plan.disposition = DestinationDisposition::Reuse;
                     existing_artifacts.insert(plan.source.relative_path.clone(), existing);
@@ -1751,6 +1756,30 @@ fn source_paths_for_scan(scan: &ScanResult) -> BTreeSet<std::path::PathBuf> {
         .collect()
 }
 
+fn artifact_candidate_exists(
+    destination_root: &std::path::Path,
+    relative_path: &std::path::Path,
+    expected_bytes: u64,
+) -> bool {
+    if !backup_core::filesystem::is_safe_relative_path(relative_path) {
+        return false;
+    }
+    let Ok(canonical_root) = std::fs::canonicalize(destination_root) else {
+        return false;
+    };
+    let candidate = canonical_root.join(relative_path);
+    let Ok(metadata) = std::fs::symlink_metadata(&candidate) else {
+        return false;
+    };
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_file()
+        || metadata.len() != expected_bytes
+    {
+        return false;
+    }
+    std::fs::canonicalize(candidate).is_ok_and(|path| path.starts_with(canonical_root))
+}
+
 fn resolve_live_source(
     root: &std::path::Path,
     relative: &std::path::Path,
@@ -1790,6 +1819,10 @@ fn adapter_public_error(message_code: &str, retryable: bool) -> PublicError {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Write as _;
+
+    use tempfile::tempdir;
+
     use super::*;
 
     #[test]
@@ -1813,5 +1846,23 @@ mod tests {
         let combined = combine_progress([&tiny, &large].into_iter());
         assert_eq!(combined.percent(), 1);
         assert_eq!(combined.total_work_units, 200);
+    }
+
+    #[test]
+    fn historical_artifact_evidence_is_reused_only_in_the_current_destination() {
+        let destination = tempdir().unwrap();
+        let relative = std::path::Path::new("2026/2026-08-10/TX02/recording.m4a");
+
+        assert!(!artifact_candidate_exists(destination.path(), relative, 4));
+
+        let artifact = destination.path().join(relative);
+        std::fs::create_dir_all(artifact.parent().unwrap()).unwrap();
+        std::fs::File::create(&artifact)
+            .unwrap()
+            .write_all(b"m4a!")
+            .unwrap();
+
+        assert!(artifact_candidate_exists(destination.path(), relative, 4));
+        assert!(!artifact_candidate_exists(destination.path(), relative, 5));
     }
 }
