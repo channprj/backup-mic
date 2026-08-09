@@ -1,7 +1,7 @@
 # DJI Mic Mini 2S Tauri/Rust Automatic Backup Design
 
 **Date:** 2026-08-09
-**Status:** Approved
+**Status:** Implemented baseline; follow-up backup, conversion, trash, logging, settings, and UI behavior is superseded by `2026-08-09-dji-mic-m4a-trash-settings-design.md`
 **Target platform:** macOS 13 or newer
 **Product name:** DJI Mic Backup
 **Product shape:** Login-launched Tauri 2 tray application with a React/shadcn popover and a Rust-owned backup engine
