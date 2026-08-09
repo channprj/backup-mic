@@ -42,6 +42,8 @@ pub enum DeletionPhase {
 pub enum CurrentStage {
     Copy,
     Sha256Verification,
+    Conversion,
+    ArtifactVerification,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

@@ -13,6 +13,8 @@ pub enum PublicErrorCode {
     CopyFailed,
     SyncFailed,
     HashMismatch,
+    ArtifactInvalid,
+    AudioToolFailed,
     DeviceRemoved,
     LedgerCorrupt,
     AuditLogUnavailable,
@@ -50,6 +52,10 @@ pub enum CoreError {
     SyncFailed(#[source] std::io::Error),
     #[error("source and destination hashes differ")]
     HashMismatch,
+    #[error("converted audio artifact failed validation")]
+    ArtifactInvalid,
+    #[error("Apple audio tool failed")]
+    AudioToolFailed,
     #[error("device was removed")]
     DeviceRemoved,
     #[error("ledger is corrupt")]
@@ -98,6 +104,16 @@ impl CoreError {
             Self::CopyFailed(_) => (PublicErrorCode::CopyFailed, "copy_failed", true),
             Self::SyncFailed(_) => (PublicErrorCode::SyncFailed, "sync_failed", true),
             Self::HashMismatch => (PublicErrorCode::HashMismatch, "hash_mismatch", true),
+            Self::ArtifactInvalid => (
+                PublicErrorCode::ArtifactInvalid,
+                "artifact_validation_failed",
+                true,
+            ),
+            Self::AudioToolFailed => (
+                PublicErrorCode::AudioToolFailed,
+                "audio_conversion_failed",
+                true,
+            ),
             Self::DeviceRemoved => (PublicErrorCode::DeviceRemoved, "device_removed", true),
             Self::LedgerCorrupt => (PublicErrorCode::LedgerCorrupt, "ledger_corrupt", false),
             Self::Ledger(_) | Self::LedgerIo(_) => {

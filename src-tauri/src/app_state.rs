@@ -155,6 +155,10 @@ impl AppState {
         self.runtime.lock().preferences.automatic_backup
     }
 
+    pub fn m4a_conversion_enabled(&self) -> bool {
+        self.runtime.lock().preferences.m4a_conversion
+    }
+
     pub fn operation_is_active(&self) -> bool {
         self.operation_active.load(Ordering::SeqCst)
     }
@@ -669,5 +673,6 @@ mod tests {
         let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
 
         assert!(!state.automatic_backup_enabled());
+        assert!(state.m4a_conversion_enabled());
     }
 }

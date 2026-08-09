@@ -530,6 +530,97 @@ impl Ledger {
             .map_err(CoreError::Ledger)
     }
 
+    pub fn verified_recording_for_source(
+        &self,
+        transmitter: Transmitter,
+        source_relative_path: &Path,
+        source_size: u64,
+        source_mtime_ns: i128,
+        source_sha256: &str,
+    ) -> Result<Option<VerifiedRecording>, CoreError> {
+        if !crate::filesystem::is_safe_relative_path(source_relative_path) {
+            return Err(CoreError::InvalidRequest);
+        }
+        self.connection
+            .query_row(
+                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings
+                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                     AND source_size = ?3 AND source_mtime_ns = ?4
+                     AND source_sha256 = ?5"#,
+                params![
+                    transmitter_name(transmitter),
+                    path_text(source_relative_path)?,
+                    to_i64(source_size)?,
+                    source_mtime_ns.to_string(),
+                    source_sha256,
+                ],
+                row_to_verified_recording,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)
+    }
+
+    pub fn replace_verified_artifact(
+        &mut self,
+        recording: &VerifiedRecording,
+    ) -> Result<(), CoreError> {
+        validate_verified_recording(recording)?;
+        let destination_relative_path = path_text(&recording.artifact.relative_path)?;
+        let audio = recording
+            .artifact
+            .audio
+            .as_ref()
+            .ok_or(CoreError::InvalidRequest)?;
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE recordings
+                   SET destination_relative_path = ?1, destination_size = ?2,
+                       destination_sha256 = ?3, artifact_format = ?4,
+                       artifact_codec = ?5, artifact_sample_rate_hz = ?6,
+                       artifact_channel_count = ?7, artifact_valid_frames = ?8,
+                       artifact_duration_micros = ?9, conversion_status = ?10,
+                       conversion_error_code = ?11, verified_at = ?12,
+                       backup_run_id = ?13
+                   WHERE id = ?14 AND transmitter = ?15 AND source_relative_path = ?16
+                     AND source_size = ?17 AND source_mtime_ns = ?18
+                     AND source_sha256 = ?19"#,
+                params![
+                    destination_relative_path,
+                    to_i64(recording.artifact.byte_count)?,
+                    recording.artifact.sha256,
+                    output_format_name(recording.artifact.format),
+                    audio.codec,
+                    i64::from(audio.sample_rate_hz),
+                    i64::from(audio.channel_count),
+                    to_i64(audio.valid_frames)?,
+                    to_i64(audio.duration_micros)?,
+                    conversion_status_name(recording.conversion_status),
+                    recording.conversion_error_code,
+                    recording.verified_at,
+                    recording.backup_run_id,
+                    recording.id,
+                    transmitter_name(recording.transmitter),
+                    path_text(&recording.source_relative_path)?,
+                    to_i64(recording.source_size)?,
+                    recording.source_mtime_ns.to_string(),
+                    recording.source_sha256,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
     pub fn verified_recording_count(&self) -> Result<u64, CoreError> {
         let count = self
             .connection

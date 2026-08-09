@@ -1,6 +1,7 @@
 pub const PRODUCT_NAME: &str = "DJI Mic Backup";
 
 pub mod app_state;
+pub mod artifact_pipeline;
 pub mod commands;
 pub mod dto;
 pub mod lifecycle;

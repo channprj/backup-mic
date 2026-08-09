@@ -506,11 +506,21 @@ fn cleanup_directory(directory: &Path, removed: &mut usize) -> Result<(), CoreEr
 }
 
 fn is_owned_partial(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|name| name.to_str())
-        .and_then(|name| name.strip_prefix('.'))
-        .and_then(|name| name.strip_suffix(".partial"))
+    let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+        return false;
+    };
+    let Some(hidden_name) = name.strip_prefix('.') else {
+        return false;
+    };
+    if hidden_name
+        .strip_suffix(".partial")
         .is_some_and(|id| Uuid::parse_str(id).is_ok())
+    {
+        return true;
+    }
+    hidden_name
+        .rsplit_once(".m4a.part-")
+        .is_some_and(|(stem, id)| !stem.is_empty() && Uuid::parse_str(id).is_ok())
 }
 
 fn digest_hex(digest: impl AsRef<[u8]>) -> String {
@@ -747,8 +757,15 @@ mod tests {
             b"keep",
         )
         .unwrap();
+        fs::write(
+            destination
+                .path()
+                .join("nested/.recording.m4a.part-550e8400-e29b-41d4-a716-446655440000"),
+            b"conversion partial",
+        )
+        .unwrap();
 
-        assert_eq!(cleanup_owned_partials(destination.path()).unwrap(), 1);
+        assert_eq!(cleanup_owned_partials(destination.path()).unwrap(), 2);
         assert!(
             destination
                 .path()

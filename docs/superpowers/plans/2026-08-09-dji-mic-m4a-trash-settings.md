@@ -317,15 +317,15 @@ pub enum ArtifactRequest<'a> {
 }
 ```
 
-- [ ] **Step 1: Add failing artifact-policy tests with fake audio tools**
+- [x] **Step 1: Add failing artifact-policy tests with fake audio tools**
 
 Assert that conversion cannot start before equal source/staging WAV bytes and hashes; final `.m4a` is not published before inspection and hashing; wrong container, non-AAC codec, wrong sample rate, wrong channels, zero packets, zero audio bytes, mismatched valid frames, or duration outside one AAC packet is rejected; a declared priming/remainder result is accepted; WAV mode preserves equal source/artifact hashes; and capacity includes staging plus output plus reserve.
 
-- [ ] **Step 2: Add macOS integration fixtures and observe failure**
+- [x] **Step 2: Add macOS integration fixtures and observe failure**
 
 Generate a small deterministic PCM WAV in the test, invoke production `/usr/bin/afconvert` and `/usr/bin/afinfo -x`, and assert the parsed result is M4A/AAC with matching shape and nonzero frames. The first run must fail because `AppleAudioTools` is absent.
 
-- [ ] **Step 3: Add pinned dependencies and the Apple tool adapter**
+- [x] **Step 3: Add pinned dependencies and the Apple tool adapter**
 
 Add `quick-xml = { version = "=0.41.0", features = ["serialize"] }`. Invoke exactly:
 
@@ -336,19 +336,19 @@ Add `quick-xml = { version = "=0.41.0", features = ["serialize"] }`. Invoke exac
 
 Pass every token as a separate `Command::arg`, reject signal termination and nonzero status, cap captured output, and parse only the required XML fields. Do not accept localized plain-text output.
 
-- [ ] **Step 4: Split the copy and artifact boundaries**
+- [x] **Step 4: Split the copy and artifact boundaries**
 
 Refactor `execute_backup_item_observed` so it first returns a durable, source-equal app-owned staging WAV. The artifact pipeline then chooses WAV or M4A from `BackupPreferences`, validates the result, hashes it, applies the existing no-clobber final name, atomically renames on the destination filesystem, synchronizes the parent directory, commits `VerifiedArtifact`, and only then removes the app-owned staging WAV.
 
-- [ ] **Step 5: Implement conservative restart recovery**
+- [x] **Step 5: Implement conservative restart recovery**
 
 Recognize only app-owned staging and `.m4a.part-<uuid>` names. Reinspect a finalized M4A before repairing a missing ledger commit. Quarantine invalid or ambiguous conversion output and retain a verified staging WAV when Apple tooling fails. Never infer source-retirement authority from a recovered artifact without a live complete-snapshot check.
 
-- [ ] **Step 6: Implement verified legacy WAV migration**
+- [x] **Step 6: Implement verified legacy WAV migration**
 
 When M4A mode is enabled, rehash an existing ledger-backed WAV, convert it through the same inspection/finalization path, commit the new artifact, then send the superseded destination WAV to a Mac-local Trash adapter supplied by Task 5. Until that adapter exists, retain the old WAV and record migration as pending; do not permanently unlink it.
 
-- [ ] **Step 7: Run focused, integration, and workspace suites**
+- [x] **Step 7: Run focused, integration, and workspace suites**
 
 ```bash
 cargo test -p backup-core backup_flow
@@ -359,7 +359,7 @@ cargo test --workspace --all-targets
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-- [ ] **Step 8: Commit and push the artifact checkpoint**
+- [x] **Step 8: Commit and push the artifact checkpoint**
 
 Explicitly stage this task's files, commit `feat(backup): create verified m4a artifacts`, push, fetch, and prove both parity commands return `0 0`.
 

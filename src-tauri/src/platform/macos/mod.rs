@@ -1,5 +1,7 @@
 //! Safe macOS device-monitor facade. The C FFI lives in `ffi`.
 
+pub mod audio;
+
 mod ffi;
 
 use std::{
