@@ -179,3 +179,47 @@ fn batch_phase_transitions_require_the_exact_predecessor() {
         Err(CoreError::InvalidRequest)
     ));
 }
+
+#[test]
+fn a_fresh_destination_copy_replaces_stale_m4a_evidence() {
+    let directory = tempdir().unwrap();
+    let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    for (id, started_at) in [
+        ("run-1", "2026-08-10T00:00:00Z"),
+        ("run-after-destination-change", "2026-08-10T00:01:00Z"),
+    ] {
+        ledger
+            .begin_batch_run(
+                id,
+                started_at,
+                4,
+                FrozenPreferences {
+                    automatic_backup: true,
+                    m4a_conversion: true,
+                    automatic_trash: false,
+                },
+            )
+            .unwrap();
+    }
+    let wav = wav_recording("recording-1", "first.wav", 'a');
+    ledger.commit_verified_recording(&wav).unwrap();
+    ledger
+        .replace_verified_artifact(&m4a_recording("recording-1", "first.wav", 'a'))
+        .unwrap();
+
+    let mut fresh_copy = wav_recording("new-random-id", "first.wav", 'a');
+    fresh_copy.backup_run_id = "run-after-destination-change".to_owned();
+    fresh_copy.verified_at = "2026-08-10T00:01:00Z".to_owned();
+    assert_eq!(
+        ledger
+            .replace_verified_recording_from_fresh_copy(&fresh_copy)
+            .unwrap(),
+        "recording-1"
+    );
+
+    let replaced = ledger.verified_recording("recording-1").unwrap().unwrap();
+    assert_eq!(replaced.artifact, fresh_copy.artifact);
+    assert_eq!(replaced.conversion_status, ConversionStatus::NotRequired);
+    assert_eq!(replaced.backup_run_id, "run-after-destination-change");
+    assert_eq!(ledger.superseded_wav_evidence("recording-1").unwrap(), None);
+}

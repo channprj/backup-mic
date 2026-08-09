@@ -59,6 +59,7 @@ struct PreparedTransmitter {
     plans: Vec<DestinationPlan>,
     additional_plans: Vec<AdditionalFilePlan>,
     existing_artifacts: HashMap<std::path::PathBuf, backup_core::ledger::VerifiedRecording>,
+    fresh_destination_copies: HashSet<std::path::PathBuf>,
     required_copy_bytes: u64,
 }
 
@@ -346,24 +347,32 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             }
         };
         let mut existing_artifacts = HashMap::new();
+        let mut fresh_destination_copies = HashSet::new();
         {
             let ledger = state.ledger.lock();
             for plan in &mut plans {
-                if let Some(existing) = ledger.verified_recording_for_source(
+                let Some(existing) = ledger.verified_recording_for_source(
                     transmitter,
                     &plan.source.relative_path,
                     plan.source.size,
                     plan.source.modified_nanos,
                     &plan.source_sha256,
-                )? && existing.artifact.format == OutputFormat::M4a
-                    && artifact_candidate_exists(
-                        &destination,
-                        &existing.artifact.relative_path,
-                        existing.artifact.byte_count,
-                    )
-                {
+                )?
+                else {
+                    continue;
+                };
+                if existing.artifact.format != OutputFormat::M4a {
+                    continue;
+                }
+                if artifact_candidate_exists(
+                    &destination,
+                    &existing.artifact.relative_path,
+                    existing.artifact.byte_count,
+                ) {
                     plan.disposition = DestinationDisposition::Reuse;
                     existing_artifacts.insert(plan.source.relative_path.clone(), existing);
+                } else {
+                    fresh_destination_copies.insert(plan.source.relative_path.clone());
                 }
             }
         }
@@ -406,6 +415,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             plans,
             additional_plans,
             existing_artifacts,
+            fresh_destination_copies,
             required_copy_bytes,
         });
     }
@@ -657,7 +667,17 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         .contains_key(&plan.source.relative_path);
                     recording.backup_run_id.clone_from(&run_id);
                     recording.verified_at = now_string();
-                    recording.id = state.ledger.lock().commit_verified_recording(&recording)?;
+                    recording.id = {
+                        let mut ledger = state.ledger.lock();
+                        if prepared_tx
+                            .fresh_destination_copies
+                            .contains(&plan.source.relative_path)
+                        {
+                            ledger.replace_verified_recording_from_fresh_copy(&recording)?
+                        } else {
+                            ledger.commit_verified_recording(&recording)?
+                        }
+                    };
                     if !reused_m4a {
                         progress.record_verified_file();
                         observer(progress, CurrentStage::Sha256Verification);

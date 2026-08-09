@@ -774,6 +774,79 @@ impl Ledger {
         self.replace_verified_artifact_evidence(recording, None)
     }
 
+    pub fn replace_verified_recording_from_fresh_copy(
+        &mut self,
+        recording: &VerifiedRecording,
+    ) -> Result<String, CoreError> {
+        validate_verified_recording(recording)?;
+        if recording.artifact.format != OutputFormat::Wav
+            || recording.artifact.audio.is_some()
+            || recording.conversion_status != ConversionStatus::NotRequired
+            || recording.conversion_error_code.is_some()
+            || recording.retirement_status != RetirementStatus::Present
+            || recording.retired_session_relative_path.is_some()
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+
+        let source_relative_path = path_text(&recording.source_relative_path)?;
+        let destination_relative_path = path_text(&recording.artifact.relative_path)?;
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let id = transaction
+            .query_row(
+                r#"SELECT id FROM recordings
+                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                     AND source_size = ?3 AND source_mtime_ns = ?4
+                     AND source_sha256 = ?5"#,
+                params![
+                    transmitter_name(recording.transmitter),
+                    source_relative_path,
+                    to_i64(recording.source_size)?,
+                    recording.source_mtime_ns.to_string(),
+                    recording.source_sha256,
+                ],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?
+            .ok_or(CoreError::LedgerCorrupt)?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE recordings
+                   SET destination_relative_path = ?1, destination_size = ?2,
+                       destination_sha256 = ?3, verified_at = ?4, backup_run_id = ?5,
+                       artifact_format = 'wav', artifact_codec = NULL,
+                       artifact_sample_rate_hz = NULL, artifact_channel_count = NULL,
+                       artifact_valid_frames = NULL, artifact_duration_micros = NULL,
+                       conversion_status = 'not_required', conversion_error_code = NULL,
+                       retirement_status = 'present', retired_session_relative_path = NULL,
+                       superseded_wav_relative_path = NULL, superseded_wav_size = NULL,
+                       superseded_wav_sha256 = NULL, superseded_wav_retirement_status = 'none'
+                   WHERE id = ?6 AND transmitter = ?7 AND source_relative_path = ?8
+                     AND source_size = ?9 AND source_mtime_ns = ?10
+                     AND source_sha256 = ?11"#,
+                params![
+                    destination_relative_path,
+                    to_i64(recording.artifact.byte_count)?,
+                    recording.artifact.sha256,
+                    recording.verified_at,
+                    recording.backup_run_id,
+                    id,
+                    transmitter_name(recording.transmitter),
+                    source_relative_path,
+                    to_i64(recording.source_size)?,
+                    recording.source_mtime_ns.to_string(),
+                    recording.source_sha256,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        transaction.commit().map_err(CoreError::Ledger)?;
+        Ok(id)
+    }
+
     pub fn replace_verified_artifact_with_superseded_wav(
         &mut self,
         recording: &VerifiedRecording,
