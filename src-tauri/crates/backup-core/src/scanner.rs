@@ -8,10 +8,14 @@ use std::{
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
+    additional_file::AdditionalFileClass,
     clock::Clock,
     error::CoreError,
-    filesystem::{is_hidden, is_safe_relative_path, modified_nanos},
-    recording::{RecordingObservation, parse_recording_name},
+    filesystem::{
+        is_hidden, is_recognized_session_name, is_safe_additional_relative_path,
+        is_safe_relative_path, modified_nanos,
+    },
+    recording::{AdditionalFileObservation, RecordingObservation, parse_recording_name},
     state::Transmitter,
 };
 
@@ -21,16 +25,24 @@ pub const STABILITY_INTERVAL: Duration = Duration::from_secs(2);
 pub enum ScanIssue {
     TransmitterPrefixMismatch,
     MalformedName,
+    UnsafeSessionEntry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ScanResult {
     pub recordings: Vec<RecordingObservation>,
+    pub additional_files: Vec<AdditionalFileObservation>,
     pub issues: Vec<ScanIssue>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum ScanItemKind {
+    Recording,
+    Additional,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ScanFingerprint(Vec<(PathBuf, u64, i128)>);
+pub struct ScanFingerprint(Vec<(ScanItemKind, PathBuf, u64, i128)>);
 
 impl ScanFingerprint {
     pub fn is_empty(&self) -> bool {
@@ -44,18 +56,28 @@ pub fn metadata_fingerprint(
     local_offset: UtcOffset,
 ) -> Result<ScanFingerprint, CoreError> {
     let scan = scan_once(root, transmitter, local_offset)?;
-    Ok(ScanFingerprint(
-        scan.recordings
-            .into_iter()
-            .map(|recording| {
-                (
-                    recording.relative_path,
-                    recording.size,
-                    recording.modified_nanos,
-                )
-            })
-            .collect(),
-    ))
+    let mut items = scan
+        .recordings
+        .into_iter()
+        .map(|recording| {
+            (
+                ScanItemKind::Recording,
+                recording.relative_path,
+                recording.size,
+                recording.modified_nanos,
+            )
+        })
+        .chain(scan.additional_files.into_iter().map(|file| {
+            (
+                ScanItemKind::Additional,
+                file.relative_path,
+                file.size,
+                file.modified_nanos,
+            )
+        }))
+        .collect::<Vec<_>>();
+    items.sort();
+    Ok(ScanFingerprint(items))
 }
 
 pub fn scan_once(
@@ -70,10 +92,14 @@ pub fn scan_once(
         &canonical_root,
         transmitter,
         local_offset,
+        false,
         &mut result,
     )?;
     result
         .recordings
+        .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
+    result
+        .additional_files
         .sort_by(|left, right| left.relative_path.cmp(&right.relative_path));
     Ok(result)
 }
@@ -83,23 +109,44 @@ fn scan_directory(
     directory: &Path,
     transmitter: Transmitter,
     local_offset: UtcOffset,
+    recognized_session: bool,
     result: &mut ScanResult,
 ) -> Result<(), CoreError> {
     for entry in fs::read_dir(directory).map_err(CoreError::CopyFailed)? {
         let entry = entry.map_err(CoreError::CopyFailed)?;
         let path = entry.path();
-        if is_hidden(&path) {
+        if !recognized_session && is_hidden(&path) {
             continue;
         }
         let metadata = fs::symlink_metadata(&path).map_err(CoreError::CopyFailed)?;
         if metadata.file_type().is_symlink() {
+            if recognized_session {
+                result.issues.push(ScanIssue::UnsafeSessionEntry);
+            }
             continue;
         }
         if metadata.is_dir() {
-            scan_directory(canonical_root, &path, transmitter, local_offset, result)?;
+            if recognized_session {
+                result.issues.push(ScanIssue::UnsafeSessionEntry);
+                continue;
+            }
+            let is_session = path.strip_prefix(canonical_root).is_ok_and(|relative| {
+                relative.components().count() == 1 && is_recognized_session_name(relative)
+            });
+            scan_directory(
+                canonical_root,
+                &path,
+                transmitter,
+                local_offset,
+                is_session,
+                result,
+            )?;
             continue;
         }
-        if !metadata.is_file() || !has_wav_extension(&path) {
+        if !metadata.is_file() {
+            if recognized_session {
+                result.issues.push(ScanIssue::UnsafeSessionEntry);
+            }
             continue;
         }
         let canonical_path = fs::canonicalize(&path).map_err(CoreError::CopyFailed)?;
@@ -110,7 +157,26 @@ fn scan_directory(
             .strip_prefix(canonical_root)
             .map_err(|_| invalid_path_error())?
             .to_path_buf();
-        if !is_safe_relative_path(&relative_path) {
+        if recognized_session && (is_hidden(&path) || !has_wav_extension(&path)) {
+            if !is_safe_additional_relative_path(&relative_path) {
+                result.issues.push(ScanIssue::UnsafeSessionEntry);
+                continue;
+            }
+            let file_name = canonical_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .ok_or_else(invalid_path_error)?
+                .to_owned();
+            result.additional_files.push(AdditionalFileObservation {
+                relative_path,
+                classification: classify_additional_file(&file_name),
+                file_name,
+                size: metadata.len(),
+                modified_nanos: modified_nanos(&metadata)?,
+            });
+            continue;
+        }
+        if !has_wav_extension(&path) || !is_safe_relative_path(&relative_path) {
             continue;
         }
         let file_name = canonical_path
@@ -142,6 +208,20 @@ fn scan_directory(
         });
     }
     Ok(())
+}
+
+fn classify_additional_file(file_name: &str) -> AdditionalFileClass {
+    if file_name.starts_with("._") {
+        AdditionalFileClass::AppleDouble
+    } else if Path::new(file_name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("m4a"))
+    {
+        AdditionalFileClass::M4a
+    } else {
+        AdditionalFileClass::Other
+    }
 }
 
 fn has_wav_extension(path: &Path) -> bool {
@@ -176,9 +256,17 @@ pub fn scan_stable(
             )
         })
         .collect();
+    let first_additional_by_path: HashMap<PathBuf, (u64, i128)> = first
+        .additional_files
+        .into_iter()
+        .map(|file| (file.relative_path, (file.size, file.modified_nanos)))
+        .collect();
     second.recordings.retain(|recording| {
         first_by_path.get(&recording.relative_path)
             == Some(&(recording.size, recording.modified_nanos))
+    });
+    second.additional_files.retain(|file| {
+        first_additional_by_path.get(&file.relative_path) == Some(&(file.size, file.modified_nanos))
     });
     Ok(second)
 }

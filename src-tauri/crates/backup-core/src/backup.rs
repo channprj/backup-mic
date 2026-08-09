@@ -13,12 +13,14 @@ use tempfile::{NamedTempFile, TempPath};
 use uuid::Uuid;
 
 use crate::{
+    additional_file::VerifiedAdditionalFile,
     artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
     destination::{DestinationDisposition, DestinationPlan, required_copy_bytes},
     error::CoreError,
-    filesystem::{is_safe_relative_path, modified_nanos},
+    filesystem::{is_safe_additional_relative_path, is_safe_relative_path, modified_nanos},
     hash::{FileDigest, HASH_BUFFER_BYTES, hash_reader_checked},
     ledger::{Ledger, VerifiedRecording},
+    recording::AdditionalFileObservation,
     state::{Progress, Transmitter},
 };
 
@@ -194,6 +196,127 @@ pub fn execute_backup_item_observed(
     progress.record_verified_file();
     observer(progress, crate::state::CurrentStage::Sha256Verification);
     Ok(verified)
+}
+
+pub fn execute_additional_file_copy(
+    context: &BackupItemContext<'_>,
+    source: &AdditionalFileObservation,
+    destination_relative_path: &Path,
+    cancellation: &CancellationToken,
+) -> Result<VerifiedAdditionalFile, CoreError> {
+    cancellation.check()?;
+    if !is_safe_additional_relative_path(&source.relative_path)
+        || !is_safe_additional_relative_path(destination_relative_path)
+        || source.size == 0
+        || source
+            .relative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(source.file_name.as_str())
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    let source_path = resolve_existing_regular(
+        context.source_root,
+        &source.relative_path,
+        CoreError::SourceChanged,
+    )?;
+    let initial_metadata = fs::symlink_metadata(&source_path).map_err(CoreError::CopyFailed)?;
+    if !initial_metadata.file_type().is_file()
+        || initial_metadata.len() != source.size
+        || modified_nanos(&initial_metadata)? != source.modified_nanos
+    {
+        return Err(CoreError::SourceChanged);
+    }
+    let expected = crate::hash::hash_file(&source_path)?;
+    if expected.size != source.size {
+        return Err(CoreError::SourceChanged);
+    }
+    let destination_root = fs::canonicalize(context.destination_root)
+        .map_err(|_| CoreError::DestinationUnavailable)?;
+    let destination_path = prepare_destination_path(&destination_root, destination_relative_path)?;
+    let parent = destination_path
+        .parent()
+        .ok_or(CoreError::DestinationUnavailable)?;
+    let mut partial = create_owned_partial(parent)?;
+    let mut input = BufReader::with_capacity(
+        HASH_BUFFER_BYTES,
+        File::open(&source_path).map_err(CoreError::CopyFailed)?,
+    );
+    let mut hasher = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = vec![0_u8; HASH_BUFFER_BYTES];
+    loop {
+        cancellation.check()?;
+        let read = input.read(&mut buffer).map_err(CoreError::CopyFailed)?;
+        if read == 0 {
+            break;
+        }
+        partial
+            .as_file_mut()
+            .write_all(&buffer[..read])
+            .map_err(CoreError::CopyFailed)?;
+        hasher.update(&buffer[..read]);
+        copied = copied
+            .checked_add(u64::try_from(read).map_err(|_| CoreError::InvalidRequest)?)
+            .ok_or(CoreError::InvalidRequest)?;
+    }
+    partial
+        .as_file_mut()
+        .flush()
+        .map_err(CoreError::CopyFailed)?;
+    partial
+        .as_file()
+        .sync_all()
+        .map_err(CoreError::SyncFailed)?;
+    let final_metadata = fs::symlink_metadata(&source_path).map_err(CoreError::CopyFailed)?;
+    let copied_digest = FileDigest {
+        size: copied,
+        sha256: digest_hex(hasher.finalize()),
+    };
+    if !final_metadata.file_type().is_file()
+        || final_metadata.len() != source.size
+        || modified_nanos(&final_metadata)? != source.modified_nanos
+        || copied_digest != expected
+    {
+        return Err(CoreError::SourceChanged);
+    }
+    let artifact_digest = hash_reader_checked(
+        BufReader::with_capacity(
+            HASH_BUFFER_BYTES,
+            File::open(partial.path()).map_err(CoreError::CopyFailed)?,
+        ),
+        |_| cancellation.check(),
+    )?;
+    if artifact_digest != expected {
+        return Err(CoreError::HashMismatch);
+    }
+    match partial.persist_noclobber(&destination_path) {
+        Ok(file) => drop(file),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let existing = crate::hash::hash_file(&destination_path)?;
+            if existing != expected {
+                return Err(CoreError::DestinationUnavailable);
+            }
+        }
+        Err(error) => return Err(CoreError::CopyFailed(error.error)),
+    }
+    File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(CoreError::SyncFailed)?;
+    Ok(VerifiedAdditionalFile {
+        id: Uuid::new_v4().to_string(),
+        transmitter: context.transmitter,
+        source_relative_path: source.relative_path.clone(),
+        source_size: expected.size,
+        source_mtime_ns: source.modified_nanos,
+        source_sha256: expected.sha256.clone(),
+        artifact_relative_path: destination_relative_path.to_path_buf(),
+        artifact_size: artifact_digest.size,
+        artifact_sha256: artifact_digest.sha256,
+        classification: source.classification,
+        backup_run_id: context.backup_run_id.to_owned(),
+    })
 }
 
 pub fn cleanup_owned_partials(destination_root: &Path) -> Result<usize, CoreError> {

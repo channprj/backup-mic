@@ -3,7 +3,16 @@ use std::{path::PathBuf, sync::LazyLock};
 use regex::Regex;
 use time::{Date, Month};
 
-use crate::state::Transmitter;
+use crate::{additional_file::AdditionalFileClass, state::Transmitter};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditionalFileObservation {
+    pub relative_path: PathBuf,
+    pub file_name: String,
+    pub size: u64,
+    pub modified_nanos: i128,
+    pub classification: AdditionalFileClass,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedRecordingName {

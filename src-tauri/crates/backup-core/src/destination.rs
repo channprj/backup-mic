@@ -5,9 +5,11 @@ use std::{
 
 use crate::{
     error::CoreError,
-    filesystem::is_safe_relative_path,
+    filesystem::{
+        is_recognized_session_name, is_safe_additional_relative_path, is_safe_relative_path,
+    },
     hash::{FileDigest, hash_file},
-    recording::RecordingObservation,
+    recording::{AdditionalFileObservation, RecordingObservation},
     state::Transmitter,
 };
 
@@ -25,6 +27,63 @@ pub struct DestinationPlan {
     pub source_sha256: String,
     pub relative_destination: PathBuf,
     pub disposition: DestinationDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditionalFilePlan {
+    pub source: AdditionalFileObservation,
+    pub source_sha256: String,
+    pub relative_destination: PathBuf,
+    pub disposition: DestinationDisposition,
+}
+
+pub fn plan_additional_file(
+    source_root: &Path,
+    destination_root: &Path,
+    transmitter: Transmitter,
+    source: AdditionalFileObservation,
+) -> Result<AdditionalFilePlan, CoreError> {
+    if !is_safe_additional_relative_path(&source.relative_path)
+        || source
+            .relative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(source.file_name.as_str())
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    let mut components = source.relative_path.components();
+    let session = components
+        .next()
+        .map(|component| PathBuf::from(component.as_os_str()))
+        .ok_or(CoreError::InvalidRequest)?;
+    if !is_recognized_session_name(&session)
+        || components.next().is_none()
+        || components.next().is_some()
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    let date = session_date(&session)?;
+    let source_digest = hash_file(&source_root.join(&source.relative_path))?;
+    if source_digest.size != source.size {
+        return Err(CoreError::SourceChanged);
+    }
+    let default_relative = PathBuf::from("source-extras")
+        .join(date.year().to_string())
+        .join(date.to_string())
+        .join(transmitter_name(transmitter))
+        .join(&source.relative_path);
+    if !is_safe_additional_relative_path(&default_relative) {
+        return Err(CoreError::InvalidRequest);
+    }
+    let (relative_destination, disposition) =
+        choose_available_name(destination_root, &default_relative, &source_digest)?;
+    Ok(AdditionalFilePlan {
+        source,
+        source_sha256: source_digest.sha256,
+        relative_destination,
+        disposition,
+    })
 }
 
 pub fn plan_recording(
@@ -66,6 +125,17 @@ pub fn plan_recording(
 }
 
 pub fn required_copy_bytes(plans: &[DestinationPlan]) -> Result<u64, CoreError> {
+    plans
+        .iter()
+        .filter(|plan| plan.disposition == DestinationDisposition::Copy)
+        .try_fold(0_u64, |total, plan| {
+            total
+                .checked_add(plan.source.size)
+                .ok_or(CoreError::InvalidRequest)
+        })
+}
+
+pub fn required_additional_copy_bytes(plans: &[AdditionalFilePlan]) -> Result<u64, CoreError> {
     plans
         .iter()
         .filter(|plan| plan.disposition == DestinationDisposition::Copy)
@@ -133,15 +203,37 @@ fn disposition_for(
 
 fn with_hash_suffix(path: &Path, hash_prefix: &str) -> Result<PathBuf, CoreError> {
     let parent = path.parent().ok_or(CoreError::InvalidRequest)?;
-    let stem = path
-        .file_stem()
+    let file_name = path
+        .file_name()
         .and_then(|value| value.to_str())
         .ok_or(CoreError::InvalidRequest)?;
-    let extension = path
-        .extension()
-        .and_then(|value| value.to_str())
+    if let (Some(stem), Some(extension)) = (
+        path.file_stem().and_then(|value| value.to_str()),
+        path.extension().and_then(|value| value.to_str()),
+    ) {
+        Ok(parent.join(format!("{stem}-{hash_prefix}.{extension}")))
+    } else {
+        Ok(parent.join(format!("{file_name}-{hash_prefix}")))
+    }
+}
+
+fn session_date(session: &Path) -> Result<time::Date, CoreError> {
+    let name = session.to_str().ok_or(CoreError::InvalidRequest)?;
+    let encoded = name.split('_').nth(2).ok_or(CoreError::InvalidRequest)?;
+    let year = encoded
+        .get(0..4)
+        .and_then(|value| value.parse().ok())
         .ok_or(CoreError::InvalidRequest)?;
-    Ok(parent.join(format!("{stem}-{hash_prefix}.{extension}")))
+    let month = encoded
+        .get(4..6)
+        .and_then(|value| value.parse::<u8>().ok())
+        .and_then(|value| time::Month::try_from(value).ok())
+        .ok_or(CoreError::InvalidRequest)?;
+    let day = encoded
+        .get(6..8)
+        .and_then(|value| value.parse().ok())
+        .ok_or(CoreError::InvalidRequest)?;
+    time::Date::from_calendar_date(year, month, day).map_err(|_| CoreError::InvalidRequest)
 }
 
 fn transmitter_name(transmitter: Transmitter) -> &'static str {

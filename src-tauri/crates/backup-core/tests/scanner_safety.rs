@@ -29,6 +29,32 @@ fn metadata_fingerprint_changes_for_added_removed_or_resized_wavs() {
     assert_ne!(removed, resized);
 }
 
+#[test]
+fn metadata_fingerprint_changes_for_additional_session_files() {
+    let source = tempdir().unwrap();
+    let session = source.path().join("TX_MIC001_20260810_001116");
+    fs::create_dir(&session).unwrap();
+    fs::write(session.join("TX01_MIC001_20260810_001116.wav"), b"wav").unwrap();
+    let baseline = metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+
+    let external = session.join("TX01_MIC001_20260810_001116.m4a");
+    fs::write(&external, b"m4a").unwrap();
+    let added = metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    assert_ne!(added, baseline);
+
+    fs::write(&external, b"m4a grew").unwrap();
+    let resized = metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    assert_ne!(resized, added);
+
+    fs::write(
+        session.join("._TX01_MIC001_20260810_001116.m4a"),
+        b"sidecar",
+    )
+    .unwrap();
+    let sidecar = metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    assert_ne!(sidecar, resized);
+}
+
 #[cfg(unix)]
 #[test]
 fn metadata_fingerprint_ignores_hidden_and_symlink_entries() {

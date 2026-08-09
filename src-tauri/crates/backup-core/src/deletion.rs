@@ -9,7 +9,7 @@ use uuid::Uuid;
 
 use crate::{
     error::CoreError,
-    filesystem::{is_safe_relative_path, modified_nanos},
+    filesystem::{is_recognized_session_name, is_safe_relative_path, modified_nanos},
     hash::hash_file,
     ledger::{Ledger, PendingDeletionItem},
     scanner::scan_once,
@@ -454,30 +454,6 @@ fn verify_complete_snapshot(
         recording_count: candidates.len(),
         byte_count,
     })
-}
-
-fn is_recognized_session_name(path: &Path) -> bool {
-    let Some(name) = path.to_str() else {
-        return false;
-    };
-    let mut parts = name.split('_');
-    let (Some(tx), Some(mic), Some(date), Some(time), None) = (
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-        parts.next(),
-    ) else {
-        return false;
-    };
-    tx == "TX"
-        && mic.strip_prefix("MIC").is_some_and(|digits| {
-            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
-        })
-        && date.len() == 8
-        && date.bytes().all(|byte| byte.is_ascii_digit())
-        && time.len() == 6
-        && time.bytes().all(|byte| byte.is_ascii_digit())
 }
 
 fn verify_session_inventory(

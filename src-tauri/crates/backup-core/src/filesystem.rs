@@ -36,3 +36,43 @@ pub fn is_safe_relative_path(path: &Path) -> bool {
         }
     })
 }
+
+pub fn is_safe_additional_relative_path(path: &Path) -> bool {
+    if path.as_os_str().is_empty() || path.is_absolute() {
+        return false;
+    }
+    let components = path.components().collect::<Vec<_>>();
+    !components.is_empty()
+        && components.iter().enumerate().all(|(index, component)| {
+            let Component::Normal(value) = component else {
+                return false;
+            };
+            value.to_str().is_some_and(|value| {
+                !value.is_empty() && (index + 1 == components.len() || !value.starts_with('.'))
+            })
+        })
+}
+
+pub fn is_recognized_session_name(path: &Path) -> bool {
+    let Some(name) = path.to_str() else {
+        return false;
+    };
+    let mut parts = name.split('_');
+    let (Some(tx), Some(mic), Some(date), Some(time), None) = (
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+        parts.next(),
+    ) else {
+        return false;
+    };
+    tx == "TX"
+        && mic.strip_prefix("MIC").is_some_and(|digits| {
+            !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+        })
+        && date.len() == 8
+        && date.bytes().all(|byte| byte.is_ascii_digit())
+        && time.len() == 6
+        && time.bytes().all(|byte| byte.is_ascii_digit())
+}

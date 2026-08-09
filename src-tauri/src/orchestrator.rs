@@ -14,7 +14,7 @@ use backup_core::{
     audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue},
     backup::{
         BackupItemContext, NoCopyFaults, cleanup_owned_partials, ensure_capacity,
-        execute_backup_item_observed, progress_for_plans,
+        execute_additional_file_copy, execute_backup_item_observed, progress_for_plans,
     },
     deletion::{
         CompleteDeletionSnapshot, DeletionCandidate, DeletionConfirmation, DeletionContext,
@@ -22,7 +22,8 @@ use backup_core::{
         reconcile_legacy_empty_sessions,
     },
     destination::{
-        DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition, DestinationPlan, plan_recording,
+        AdditionalFilePlan, DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition,
+        DestinationPlan, plan_additional_file, plan_recording, required_additional_copy_bytes,
     },
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
@@ -53,6 +54,7 @@ struct PreparedTransmitter {
     source_root: std::path::PathBuf,
     scan: ScanResult,
     plans: Vec<DestinationPlan>,
+    additional_plans: Vec<AdditionalFilePlan>,
     existing_artifacts: HashMap<std::path::PathBuf, backup_core::ledger::VerifiedRecording>,
     required_copy_bytes: u64,
 }
@@ -354,12 +356,44 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 }
             }
         }
-        let required_copy_bytes = backup_core::destination::required_copy_bytes(&plans)?;
+        let additional_plans = match scan
+            .additional_files
+            .iter()
+            .cloned()
+            .map(|file| {
+                plan_additional_file(
+                    &mounted.descriptor.mount_root,
+                    &destination,
+                    transmitter,
+                    file,
+                )
+            })
+            .collect::<Result<Vec<_>, CoreError>>()
+        {
+            Ok(plans) => plans,
+            Err(error) => {
+                state.report_failure(
+                    "backup_run",
+                    "additional_destination_planning",
+                    &error,
+                    Some(transmitter),
+                    None,
+                );
+                failed_transmitters.insert(transmitter);
+                last_error = Some(error.public(Some(transmitter)));
+                mark_transmitter_failed(app, state, transmitter);
+                continue;
+            }
+        };
+        let required_copy_bytes = backup_core::destination::required_copy_bytes(&plans)?
+            .checked_add(required_additional_copy_bytes(&additional_plans)?)
+            .ok_or(CoreError::InvalidRequest)?;
         prepared.push(PreparedTransmitter {
             transmitter,
             source_root: mounted.descriptor.mount_root,
             scan,
             plans,
+            additional_plans,
             existing_artifacts,
             required_copy_bytes,
         });
@@ -406,10 +440,89 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         .collect::<Result<HashMap<_, _>, CoreError>>()?;
     let mut published_progress = progress_by_tx.clone();
     let mut verified_by_tx = HashMap::new();
+    let mut verified_additional_by_tx = HashMap::new();
     let mut current_ordinal = 0_u64;
 
     for prepared_tx in &prepared {
+        let mut verified_count = 0_usize;
+        for plan in &prepared_tx.additional_plans {
+            let copied = execute_additional_file_copy(
+                &BackupItemContext {
+                    source_root: &prepared_tx.source_root,
+                    destination_root: &destination,
+                    transmitter: prepared_tx.transmitter,
+                    backup_run_id: &run_id,
+                    verified_at: &now_string(),
+                },
+                &plan.source,
+                &plan.relative_destination,
+                &guard.cancellation,
+            );
+            match copied {
+                Ok(file) if file.source_sha256 == plan.source_sha256 => {
+                    ledger.commit_verified_additional_file(&file)?;
+                    let source = file
+                        .source_relative_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(CoreError::InvalidAuditEvent)?;
+                    let output = file
+                        .artifact_relative_path
+                        .to_str()
+                        .ok_or(CoreError::InvalidAuditEvent)?;
+                    let fields = [
+                        ("source", AuditValue::Text(source)),
+                        ("output", AuditValue::Text(output)),
+                        ("bytes", AuditValue::Unsigned(file.artifact_size)),
+                    ];
+                    state.append_audit(
+                        &AuditEvent {
+                            occurred_at: audit_now(),
+                            level: AuditLevel::Info,
+                            code: "backup.additional_verified",
+                            transmitter: Some(prepared_tx.transmitter),
+                            fields: &fields,
+                        },
+                        AuditDurability::Buffered,
+                    )?;
+                    verified_count += 1;
+                }
+                Ok(_) => {
+                    let error = CoreError::HashMismatch;
+                    state.report_failure(
+                        "backup_run",
+                        "additional_verification",
+                        &error,
+                        Some(prepared_tx.transmitter),
+                        Some(&plan.source.file_name),
+                    );
+                    failed_transmitters.insert(prepared_tx.transmitter);
+                    last_error = Some(error.public(Some(prepared_tx.transmitter)));
+                    break;
+                }
+                Err(error) => {
+                    state.report_failure(
+                        "backup_run",
+                        "additional_copy_or_verification",
+                        &error,
+                        Some(prepared_tx.transmitter),
+                        Some(&plan.source.file_name),
+                    );
+                    failed_transmitters.insert(prepared_tx.transmitter);
+                    last_error = Some(error.public(Some(prepared_tx.transmitter)));
+                    break;
+                }
+            }
+        }
+        verified_additional_by_tx.insert(prepared_tx.transmitter, verified_count);
+    }
+
+    for prepared_tx in &prepared {
         let mut verified = Vec::new();
+        if failed_transmitters.contains(&prepared_tx.transmitter) {
+            verified_by_tx.insert(prepared_tx.transmitter, verified);
+            continue;
+        }
         for plan in &prepared_tx.plans {
             current_ordinal = current_ordinal.saturating_add(1);
             let progress = progress_by_tx
@@ -725,7 +838,8 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     let total_files = prepared.iter().try_fold(0_u64, |total, prepared| {
         total
             .checked_add(
-                u64::try_from(prepared.plans.len()).map_err(|_| CoreError::InvalidRequest)?,
+                u64::try_from(prepared.plans.len() + prepared.additional_plans.len())
+                    .map_err(|_| CoreError::InvalidRequest)?,
             )
             .ok_or(CoreError::InvalidRequest)
     })?;
@@ -758,10 +872,17 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             .unwrap_or_default();
         let complete = !failed_transmitters.contains(&prepared_tx.transmitter)
             && verified.len() == prepared_tx.scan.recordings.len()
-            && !prepared_tx
-                .scan
-                .issues
-                .contains(&ScanIssue::TransmitterPrefixMismatch);
+            && verified_additional_by_tx
+                .get(&prepared_tx.transmitter)
+                .copied()
+                .unwrap_or_default()
+                == prepared_tx.scan.additional_files.len()
+            && !prepared_tx.scan.issues.iter().any(|issue| {
+                matches!(
+                    issue,
+                    ScanIssue::TransmitterPrefixMismatch | ScanIssue::UnsafeSessionEntry
+                )
+            });
         let generation = runtime
             .scan_generations
             .entry(prepared_tx.transmitter)

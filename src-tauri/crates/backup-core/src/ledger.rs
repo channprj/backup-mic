@@ -899,7 +899,7 @@ impl Ledger {
         source_mtime_ns: i128,
         source_sha256: &str,
     ) -> Result<Option<VerifiedAdditionalFile>, CoreError> {
-        if !crate::filesystem::is_safe_relative_path(source_relative_path) {
+        if !crate::filesystem::is_safe_additional_relative_path(source_relative_path) {
             return Err(CoreError::InvalidRequest);
         }
         let row = self
@@ -1416,8 +1416,8 @@ fn validate_verified_recording(recording: &VerifiedRecording) -> Result<(), Core
 
 fn validate_verified_additional_file(file: &VerifiedAdditionalFile) -> Result<(), CoreError> {
     if file.id.is_empty()
-        || !crate::filesystem::is_safe_relative_path(&file.source_relative_path)
-        || !crate::filesystem::is_safe_relative_path(&file.artifact_relative_path)
+        || !crate::filesystem::is_safe_additional_relative_path(&file.source_relative_path)
+        || !crate::filesystem::is_safe_additional_relative_path(&file.artifact_relative_path)
         || file.source_size == 0
         || file.source_size != file.artifact_size
         || file.source_sha256.len() != 64
