@@ -16,7 +16,7 @@ use backup_core::{
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     ledger::Ledger,
-    preferences::BackupPreferences,
+    preferences::{BackupPreferences, PreferenceKey},
     state::{BackupPhase, DeletionPhase, Progress, Transmitter},
 };
 use parking_lot::Mutex;
@@ -24,7 +24,8 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     dto::{
-        AppSnapshotDto, NotificationStatusDto, ProgressDto, SetupStateDto, TransmitterSnapshotDto,
+        AppSnapshotDto, BackupSettingsDto, NotificationStatusDto, ProgressDto, SetupStateDto,
+        TransmitterSnapshotDto,
     },
     pairing::{PairingAssignment, PairingManager},
     platform::device_registry::{MountedVolume, VolumeLifecycleEvent},
@@ -88,6 +89,12 @@ impl AppState {
                     current_item_ordinal: None,
                     last_success_at: None,
                     autostart_enabled,
+                    settings: BackupSettingsDto {
+                        automatic_backup: preferences.automatic_backup,
+                        m4a_conversion: preferences.m4a_conversion,
+                        automatic_trash: preferences.automatic_trash,
+                        autostart: autostart_enabled,
+                    },
                     notification_status: NotificationStatusDto::Unknown,
                     setup_state,
                     pairing_candidates: Vec::new(),
@@ -161,6 +168,47 @@ impl AppState {
 
     pub fn automatic_trash_enabled(&self) -> bool {
         self.runtime.lock().preferences.automatic_trash
+    }
+
+    pub fn set_preference(
+        &self,
+        key: PreferenceKey,
+        enabled: bool,
+        occurred_at: &str,
+    ) -> Result<AppSnapshotDto, CoreError> {
+        self.ledger
+            .lock()
+            .set_preference(key, enabled, occurred_at)?;
+
+        let mut runtime = self.runtime.lock();
+        match key {
+            PreferenceKey::AutomaticBackup => {
+                runtime.preferences.automatic_backup = enabled;
+                runtime.snapshot.settings.automatic_backup = enabled;
+            }
+            PreferenceKey::M4aConversion => {
+                runtime.preferences.m4a_conversion = enabled;
+                runtime.snapshot.settings.m4a_conversion = enabled;
+            }
+            PreferenceKey::AutomaticTrash => {
+                runtime.preferences.automatic_trash = enabled;
+                runtime.snapshot.settings.automatic_trash = enabled;
+            }
+        }
+        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
+        Ok(runtime.snapshot.clone())
+    }
+
+    pub fn log_directory(&self, occurred_at: time::OffsetDateTime) -> Result<PathBuf, CoreError> {
+        let runtime = self.runtime.lock();
+        if !runtime.destination_configured {
+            return Err(CoreError::InvalidRequest);
+        }
+        FileAuditLog::new(&runtime.destination)
+            .path_for(occurred_at)
+            .parent()
+            .map(PathBuf::from)
+            .ok_or(CoreError::InvalidRequest)
     }
 
     pub fn operation_is_active(&self) -> bool {
@@ -439,6 +487,7 @@ impl AppState {
     pub fn set_autostart(&self, app: &AppHandle, enabled: bool) {
         let mut runtime = self.runtime.lock();
         runtime.snapshot.autostart_enabled = enabled;
+        runtime.snapshot.settings.autostart = enabled;
         publish_locked(app, &mut runtime);
     }
 
@@ -679,5 +728,62 @@ mod tests {
         assert!(!state.automatic_backup_enabled());
         assert!(state.m4a_conversion_enabled());
         assert!(!state.automatic_trash_enabled());
+        assert_eq!(
+            state.snapshot().settings,
+            BackupSettingsDto {
+                automatic_backup: false,
+                m4a_conversion: true,
+                automatic_trash: false,
+                autostart: false,
+            }
+        );
+    }
+
+    #[test]
+    fn setting_a_preference_persists_before_updating_the_snapshot() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger_path = state_directory.path().join("ledger.sqlite3");
+        let ledger = Ledger::open(&ledger_path).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        let snapshot = state
+            .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-09T00:00:00Z")
+            .unwrap();
+
+        assert!(snapshot.settings.automatic_trash);
+        assert!(state.automatic_trash_enabled());
+        drop(state);
+        let reopened = Ledger::open(ledger_path).unwrap();
+        assert!(reopened.read_preferences().unwrap().automatic_trash);
+    }
+
+    #[test]
+    fn log_directory_is_scoped_to_the_configured_destination_and_local_month() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        assert_eq!(
+            state
+                .log_directory(datetime!(2026-08-09 20:01:42.613 +09:00))
+                .unwrap(),
+            destination.path().join("logs/2026/08")
+        );
+    }
+
+    #[test]
+    fn log_directory_refuses_an_unconfirmed_default_destination() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), false, false).unwrap();
+
+        assert!(matches!(
+            state.log_directory(datetime!(2026-08-09 20:01:42.613 +09:00)),
+            Err(CoreError::InvalidRequest)
+        ));
+        assert!(!destination.path().join("logs").exists());
     }
 }

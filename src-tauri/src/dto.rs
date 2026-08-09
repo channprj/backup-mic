@@ -54,6 +54,25 @@ pub enum SetupStateDto {
     Ready,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BackupSettingsDto {
+    pub automatic_backup: bool,
+    pub m4a_conversion: bool,
+    pub automatic_trash: bool,
+    pub autostart: bool,
+}
+
+impl Default for BackupSettingsDto {
+    fn default() -> Self {
+        Self {
+            automatic_backup: true,
+            m4a_conversion: true,
+            automatic_trash: false,
+            autostart: false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AppSnapshotDto {
     pub revision: u64,
@@ -65,6 +84,8 @@ pub struct AppSnapshotDto {
     pub current_item_ordinal: Option<u64>,
     pub last_success_at: Option<String>,
     pub autostart_enabled: bool,
+    #[serde(default)]
+    pub settings: BackupSettingsDto,
     pub notification_status: NotificationStatusDto,
     pub setup_state: SetupStateDto,
     pub pairing_candidates: Vec<PairingCandidateSummary>,
@@ -117,12 +138,22 @@ mod tests {
             current_item_ordinal: None,
             last_success_at: None,
             autostart_enabled: false,
+            settings: BackupSettingsDto::default(),
             notification_status: NotificationStatusDto::Unknown,
             setup_state: SetupStateDto::NeedsDestination,
             pairing_candidates: Vec::new(),
             recent_activity: Vec::new(),
             error: None,
         }
+    }
+
+    #[test]
+    fn settings_defaults_keep_automation_safe_and_use_m4a() {
+        let settings = BackupSettingsDto::default();
+        assert!(settings.automatic_backup);
+        assert!(settings.m4a_conversion);
+        assert!(!settings.automatic_trash);
+        assert!(!settings.autostart);
     }
 
     #[test]

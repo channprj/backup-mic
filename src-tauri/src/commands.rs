@@ -3,9 +3,10 @@ use std::path::{Path, PathBuf};
 use backup_core::{
     error::PublicError,
     events::{ActivityEntry, ActivitySeverity},
+    preferences::PreferenceKey,
     state::Transmitter,
 };
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_autostart::ManagerExt as _;
 use tauri_plugin_dialog::DialogExt as _;
 use tauri_plugin_opener::OpenerExt as _;
@@ -18,7 +19,7 @@ use crate::{
     pairing::PairingAssignment,
 };
 
-pub const REGISTERED_COMMANDS: [&str; 9] = [
+pub const REGISTERED_COMMANDS: [&str; 14] = [
     "get_app_snapshot",
     "backup_now",
     "choose_destination",
@@ -28,6 +29,11 @@ pub const REGISTERED_COMMANDS: [&str; 9] = [
     "set_autostart",
     "open_destination",
     "quit_app",
+    "show_settings",
+    "set_automatic_backup",
+    "set_m4a_conversion",
+    "set_automatic_trash",
+    "open_logs",
 ];
 
 pub(crate) const DESTINATION_SETTING: &str = "destination_path";
@@ -218,6 +224,98 @@ pub fn open_destination(app: AppHandle, state: State<'_, AppState>) -> Result<()
 }
 
 #[tauri::command]
+pub fn show_settings(app: AppHandle) -> Result<(), PublicError> {
+    let settings = app
+        .get_webview_window("settings")
+        .ok_or_else(|| adapter_error("settings_window_unavailable", true))?;
+    if let Some(main) = app.get_webview_window("main") {
+        main.hide()
+            .map_err(|_| adapter_error("settings_window_unavailable", true))?;
+    }
+    settings
+        .show()
+        .and_then(|()| settings.set_focus())
+        .map_err(|_| adapter_error("settings_window_unavailable", true))
+}
+
+#[tauri::command]
+pub fn set_automatic_backup(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_preference_for_state(
+        state.inner(),
+        PreferenceKey::AutomaticBackup,
+        enabled,
+        &orchestrator::now_string(),
+    )
+}
+
+#[tauri::command]
+pub fn set_m4a_conversion(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_preference_for_state(
+        state.inner(),
+        PreferenceKey::M4aConversion,
+        enabled,
+        &orchestrator::now_string(),
+    )
+}
+
+#[tauri::command]
+pub fn set_automatic_trash(
+    state: State<'_, AppState>,
+    enabled: bool,
+    acknowledged: bool,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_automatic_trash_for_state(
+        state.inner(),
+        enabled,
+        acknowledged,
+        &orchestrator::now_string(),
+    )
+}
+
+#[tauri::command]
+pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    let logs = state
+        .log_directory(time::OffsetDateTime::now_utc().to_offset(offset))
+        .map_err(|error| error.public(None))?;
+    std::fs::create_dir_all(&logs)
+        .map_err(backup_core::error::CoreError::AuditLogUnavailable)
+        .map_err(|error| error.public(None))?;
+    app.opener()
+        .open_path(logs.to_string_lossy().into_owned(), None::<&str>)
+        .map_err(|_| adapter_error("open_logs_failed", true))
+}
+
+fn set_preference_for_state(
+    state: &AppState,
+    key: PreferenceKey,
+    enabled: bool,
+    occurred_at: &str,
+) -> Result<AppSnapshotDto, PublicError> {
+    state
+        .set_preference(key, enabled, occurred_at)
+        .map_err(|error| error.public(None))
+}
+
+fn set_automatic_trash_for_state(
+    state: &AppState,
+    enabled: bool,
+    acknowledged: bool,
+    occurred_at: &str,
+) -> Result<AppSnapshotDto, PublicError> {
+    if enabled && !acknowledged {
+        return Err(backup_core::error::CoreError::InvalidRequest.public(None));
+    }
+    set_preference_for_state(state, PreferenceKey::AutomaticTrash, enabled, occurred_at)
+}
+
+#[tauri::command]
 pub fn quit_app(app: AppHandle, state: State<'_, AppState>, lifecycle: State<'_, AppLifecycle>) {
     state.cancel_active_operation();
     lifecycle.request_quit();
@@ -293,8 +391,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_exactly_the_nine_approved_commands() {
-        assert_eq!(REGISTERED_COMMANDS.len(), 9);
+    fn exposes_exactly_the_fourteen_approved_commands() {
+        assert_eq!(REGISTERED_COMMANDS.len(), 14);
         let serialized = serde_json::to_string(&REGISTERED_COMMANDS).unwrap();
         for forbidden in [
             "read_file",
@@ -305,6 +403,26 @@ mod tests {
         ] {
             assert!(!serialized.contains(forbidden));
         }
+    }
+
+    #[test]
+    fn automatic_trash_requires_acknowledgement_before_persistence() {
+        let state_directory = tempfile::tempdir().unwrap();
+        let destination = tempfile::tempdir().unwrap();
+        let ledger_path = state_directory.path().join("ledger.sqlite3");
+        let ledger = backup_core::ledger::Ledger::open(&ledger_path).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        let result = set_automatic_trash_for_state(&state, true, false, "2026-08-09T00:00:00Z");
+
+        assert_eq!(
+            result.unwrap_err().code,
+            backup_core::error::PublicErrorCode::InvalidRequest
+        );
+        assert!(!state.snapshot().settings.automatic_trash);
+        drop(state);
+        let reopened = backup_core::ledger::Ledger::open(ledger_path).unwrap();
+        assert!(!reopened.read_preferences().unwrap().automatic_trash);
     }
 
     #[test]

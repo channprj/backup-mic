@@ -26,6 +26,22 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "shadow": true
+      },
+      {
+        "label": "settings",
+        "title": "DJI Mic Backup 설정",
+        "url": "index.html?window=settings",
+        "width": 540,
+        "height": 620,
+        "minWidth": 480,
+        "minHeight": 520,
+        "visible": false,
+        "resizable": true,
+        "decorations": true,
+        "alwaysOnTop": false,
+        "skipTaskbar": false,
+        "shadow": true,
+        "center": true
       }
     ],
     "security": {

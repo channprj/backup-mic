@@ -41,6 +41,11 @@ pub fn run() {
             commands::set_autostart,
             commands::open_destination,
             commands::quit_app,
+            commands::show_settings,
+            commands::set_automatic_backup,
+            commands::set_m4a_conversion,
+            commands::set_automatic_trash,
+            commands::open_logs,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]

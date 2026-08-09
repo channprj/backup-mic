@@ -491,23 +491,23 @@ fn set_automatic_trash(
 fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError>;
 ```
 
-- [ ] **Step 1: Add failing command and privacy contract tests**
+- [x] **Step 1: Add failing command and privacy contract tests**
 
 Assert the registered command set is exactly `get_app_snapshot`, `backup_now`, `choose_destination`, `pair_devices`, `prepare_trash`, `confirm_trash`, `set_autostart`, `open_destination`, `quit_app`, `show_settings`, `set_automatic_backup`, `set_m4a_conversion`, `set_automatic_trash`, and `open_logs`. Assert no command accepts an arbitrary key, path, process, UUID, hash, or Trash destination. Assert enabling automatic Trash without `acknowledged: true` is rejected and does not persist.
 
-- [ ] **Step 2: Add the settings window configuration**
+- [x] **Step 2: Add the settings window configuration**
 
 Keep `main` as the 380×640 hidden undecorated popover. Add a hidden singleton `settings` window using `index.html?window=settings`, standard title-bar behavior, adaptive background, approximately 540×620 content size, no always-on-top, and no automatic hide on focus loss. Add both labels to the minimum capability allowlist.
 
-- [ ] **Step 3: Implement transactional settings commands**
+- [x] **Step 3: Implement transactional settings commands**
 
 Persist first, update runtime state second, and return a fresh snapshot. On failure leave both the database and visible runtime value unchanged. `open_logs` opens only the destination's computed `logs/YYYY/MM` directory; it never accepts a frontend path.
 
-- [ ] **Step 4: Update window lifecycle behavior**
+- [x] **Step 4: Update window lifecycle behavior**
 
 `show_settings` hides the popover, shows and focuses the existing settings singleton, and never creates duplicates. Closing settings hides it. Losing settings focus does not hide it. Main popover retains its current focus-loss behavior.
 
-- [ ] **Step 5: Run IPC and runtime tests**
+- [x] **Step 5: Run IPC and runtime tests**
 
 ```bash
 cargo test -p dji-mic-backup --test commands
@@ -516,7 +516,7 @@ cargo test -p dji-mic-backup --test runtime_shell
 cargo test --workspace --all-targets
 ```
 
-- [ ] **Step 6: Commit and push the settings backend checkpoint**
+- [x] **Step 6: Commit and push the settings backend checkpoint**
 
 Commit `feat(settings): add backup automation controls`, push, and prove `0 0` parity.
 

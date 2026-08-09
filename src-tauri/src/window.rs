@@ -10,7 +10,7 @@ pub fn handle_event(window: &tauri::Window, event: &WindowEvent) {
         }
         WindowEvent::Focused(false) => {
             let state = window.state::<AppState>();
-            if !state.should_keep_window_open() {
+            if window.label() == "main" && !state.should_keep_window_open() {
                 let _ = window.hide();
             }
         }

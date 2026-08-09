@@ -42,6 +42,7 @@ fn snapshot_fixtures_round_trip_through_rust_contract() {
         let snapshot: AppSnapshotDto =
             serde_json::from_str(&fixture(name)).expect("valid snapshot");
         let value = serde_json::to_value(snapshot).expect("snapshot serializes");
+        assert!(value.get("settings").is_some());
         assert_safe_json(&value);
     }
 }
@@ -65,5 +66,5 @@ fn webview_capability_has_no_direct_plugin_authority() {
         capability["permissions"],
         serde_json::json!(["core:default"])
     );
-    assert_eq!(REGISTERED_COMMANDS.len(), 9);
+    assert_eq!(REGISTERED_COMMANDS.len(), 14);
 }
