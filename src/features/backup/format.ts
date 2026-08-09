@@ -36,16 +36,47 @@ export function formatCompactTime(value: string | null) {
 }
 
 export function stageLabel(snapshot: AppSnapshot) {
-  if (snapshot.phase === "scanning") return "안정적인 녹음 찾는 중";
-  if (snapshot.phase === "checking_capacity") return "저장 공간 확인 중";
-  if (snapshot.current_stage === "copy") return "전체 WAV 복사 중";
-  if (snapshot.current_stage === "source_verification") return "WAV 검증 중";
-  if (snapshot.current_stage === "conversion") return "128kbps M4A 변환 중";
-  if (snapshot.current_stage === "artifact_verification") return "전체 M4A 검증 중";
-  if (snapshot.current_stage === "source_revalidation") return "원본 다시 검증 중";
-  if (snapshot.current_stage === "trash") return "휴지통으로 이동 중";
-  if (snapshot.phase === "detecting") return "송신기 확인 중";
-  return "백업 준비 중";
+  if (snapshot.phase === "scanning") {
+    return "연결된 송신기에서 백업할 WAV 파일을 확인하고 있습니다";
+  }
+  if (snapshot.phase === "checking_capacity") {
+    return "백업에 필요한 저장 공간을 확인하고 있습니다";
+  }
+  if (snapshot.current_stage === "copy") {
+    return "WAV 파일을 백업 폴더로 복사하고 있습니다";
+  }
+  if (snapshot.current_stage === "source_verification") {
+    return "복사한 WAV의 크기와 SHA-256을 확인하고 있습니다";
+  }
+  if (snapshot.current_stage === "conversion") {
+    return "복사한 WAV를 128kbps M4A로 변환하고 있습니다";
+  }
+  if (snapshot.current_stage === "artifact_verification") {
+    return "변환한 M4A의 오디오 정보와 SHA-256을 확인하고 있습니다";
+  }
+  if (snapshot.current_stage === "source_revalidation") {
+    return "휴지통으로 옮기기 전에 외장 디스크 원본을 다시 확인하고 있습니다";
+  }
+  if (snapshot.current_stage === "trash") {
+    return "검증을 마친 원본을 휴지통으로 옮기고 있습니다";
+  }
+  if (snapshot.phase === "detecting") {
+    return "연결된 송신기를 확인하고 있습니다";
+  }
+  return "백업을 시작할 준비를 하고 있습니다";
+}
+
+export function activeTitle(snapshot: AppSnapshot) {
+  if (snapshot.phase === "scanning") return "백업할 파일을 찾는 중";
+  if (snapshot.phase === "checking_capacity") return "저장 공간을 확인하는 중";
+  if (snapshot.current_stage === "copy") return "WAV 파일을 복사하는 중";
+  if (snapshot.current_stage === "source_verification") return "복사한 WAV를 확인하는 중";
+  if (snapshot.current_stage === "conversion") return "M4A로 변환하는 중";
+  if (snapshot.current_stage === "artifact_verification") return "변환한 M4A를 확인하는 중";
+  if (snapshot.current_stage === "source_revalidation") return "원본을 다시 확인하는 중";
+  if (snapshot.current_stage === "trash") return "원본을 휴지통으로 옮기는 중";
+  if (snapshot.phase === "detecting") return "송신기를 확인하는 중";
+  return "백업을 준비하는 중";
 }
 
 const activityMessages: Record<string, string> = {
@@ -187,7 +218,7 @@ export function errorCopy(messageCode: string) {
   return (
     messages[messageCode] ?? {
       title: "작업을 완료하지 못했습니다",
-      detail: "원본은 그대로 유지됩니다. 잠시 후 다시 시도해 주세요.",
+      detail: "잠시 후 다시 시도해 주세요.",
     }
   );
 }

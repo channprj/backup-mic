@@ -35,6 +35,7 @@ import type {
 } from "./contracts";
 import { TrashDialog } from "./TrashDialog";
 import {
+  activeTitle,
   activityLabel,
   errorCopy,
   formatBytes,
@@ -322,28 +323,32 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
 
 function ActiveStatus({ snapshot }: { snapshot: AppSnapshot }) {
   const progress = snapshot.overall_progress;
+  const findingFiles = ["detecting", "scanning", "checking_capacity"].includes(snapshot.phase);
   return (
     <Card className="status-card is-active">
       <CardHeader>
         <div className="status-title-row">
           <div>
-            <CardTitle>백업 중</CardTitle>
-            <CardDescription>원본은 그대로 유지됩니다</CardDescription>
+            <CardTitle>{activeTitle(snapshot)}</CardTitle>
           </div>
-          <strong className="hero-percent">{progress.percent}%</strong>
+          <strong className="hero-percent">
+            {findingFiles ? "확인 중" : `${progress.percent}%`}
+          </strong>
         </div>
       </CardHeader>
       <CardContent>
         <Progress
-          value={progress.percent}
-          aria-label="전체 백업 진행률"
-          aria-valuenow={progress.percent}
+          value={findingFiles ? undefined : progress.percent}
+          aria-label={findingFiles ? "백업 파일 검색 상태" : "전체 백업 진행률"}
+          aria-valuenow={findingFiles ? undefined : progress.percent}
         />
         <div className="progress-meta">
           <span>{stageLabel(snapshot)}</span>
-          <span>
-            {progress.verified_files}/{progress.total_files}개 · {formatBytes(progress.copied_bytes)}
-          </span>
+          {!findingFiles ? (
+            <span>
+              {progress.verified_files}/{progress.total_files}개 · {formatBytes(progress.copied_bytes)}
+            </span>
+          ) : null}
         </div>
       </CardContent>
       <CardFooter>

@@ -39,10 +39,13 @@ function renderPopover(snapshot = complete) {
 }
 
 describe("BackupPopover", () => {
-  it("shows accessible overall and per-transmitter progress while originals remain protected", () => {
+  it("shows accessible overall and per-transmitter copy progress", () => {
     renderPopover(copying);
-    expect(screen.getByText("백업 중")).toBeInTheDocument();
-    expect(screen.getByText("원본은 그대로 유지됩니다")).toBeInTheDocument();
+    expect(screen.getByText("WAV 파일을 복사하는 중")).toBeInTheDocument();
+    expect(
+      screen.getByText("WAV 파일을 백업 폴더로 복사하고 있습니다"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("원본은 그대로 유지됩니다")).not.toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "전체 백업 진행률" })).toHaveAttribute(
       "aria-valuenow",
       "42",
@@ -52,6 +55,25 @@ describe("BackupPopover", () => {
     expect(screen.getByLabelText("백업 단계")).toHaveTextContent(
       "전체 WAV 복사WAV 검증128kbps M4A 변환전체 M4A 검증원본 재검증휴지통 이동",
     );
+  });
+
+  it("describes the scan as finding files that need backup", () => {
+    renderPopover({
+      ...copying,
+      phase: "scanning",
+      current_stage: null,
+    });
+
+    expect(screen.getByText("백업할 파일을 찾는 중")).toBeInTheDocument();
+    expect(
+      screen.getByText("연결된 송신기에서 백업할 WAV 파일을 확인하고 있습니다"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("확인 중")).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "백업 파일 검색 상태" })).not.toHaveAttribute(
+      "aria-valuenow",
+    );
+    expect(screen.queryByText("백업 중")).not.toBeInTheDocument();
+    expect(screen.queryByText("원본은 그대로 유지됩니다")).not.toBeInTheDocument();
   });
 
   it("explains that disabling conversion retains external-disk originals", () => {
