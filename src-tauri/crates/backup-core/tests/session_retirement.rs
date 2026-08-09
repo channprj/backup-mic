@@ -7,7 +7,10 @@ use std::{
 };
 
 use backup_core::{
-    artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
+    artifact::{
+        ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties,
+    },
+    batch::{BatchPhase, FrozenPreferences, M4A_PROFILE_ID},
     deletion::{
         CompleteDeletionSnapshot, DeletionCandidate, DeletionConfirmation, DeletionContext,
         DeletionOutcome, DeletionProposalStore, NoDeletionFaults, TrashAdapter,
@@ -35,7 +38,19 @@ fn fixture() -> Fixture {
     let state = tempdir().unwrap();
     let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
     ledger
-        .begin_backup_run("backup-run", "2026-08-09T00:00:00Z", 0)
+        .begin_batch_run(
+            "backup-run",
+            "2026-08-09T00:00:00Z",
+            0,
+            FrozenPreferences {
+                automatic_backup: true,
+                m4a_conversion: true,
+                automatic_trash: false,
+            },
+        )
+        .unwrap();
+    ledger
+        .advance_batch_phase("backup-run", BatchPhase::Copying)
         .unwrap();
     let session = Path::new("TX_MIC001_20260809_021747");
     fs::create_dir(source.path().join(session)).unwrap();
@@ -48,7 +63,9 @@ fn fixture() -> Fixture {
     .enumerate()
     {
         let source_relative = session.join(name);
-        let destination_relative = Path::new("2026/2026-08-09/TX01").join(name);
+        let destination_relative = Path::new("2026/2026-08-09/TX01")
+            .join(name)
+            .with_extension("m4a");
         let bytes = vec![u8::try_from(index + 1).unwrap(); 1024 + index];
         fs::write(source.path().join(&source_relative), &bytes).unwrap();
         fs::create_dir_all(destination.path().join("2026/2026-08-09/TX01")).unwrap();
@@ -66,12 +83,18 @@ fn fixture() -> Fixture {
                 source_sha256: digest.sha256.clone(),
                 artifact: VerifiedArtifact {
                     relative_path: destination_relative.clone(),
-                    format: OutputFormat::Wav,
+                    format: OutputFormat::M4a,
                     byte_count: digest.size,
                     sha256: digest.sha256.clone(),
-                    audio: None,
+                    audio: Some(VerifiedAudioProperties {
+                        codec: "aac".to_owned(),
+                        sample_rate_hz: 48_000,
+                        channel_count: 1,
+                        valid_frames: 48_000,
+                        duration_micros: 1_000_000,
+                    }),
                 },
-                conversion_status: ConversionStatus::NotRequired,
+                conversion_status: ConversionStatus::Complete,
                 conversion_error_code: None,
                 retirement_status: RetirementStatus::Present,
                 retired_session_relative_path: None,
@@ -90,6 +113,22 @@ fn fixture() -> Fixture {
             destination_sha256: digest.sha256,
         });
     }
+    ledger
+        .advance_batch_phase("backup-run", BatchPhase::CopiesVerified)
+        .unwrap();
+    let recording_ids = candidates
+        .iter()
+        .map(|candidate| candidate.recording_id.clone())
+        .collect::<Vec<_>>();
+    ledger
+        .begin_conversion_cohort("backup-run", &recording_ids, M4A_PROFILE_ID)
+        .unwrap();
+    for recording_id in &recording_ids {
+        ledger
+            .mark_conversion_item_verified("backup-run", recording_id)
+            .unwrap();
+    }
+    ledger.commit_m4a_barrier("backup-run").unwrap();
     let current_source_paths = candidates
         .iter()
         .map(|candidate| candidate.source_relative_path.clone())
@@ -105,7 +144,9 @@ fn fixture() -> Fixture {
             destination_root: destination.path().to_path_buf(),
         },
         candidates,
+        additional_files: Vec::new(),
         current_source_paths,
+        m4a_barrier_run_id: "backup-run".to_owned(),
     };
     Fixture {
         source,

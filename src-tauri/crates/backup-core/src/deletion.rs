@@ -8,10 +8,15 @@ use std::{
 use uuid::Uuid;
 
 use crate::{
+    artifact::{ConversionStatus, OutputFormat},
+    batch::{BatchPhase, M4A_PROFILE_ID},
     error::CoreError,
-    filesystem::{is_recognized_session_name, is_safe_relative_path, modified_nanos},
+    filesystem::{
+        is_recognized_session_name, is_safe_additional_relative_path, is_safe_relative_path,
+        modified_nanos,
+    },
     hash::hash_file,
-    ledger::{Ledger, PendingDeletionItem},
+    ledger::{Ledger, PendingAdditionalDeletionItem, PendingDeletionItem},
     scanner::scan_once,
     state::Transmitter,
 };
@@ -42,10 +47,24 @@ pub struct DeletionCandidate {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdditionalDeletionCandidate {
+    pub additional_file_id: String,
+    pub source_relative_path: PathBuf,
+    pub source_size: u64,
+    pub source_mtime_ns: i128,
+    pub source_sha256: String,
+    pub destination_relative_path: PathBuf,
+    pub destination_size: u64,
+    pub destination_sha256: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompleteDeletionSnapshot {
     pub context: DeletionContext,
     pub candidates: Vec<DeletionCandidate>,
+    pub additional_files: Vec<AdditionalDeletionCandidate>,
     pub current_source_paths: BTreeSet<PathBuf>,
+    pub m4a_barrier_run_id: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -70,6 +89,7 @@ pub enum RetirementTarget {
     Session {
         relative_directory: PathBuf,
         recording_ids: Vec<String>,
+        additional_file_ids: Vec<String>,
     },
     RootFile {
         relative_path: PathBuf,
@@ -82,6 +102,7 @@ pub struct RetirementPlan {
     pub transmitter: Transmitter,
     pub targets: Vec<RetirementTarget>,
     pub recording_count: usize,
+    pub additional_file_count: usize,
     pub byte_count: u64,
 }
 
@@ -140,6 +161,8 @@ pub struct DeletionReport {
 struct PrivateProposal {
     context: DeletionContext,
     candidates: Vec<DeletionCandidate>,
+    additional_files: Vec<AdditionalDeletionCandidate>,
+    m4a_barrier_run_id: String,
     expires_at: Duration,
 }
 
@@ -157,7 +180,10 @@ impl DeletionProposalStore {
         faults: &dyn DeletionFaults,
     ) -> Result<DeletionProposalSummary, CoreError> {
         self.invalidate(ProposalInvalidation::AnotherDeletionAttempt);
-        if !deletion_allowed || snapshot.candidates.is_empty() {
+        if !deletion_allowed
+            || snapshot.candidates.is_empty()
+            || snapshot.m4a_barrier_run_id.is_empty()
+        {
             return Err(CoreError::DeletionPreflightRefused);
         }
         let candidate_ids: BTreeSet<&str> = snapshot
@@ -170,14 +196,36 @@ impl DeletionProposalStore {
             .iter()
             .map(|candidate| candidate.source_relative_path.clone())
             .collect();
+        let additional_ids: BTreeSet<&str> = snapshot
+            .additional_files
+            .iter()
+            .map(|candidate| candidate.additional_file_id.as_str())
+            .collect();
+        let additional_paths: BTreeSet<PathBuf> = snapshot
+            .additional_files
+            .iter()
+            .map(|candidate| candidate.source_relative_path.clone())
+            .collect();
+        let all_paths = candidate_paths
+            .union(&additional_paths)
+            .cloned()
+            .collect::<BTreeSet<_>>();
         if candidate_ids.len() != snapshot.candidates.len()
             || candidate_paths.len() != snapshot.candidates.len()
-            || candidate_paths != snapshot.current_source_paths
+            || additional_ids.len() != snapshot.additional_files.len()
+            || additional_paths.len() != snapshot.additional_files.len()
+            || all_paths.len() != snapshot.candidates.len() + snapshot.additional_files.len()
+            || all_paths != snapshot.current_source_paths
         {
             return Err(CoreError::DeletionPreflightRefused);
         }
-        let _ = verify_complete_snapshot(&snapshot.context, &snapshot.candidates, faults)
-            .map_err(|_| CoreError::DeletionPreflightRefused)?;
+        let _ = verify_complete_snapshot(
+            &snapshot.context,
+            &snapshot.candidates,
+            &snapshot.additional_files,
+            faults,
+        )
+        .map_err(|_| CoreError::DeletionPreflightRefused)?;
         let byte_count = snapshot
             .candidates
             .iter()
@@ -186,8 +234,17 @@ impl DeletionProposalStore {
                     .checked_add(candidate.source_size)
                     .ok_or(CoreError::DeletionPreflightRefused)
             })?;
-        let file_count =
-            u64::try_from(snapshot.candidates.len()).map_err(|_| CoreError::InvalidRequest)?;
+        let byte_count =
+            snapshot
+                .additional_files
+                .iter()
+                .try_fold(byte_count, |total, candidate| {
+                    total
+                        .checked_add(candidate.source_size)
+                        .ok_or(CoreError::DeletionPreflightRefused)
+                })?;
+        let file_count = u64::try_from(snapshot.candidates.len() + snapshot.additional_files.len())
+            .map_err(|_| CoreError::InvalidRequest)?;
         let session_count = u64::try_from(
             snapshot
                 .candidates
@@ -210,6 +267,8 @@ impl DeletionProposalStore {
             PrivateProposal {
                 context: snapshot.context,
                 candidates: snapshot.candidates,
+                additional_files: snapshot.additional_files,
+                m4a_barrier_run_id: snapshot.m4a_barrier_run_id,
                 expires_at,
             },
         );
@@ -254,9 +313,15 @@ impl DeletionProposalStore {
         if &proposal.context != confirmation.current_context {
             return Err(CoreError::ProposalInvalidated);
         }
-        let retirement_plan =
-            verify_complete_snapshot(&proposal.context, &proposal.candidates, faults)
-                .map_err(|_| CoreError::DeletionPreflightRefused)?;
+        verify_ledger_authority(ledger, &proposal)
+            .map_err(|_| CoreError::DeletionPreflightRefused)?;
+        let retirement_plan = verify_complete_snapshot(
+            &proposal.context,
+            &proposal.candidates,
+            &proposal.additional_files,
+            faults,
+        )
+        .map_err(|_| CoreError::DeletionPreflightRefused)?;
         observer();
 
         let run_id = Uuid::new_v4().to_string();
@@ -268,15 +333,25 @@ impl DeletionProposalStore {
                 source_size: candidate.source_size,
             })
             .collect();
-        ledger.begin_deletion_run(
+        let pending_additional_items: Vec<PendingAdditionalDeletionItem> = proposal
+            .additional_files
+            .iter()
+            .map(|candidate| PendingAdditionalDeletionItem {
+                additional_file_id: candidate.additional_file_id.clone(),
+                source_size: candidate.source_size,
+            })
+            .collect();
+        ledger.begin_deletion_run_with_additional(
             &run_id,
             proposal.context.transmitter,
             confirmation.started_at,
             &pending_items,
+            &pending_additional_items,
         )?;
 
         let total_files =
-            u64::try_from(proposal.candidates.len()).map_err(|_| CoreError::InvalidRequest)?;
+            u64::try_from(proposal.candidates.len() + proposal.additional_files.len())
+                .map_err(|_| CoreError::InvalidRequest)?;
         let mut deleted_files = 0_u64;
         let mut deleted_bytes = 0_u64;
         for (index, target) in retirement_plan.targets.iter().enumerate() {
@@ -287,7 +362,13 @@ impl DeletionProposalStore {
                 .and_then(|()| trash.move_to_trash(&absolute_path));
             if move_result.is_err() {
                 let recording_ids = target_recording_ids(target);
-                ledger.record_deletion_target_failure(&run_id, &recording_ids, "trash_failed")?;
+                let additional_file_ids = target_additional_file_ids(target);
+                ledger.record_deletion_target_failure_with_additional(
+                    &run_id,
+                    &recording_ids,
+                    &additional_file_ids,
+                    "trash_failed",
+                )?;
                 let outcome = if deleted_files == 0 {
                     DeletionOutcome::Refused
                 } else {
@@ -322,9 +403,21 @@ impl DeletionProposalStore {
                 .iter()
                 .map(|candidate| candidate.recording_id.as_str())
                 .collect::<Vec<_>>();
-            ledger.record_deletion_target_success(
+            let target_additional = proposal
+                .additional_files
+                .iter()
+                .filter(|candidate| {
+                    target_contains_additional_file(target, &candidate.additional_file_id)
+                })
+                .collect::<Vec<_>>();
+            let additional_file_ids = target_additional
+                .iter()
+                .map(|candidate| candidate.additional_file_id.as_str())
+                .collect::<Vec<_>>();
+            ledger.record_deletion_target_success_with_additional(
                 &run_id,
                 &recording_ids,
+                &additional_file_ids,
                 confirmation.finished_at,
                 match target {
                     RetirementTarget::Session {
@@ -333,8 +426,8 @@ impl DeletionProposalStore {
                     RetirementTarget::RootFile { .. } => None,
                 },
             )?;
-            let target_files =
-                u64::try_from(target_candidates.len()).map_err(|_| CoreError::InvalidRequest)?;
+            let target_files = u64::try_from(target_candidates.len() + target_additional.len())
+                .map_err(|_| CoreError::InvalidRequest)?;
             let target_bytes = target_candidates
                 .iter()
                 .try_fold(0_u64, |total, candidate| {
@@ -342,6 +435,14 @@ impl DeletionProposalStore {
                         .checked_add(candidate.source_size)
                         .ok_or(CoreError::InvalidRequest)
                 })?;
+            let target_bytes =
+                target_additional
+                    .iter()
+                    .try_fold(target_bytes, |total, candidate| {
+                        total
+                            .checked_add(candidate.source_size)
+                            .ok_or(CoreError::InvalidRequest)
+                    })?;
             deleted_files = deleted_files
                 .checked_add(target_files)
                 .ok_or(CoreError::InvalidRequest)?;
@@ -368,21 +469,42 @@ impl DeletionProposalStore {
 fn verify_complete_snapshot(
     context: &DeletionContext,
     candidates: &[DeletionCandidate],
+    additional_files: &[AdditionalDeletionCandidate],
     faults: &dyn DeletionFaults,
 ) -> Result<RetirementPlan, CoreError> {
     let expected_source_paths = candidates
         .iter()
         .map(|candidate| candidate.source_relative_path.clone())
+        .chain(
+            additional_files
+                .iter()
+                .map(|candidate| candidate.source_relative_path.clone()),
+        )
         .collect::<BTreeSet<_>>();
-    let observed_source_paths = scan_once(
+    let scan = scan_once(
         &context.source_root,
         context.transmitter,
         time::UtcOffset::UTC,
-    )?
-    .recordings
-    .into_iter()
-    .map(|recording| recording.relative_path)
-    .collect::<BTreeSet<_>>();
+    )?;
+    if scan.issues.iter().any(|issue| {
+        matches!(
+            issue,
+            crate::scanner::ScanIssue::TransmitterPrefixMismatch
+                | crate::scanner::ScanIssue::UnsafeSessionEntry
+        )
+    }) {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    let observed_source_paths = scan
+        .recordings
+        .into_iter()
+        .map(|recording| recording.relative_path)
+        .chain(
+            scan.additional_files
+                .into_iter()
+                .map(|file| file.relative_path),
+        )
+        .collect::<BTreeSet<_>>();
     if observed_source_paths != expected_source_paths {
         return Err(CoreError::DeletionPreflightRefused);
     }
@@ -390,6 +512,8 @@ fn verify_complete_snapshot(
     let destination_root =
         fs::canonicalize(&context.destination_root).map_err(CoreError::CopyFailed)?;
     let mut session_candidates: HashMap<PathBuf, Vec<&DeletionCandidate>> = HashMap::new();
+    let mut session_additional: HashMap<PathBuf, Vec<&AdditionalDeletionCandidate>> =
+        HashMap::new();
     let mut root_candidates = Vec::new();
     for (index, candidate) in candidates.iter().enumerate() {
         if !is_safe_relative_path(&candidate.source_relative_path)
@@ -418,20 +542,60 @@ fn verify_complete_snapshot(
             Some(_) => return Err(CoreError::DeletionPreflightRefused),
         }
     }
+    for (index, candidate) in additional_files.iter().enumerate() {
+        if !is_safe_additional_relative_path(&candidate.source_relative_path)
+            || !is_safe_additional_relative_path(&candidate.destination_relative_path)
+        {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+        faults.check(DeletionFaultPoint::RevalidateSource(
+            candidates.len() + index,
+        ))?;
+        verify_additional_source(&source_root, candidate)?;
+        faults.check(DeletionFaultPoint::RevalidateDestination(
+            candidates.len() + index,
+        ))?;
+        verify_additional_destination(&destination_root, candidate)?;
+        let mut components = candidate.source_relative_path.components();
+        let first = components
+            .next()
+            .ok_or(CoreError::DeletionPreflightRefused)?;
+        if components.next().is_none() || components.next().is_some() {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+        let session = PathBuf::from(first.as_os_str());
+        if !is_recognized_session_name(&session) {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+        session_additional
+            .entry(session)
+            .or_default()
+            .push(candidate);
+    }
     let mut targets = Vec::new();
     let mut sessions: Vec<_> = session_candidates.into_iter().collect();
     sessions.sort_by(|left, right| left.0.cmp(&right.0));
     for (session, grouped) in sessions {
-        verify_session_inventory(&source_root, &session, &grouped)?;
+        let additional = session_additional.remove(&session).unwrap_or_default();
+        verify_session_inventory(&source_root, &session, &grouped, &additional)?;
         let mut recording_ids = grouped
             .into_iter()
             .map(|candidate| candidate.recording_id.clone())
             .collect::<Vec<_>>();
         recording_ids.sort();
+        let mut additional_file_ids = additional
+            .into_iter()
+            .map(|candidate| candidate.additional_file_id.clone())
+            .collect::<Vec<_>>();
+        additional_file_ids.sort();
         targets.push(RetirementTarget::Session {
             relative_directory: session,
             recording_ids,
+            additional_file_ids,
         });
+    }
+    if !session_additional.is_empty() {
+        return Err(CoreError::DeletionPreflightRefused);
     }
     root_candidates
         .sort_by(|left, right| left.source_relative_path.cmp(&right.source_relative_path));
@@ -448,18 +612,81 @@ fn verify_complete_snapshot(
             .checked_add(candidate.source_size)
             .ok_or(CoreError::DeletionPreflightRefused)
     })?;
+    let byte_count = additional_files
+        .iter()
+        .try_fold(byte_count, |total, candidate| {
+            total
+                .checked_add(candidate.source_size)
+                .ok_or(CoreError::DeletionPreflightRefused)
+        })?;
     Ok(RetirementPlan {
         transmitter: context.transmitter,
         targets,
         recording_count: candidates.len(),
+        additional_file_count: additional_files.len(),
         byte_count,
     })
+}
+
+fn verify_ledger_authority(ledger: &Ledger, proposal: &PrivateProposal) -> Result<(), CoreError> {
+    let run = ledger
+        .batch_run_evidence(&proposal.m4a_barrier_run_id)?
+        .ok_or(CoreError::DeletionPreflightRefused)?;
+    if run.phase != BatchPhase::M4aCohortVerified
+        || !run.frozen_preferences.m4a_conversion
+        || run.m4a_profile_id.as_deref() != Some(M4A_PROFILE_ID)
+    {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    for candidate in &proposal.candidates {
+        let recording = ledger
+            .verified_recording(&candidate.recording_id)?
+            .ok_or(CoreError::DeletionPreflightRefused)?;
+        if recording.transmitter != proposal.context.transmitter
+            || recording.backup_run_id != proposal.m4a_barrier_run_id
+            || recording.source_relative_path != candidate.source_relative_path
+            || recording.source_size != candidate.source_size
+            || recording.source_mtime_ns != candidate.source_mtime_ns
+            || recording.source_sha256 != candidate.source_sha256
+            || recording.artifact.relative_path != candidate.destination_relative_path
+            || recording.artifact.byte_count != candidate.destination_size
+            || recording.artifact.sha256 != candidate.destination_sha256
+            || recording.artifact.format != OutputFormat::M4a
+            || recording.conversion_status != ConversionStatus::Complete
+            || recording
+                .artifact
+                .audio
+                .as_ref()
+                .is_none_or(|audio| audio.codec != "aac")
+        {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+    }
+    for candidate in &proposal.additional_files {
+        let file = ledger
+            .verified_additional_file(&candidate.additional_file_id)?
+            .ok_or(CoreError::DeletionPreflightRefused)?;
+        if file.transmitter != proposal.context.transmitter
+            || file.backup_run_id != proposal.m4a_barrier_run_id
+            || file.source_relative_path != candidate.source_relative_path
+            || file.source_size != candidate.source_size
+            || file.source_mtime_ns != candidate.source_mtime_ns
+            || file.source_sha256 != candidate.source_sha256
+            || file.artifact_relative_path != candidate.destination_relative_path
+            || file.artifact_size != candidate.destination_size
+            || file.artifact_sha256 != candidate.destination_sha256
+        {
+            return Err(CoreError::DeletionPreflightRefused);
+        }
+    }
+    Ok(())
 }
 
 fn verify_session_inventory(
     source_root: &Path,
     session: &Path,
     candidates: &[&DeletionCandidate],
+    additional_files: &[&AdditionalDeletionCandidate],
 ) -> Result<(), CoreError> {
     let session_path = source_root.join(session);
     let metadata = fs::symlink_metadata(&session_path).map_err(CoreError::CopyFailed)?;
@@ -473,6 +700,11 @@ fn verify_session_inventory(
     let expected = candidates
         .iter()
         .map(|candidate| candidate.source_relative_path.clone())
+        .chain(
+            additional_files
+                .iter()
+                .map(|candidate| candidate.source_relative_path.clone()),
+        )
         .collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
     for entry in fs::read_dir(&canonical_session).map_err(CoreError::CopyFailed)? {
@@ -482,7 +714,7 @@ fn verify_session_inventory(
         let Some(name) = name.to_str() else {
             return Err(CoreError::DeletionPreflightRefused);
         };
-        if name.starts_with('.') || file_type.is_symlink() || !file_type.is_file() {
+        if file_type.is_symlink() || !file_type.is_file() {
             return Err(CoreError::DeletionPreflightRefused);
         }
         observed.insert(session.join(name));
@@ -511,6 +743,16 @@ fn target_recording_ids(target: &RetirementTarget) -> Vec<&str> {
     }
 }
 
+fn target_additional_file_ids(target: &RetirementTarget) -> Vec<&str> {
+    match target {
+        RetirementTarget::Session {
+            additional_file_ids,
+            ..
+        } => additional_file_ids.iter().map(String::as_str).collect(),
+        RetirementTarget::RootFile { .. } => Vec::new(),
+    }
+}
+
 fn target_contains_recording(target: &RetirementTarget, recording_id: &str) -> bool {
     match target {
         RetirementTarget::Session { recording_ids, .. } => {
@@ -520,6 +762,18 @@ fn target_contains_recording(target: &RetirementTarget, recording_id: &str) -> b
             recording_id: value,
             ..
         } => value == recording_id,
+    }
+}
+
+fn target_contains_additional_file(target: &RetirementTarget, additional_file_id: &str) -> bool {
+    match target {
+        RetirementTarget::Session {
+            additional_file_ids,
+            ..
+        } => additional_file_ids
+            .iter()
+            .any(|value| value == additional_file_id),
+        RetirementTarget::RootFile { .. } => false,
     }
 }
 
@@ -615,6 +869,61 @@ fn verify_destination(root: &Path, candidate: &DeletionCandidate) -> Result<(), 
     Ok(())
 }
 
+fn verify_additional_source(
+    root: &Path,
+    candidate: &AdditionalDeletionCandidate,
+) -> Result<PathBuf, CoreError> {
+    verify_file_evidence(
+        root,
+        &candidate.source_relative_path,
+        candidate.source_size,
+        Some(candidate.source_mtime_ns),
+        &candidate.source_sha256,
+    )
+}
+
+fn verify_additional_destination(
+    root: &Path,
+    candidate: &AdditionalDeletionCandidate,
+) -> Result<(), CoreError> {
+    verify_file_evidence(
+        root,
+        &candidate.destination_relative_path,
+        candidate.destination_size,
+        None,
+        &candidate.destination_sha256,
+    )?;
+    Ok(())
+}
+
+fn verify_file_evidence(
+    root: &Path,
+    relative_path: &Path,
+    expected_size: u64,
+    expected_mtime_ns: Option<i128>,
+    expected_sha256: &str,
+) -> Result<PathBuf, CoreError> {
+    let path = root.join(relative_path);
+    let metadata = fs::symlink_metadata(&path).map_err(CoreError::CopyFailed)?;
+    if !metadata.file_type().is_file()
+        || metadata.len() != expected_size
+        || expected_mtime_ns.is_some_and(|expected| {
+            modified_nanos(&metadata).map_or(true, |observed| observed != expected)
+        })
+    {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    let canonical_path = fs::canonicalize(&path).map_err(CoreError::CopyFailed)?;
+    if !canonical_path.starts_with(root) {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    let digest = hash_file(&canonical_path)?;
+    if digest.size != expected_size || digest.sha256 != expected_sha256 {
+        return Err(CoreError::DeletionPreflightRefused);
+    }
+    Ok(canonical_path)
+}
+
 #[cfg(test)]
 mod tests {
     use std::{
@@ -629,7 +938,11 @@ mod tests {
     use tempfile::tempdir;
 
     use crate::{
-        artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
+        artifact::{
+            ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact,
+            VerifiedAudioProperties,
+        },
+        batch::FrozenPreferences,
         filesystem::modified_nanos,
         hash::hash_file,
         ledger::VerifiedRecording,
@@ -667,12 +980,26 @@ mod tests {
         let state = tempdir().unwrap();
         let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
         ledger
-            .begin_backup_run("backup-run", "2026-08-09T00:00:00Z", 0)
+            .begin_batch_run(
+                "backup-run",
+                "2026-08-09T00:00:00Z",
+                0,
+                FrozenPreferences {
+                    automatic_backup: true,
+                    m4a_conversion: true,
+                    automatic_trash: false,
+                },
+            )
+            .unwrap();
+        ledger
+            .advance_batch_phase("backup-run", BatchPhase::Copying)
             .unwrap();
         let mut candidates = Vec::new();
         for index in 0..file_count {
             let relative = PathBuf::from(format!("TX01_MIC{index:03}_20260809_010203.wav"));
-            let destination_relative = PathBuf::from("2026/2026-08-09/TX01").join(&relative);
+            let destination_relative = PathBuf::from("2026/2026-08-09/TX01")
+                .join(&relative)
+                .with_extension("m4a");
             let bytes = vec![u8::try_from(index).unwrap_or(0x55); 1024 + index];
             fs::write(source.path().join(&relative), &bytes).unwrap();
             fs::create_dir_all(
@@ -697,12 +1024,18 @@ mod tests {
                     source_sha256: digest.sha256.clone(),
                     artifact: VerifiedArtifact {
                         relative_path: destination_relative.clone(),
-                        format: OutputFormat::Wav,
+                        format: OutputFormat::M4a,
                         byte_count: digest.size,
                         sha256: digest.sha256.clone(),
-                        audio: None,
+                        audio: Some(VerifiedAudioProperties {
+                            codec: "aac".to_owned(),
+                            sample_rate_hz: 48_000,
+                            channel_count: 1,
+                            valid_frames: 48_000,
+                            duration_micros: 1_000_000,
+                        }),
                     },
-                    conversion_status: ConversionStatus::NotRequired,
+                    conversion_status: ConversionStatus::Complete,
                     conversion_error_code: None,
                     retirement_status: RetirementStatus::Present,
                     retired_session_relative_path: None,
@@ -721,6 +1054,22 @@ mod tests {
                 destination_sha256: digest.sha256,
             });
         }
+        ledger
+            .advance_batch_phase("backup-run", BatchPhase::CopiesVerified)
+            .unwrap();
+        let recording_ids = candidates
+            .iter()
+            .map(|candidate| candidate.recording_id.clone())
+            .collect::<Vec<_>>();
+        ledger
+            .begin_conversion_cohort("backup-run", &recording_ids, M4A_PROFILE_ID)
+            .unwrap();
+        for recording_id in &recording_ids {
+            ledger
+                .mark_conversion_item_verified("backup-run", recording_id)
+                .unwrap();
+        }
+        ledger.commit_m4a_barrier("backup-run").unwrap();
         let current_source_paths = candidates
             .iter()
             .map(|candidate| candidate.source_relative_path.clone())
@@ -736,7 +1085,9 @@ mod tests {
                 destination_root: destination.path().to_path_buf(),
             },
             candidates,
+            additional_files: Vec::new(),
             current_source_paths,
+            m4a_barrier_run_id: "backup-run".to_owned(),
         };
         Fixture {
             source,

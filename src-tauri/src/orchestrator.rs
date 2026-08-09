@@ -18,9 +18,9 @@ use backup_core::{
     },
     batch::{BatchItemKey, BatchPhase, CopyBarrier, M4A_PROFILE_ID},
     deletion::{
-        CompleteDeletionSnapshot, DeletionCandidate, DeletionConfirmation, DeletionContext,
-        DeletionOutcome, NoDeletionFaults, ProposalInvalidation, TrashAdapter,
-        reconcile_legacy_empty_sessions,
+        AdditionalDeletionCandidate, CompleteDeletionSnapshot, DeletionCandidate,
+        DeletionConfirmation, DeletionContext, DeletionOutcome, NoDeletionFaults,
+        ProposalInvalidation, TrashAdapter, reconcile_legacy_empty_sessions,
     },
     destination::{
         AdditionalFilePlan, DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition,
@@ -29,7 +29,6 @@ use backup_core::{
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
     hash::hash_file,
-    recording::RecordingObservation,
     scanner::{ScanIssue, ScanResult, metadata_fingerprint, scan_stable},
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
 };
@@ -479,7 +478,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     let mut current_ordinal = 0_u64;
 
     for prepared_tx in &prepared {
-        let mut verified_count = 0_usize;
+        let mut verified_additional = Vec::new();
         for plan in &prepared_tx.additional_plans {
             let copied = execute_additional_file_copy(
                 &BackupItemContext {
@@ -495,7 +494,8 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             );
             match copied {
                 Ok(file) if file.source_sha256 == plan.source_sha256 => {
-                    state.ledger.lock().commit_verified_additional_file(&file)?;
+                    let additional_file_id =
+                        state.ledger.lock().commit_verified_additional_file(&file)?;
                     copy_barrier.record_verified(&BatchItemKey::Additional {
                         transmitter: prepared_tx.transmitter,
                         relative_path: plan.source.relative_path.clone(),
@@ -524,7 +524,16 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         },
                         AuditDurability::Buffered,
                     )?;
-                    verified_count += 1;
+                    verified_additional.push(AdditionalDeletionCandidate {
+                        additional_file_id,
+                        source_relative_path: file.source_relative_path,
+                        source_size: file.source_size,
+                        source_mtime_ns: file.source_mtime_ns,
+                        source_sha256: file.source_sha256,
+                        destination_relative_path: file.artifact_relative_path,
+                        destination_size: file.artifact_size,
+                        destination_sha256: file.artifact_sha256,
+                    });
                 }
                 Ok(_) => {
                     copy_barrier.record_failed(&BatchItemKey::Additional {
@@ -561,7 +570,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 }
             }
         }
-        verified_additional_by_tx.insert(prepared_tx.transmitter, verified_count);
+        verified_additional_by_tx.insert(prepared_tx.transmitter, verified_additional);
     }
 
     for prepared_tx in &prepared {
@@ -636,11 +645,13 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             };
             match verified_recording {
                 Ok(mut recording) => {
-                    if !prepared_tx
+                    let reused_m4a = prepared_tx
                         .existing_artifacts
-                        .contains_key(&plan.source.relative_path)
-                    {
-                        recording.id = state.ledger.lock().commit_verified_recording(&recording)?;
+                        .contains_key(&plan.source.relative_path);
+                    recording.backup_run_id.clone_from(&run_id);
+                    recording.verified_at = now_string();
+                    recording.id = state.ledger.lock().commit_verified_recording(&recording)?;
+                    if !reused_m4a {
                         progress.record_verified_file();
                         observer(progress, CurrentStage::Sha256Verification);
                     }
@@ -1054,14 +1065,13 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         let verified = verified_by_tx
             .remove(&prepared_tx.transmitter)
             .unwrap_or_default();
+        let verified_additional = verified_additional_by_tx
+            .remove(&prepared_tx.transmitter)
+            .unwrap_or_default();
         let complete = m4a_conversion_enabled
             && !failed_transmitters.contains(&prepared_tx.transmitter)
             && verified.len() == prepared_tx.scan.recordings.len()
-            && verified_additional_by_tx
-                .get(&prepared_tx.transmitter)
-                .copied()
-                .unwrap_or_default()
-                == prepared_tx.scan.additional_files.len()
+            && verified_additional.len() == prepared_tx.scan.additional_files.len()
             && !prepared_tx.scan.issues.iter().any(|issue| {
                 matches!(
                     issue,
@@ -1074,7 +1084,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             .or_default();
         *generation = generation.saturating_add(1);
         let scan_generation = *generation;
-        let current_source_paths = source_paths(&prepared_tx.scan.recordings);
+        let current_source_paths = source_paths_for_scan(&prepared_tx.scan);
         let context = runtime
             .mounted
             .get(&prepared_tx.transmitter)
@@ -1095,15 +1105,25 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 automatic_snapshots.push(CompleteDeletionSnapshot {
                     context,
                     candidates: verified.clone(),
+                    additional_files: verified_additional.clone(),
                     current_source_paths: current_source_paths.clone(),
+                    m4a_barrier_run_id: run_id.clone(),
                 });
             }
             runtime.verified.insert(prepared_tx.transmitter, verified);
+            runtime
+                .verified_additional
+                .insert(prepared_tx.transmitter, verified_additional);
+            runtime
+                .m4a_barrier_runs
+                .insert(prepared_tx.transmitter, run_id.clone());
             runtime
                 .current_source_paths
                 .insert(prepared_tx.transmitter, current_source_paths);
         } else {
             runtime.verified.remove(&prepared_tx.transmitter);
+            runtime.verified_additional.remove(&prepared_tx.transmitter);
+            runtime.m4a_barrier_runs.remove(&prepared_tx.transmitter);
             runtime
                 .current_source_paths
                 .remove(&prepared_tx.transmitter);
@@ -1342,6 +1362,8 @@ fn retire_automatically(
             transmitter_snapshot.deletion_ready = false;
         });
         runtime.verified.remove(&transmitter);
+        runtime.verified_additional.remove(&transmitter);
+        runtime.m4a_barrier_runs.remove(&transmitter);
         runtime.current_source_paths.remove(&transmitter);
         runtime.snapshot.current_stage = None;
         publish_locked(app, &mut runtime);
@@ -1410,7 +1432,7 @@ pub fn prepare_trash(
         runtime.snapshot.current_stage = Some(CurrentStage::Trash);
         publish_locked(app, &mut runtime);
     }
-    let (mounted, destination, destination_generation, verified) = {
+    let (mounted, destination, destination_generation, verified, additional_files, barrier_run) = {
         let runtime = state.runtime.lock();
         (
             runtime
@@ -1422,6 +1444,16 @@ pub fn prepare_trash(
             runtime.destination_generation,
             runtime
                 .verified
+                .get(&transmitter)
+                .cloned()
+                .ok_or(CoreError::DeletionPreflightRefused)?,
+            runtime
+                .verified_additional
+                .get(&transmitter)
+                .cloned()
+                .unwrap_or_default(),
+            runtime
+                .m4a_barrier_runs
                 .get(&transmitter)
                 .cloned()
                 .ok_or(CoreError::DeletionPreflightRefused)?,
@@ -1467,7 +1499,9 @@ pub fn prepare_trash(
         CompleteDeletionSnapshot {
             context,
             candidates: verified,
-            current_source_paths: source_paths(&scan.recordings),
+            additional_files,
+            current_source_paths: source_paths_for_scan(&scan),
+            m4a_barrier_run_id: barrier_run,
         },
         state.elapsed(),
         !state.ledger.lock().deletion_disabled(),
@@ -1580,6 +1614,8 @@ pub fn confirm_trash(
         }
     });
     runtime.verified.remove(&context.transmitter);
+    runtime.verified_additional.remove(&context.transmitter);
+    runtime.m4a_barrier_runs.remove(&context.transmitter);
     runtime.current_source_paths.remove(&context.transmitter);
     if report.outcome == DeletionOutcome::PartiallyDeleted {
         runtime.snapshot.phase = BackupPhase::Error;
@@ -1690,10 +1726,15 @@ fn mark_transmitter_failed(app: &AppHandle, state: &AppState, transmitter: Trans
     publish_locked(app, &mut runtime);
 }
 
-fn source_paths(recordings: &[RecordingObservation]) -> BTreeSet<std::path::PathBuf> {
-    recordings
+fn source_paths_for_scan(scan: &ScanResult) -> BTreeSet<std::path::PathBuf> {
+    scan.recordings
         .iter()
         .map(|recording| recording.relative_path.clone())
+        .chain(
+            scan.additional_files
+                .iter()
+                .map(|file| file.relative_path.clone()),
+        )
         .collect()
 }
 

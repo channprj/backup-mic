@@ -55,6 +55,12 @@ pub struct PendingDeletionItem {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingAdditionalDeletionItem {
+    pub additional_file_id: String,
+    pub source_size: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyRetiredRecording {
     pub recording_id: String,
     pub source_relative_path: PathBuf,
@@ -1194,11 +1200,33 @@ impl Ledger {
         started_at: &str,
         items: &[PendingDeletionItem],
     ) -> Result<(), CoreError> {
+        self.begin_deletion_run_with_additional(id, transmitter, started_at, items, &[])
+    }
+
+    pub fn begin_deletion_run_with_additional(
+        &mut self,
+        id: &str,
+        transmitter: Transmitter,
+        started_at: &str,
+        items: &[PendingDeletionItem],
+        additional_items: &[PendingAdditionalDeletionItem],
+    ) -> Result<(), CoreError> {
         let proposed_bytes = items.iter().try_fold(0_u64, |total, item| {
             total
                 .checked_add(item.source_size)
                 .ok_or(CoreError::InvalidRequest)
         })?;
+        let proposed_bytes = additional_items
+            .iter()
+            .try_fold(proposed_bytes, |total, item| {
+                total
+                    .checked_add(item.source_size)
+                    .ok_or(CoreError::InvalidRequest)
+            })?;
+        let proposed_count = items
+            .len()
+            .checked_add(additional_items.len())
+            .ok_or(CoreError::InvalidRequest)?;
         let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
         transaction
             .execute(
@@ -1209,7 +1237,7 @@ impl Ledger {
                     id,
                     transmitter_name(transmitter),
                     started_at,
-                    to_i64(u64::try_from(items.len()).map_err(|_| CoreError::InvalidRequest)?)?,
+                    to_i64(u64::try_from(proposed_count).map_err(|_| CoreError::InvalidRequest)?)?,
                     to_i64(proposed_bytes)?,
                 ],
             )
@@ -1235,6 +1263,16 @@ impl Ledger {
                 return Err(CoreError::LedgerCorrupt);
             }
         }
+        for item in additional_items {
+            transaction
+                .execute(
+                    r#"INSERT INTO additional_deletion_items(
+                         deletion_run_id, additional_file_id, outcome
+                       ) VALUES (?1, ?2, 'pending')"#,
+                    params![id, item.additional_file_id],
+                )
+                .map_err(CoreError::Ledger)?;
+        }
         transaction.commit().map_err(CoreError::Ledger)
     }
 
@@ -1245,7 +1283,24 @@ impl Ledger {
         removed_at: &str,
         retired_session_relative_path: Option<&Path>,
     ) -> Result<(), CoreError> {
-        if recording_ids.is_empty() {
+        self.record_deletion_target_success_with_additional(
+            deletion_run_id,
+            recording_ids,
+            &[],
+            removed_at,
+            retired_session_relative_path,
+        )
+    }
+
+    pub fn record_deletion_target_success_with_additional(
+        &mut self,
+        deletion_run_id: &str,
+        recording_ids: &[&str],
+        additional_file_ids: &[&str],
+        removed_at: &str,
+        retired_session_relative_path: Option<&Path>,
+    ) -> Result<(), CoreError> {
+        if recording_ids.is_empty() && additional_file_ids.is_empty() {
             return Err(CoreError::InvalidRequest);
         }
         let retired_session = retired_session_relative_path
@@ -1276,6 +1331,20 @@ impl Ledger {
                 return Err(CoreError::LedgerCorrupt);
             }
         }
+        for additional_file_id in additional_file_ids {
+            let item_changed = transaction
+                .execute(
+                    r#"UPDATE additional_deletion_items
+                       SET outcome = 'moved_to_trash', removed_at = ?1, error_code = NULL
+                       WHERE deletion_run_id = ?2 AND additional_file_id = ?3
+                         AND outcome = 'pending'"#,
+                    params![removed_at, deletion_run_id, additional_file_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            if item_changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
+        }
         transaction.commit().map_err(CoreError::Ledger)
     }
 
@@ -1285,7 +1354,22 @@ impl Ledger {
         recording_ids: &[&str],
         error_code: &str,
     ) -> Result<(), CoreError> {
-        if recording_ids.is_empty() {
+        self.record_deletion_target_failure_with_additional(
+            deletion_run_id,
+            recording_ids,
+            &[],
+            error_code,
+        )
+    }
+
+    pub fn record_deletion_target_failure_with_additional(
+        &mut self,
+        deletion_run_id: &str,
+        recording_ids: &[&str],
+        additional_file_ids: &[&str],
+        error_code: &str,
+    ) -> Result<(), CoreError> {
+        if recording_ids.is_empty() && additional_file_ids.is_empty() {
             return Err(CoreError::InvalidRequest);
         }
         let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
@@ -1309,6 +1393,20 @@ impl Ledger {
                 return Err(CoreError::LedgerCorrupt);
             }
         }
+        for additional_file_id in additional_file_ids {
+            let item_changed = transaction
+                .execute(
+                    r#"UPDATE additional_deletion_items
+                       SET outcome = 'failed', error_code = ?1
+                       WHERE deletion_run_id = ?2 AND additional_file_id = ?3
+                         AND outcome = 'pending'"#,
+                    params![error_code, deletion_run_id, additional_file_id],
+                )
+                .map_err(CoreError::Ledger)?;
+            if item_changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
+        }
         transaction
             .execute(
                 r#"UPDATE recordings
@@ -1324,6 +1422,13 @@ impl Ledger {
         transaction
             .execute(
                 r#"UPDATE deletion_items SET outcome = 'not_attempted'
+                   WHERE deletion_run_id = ?1 AND outcome = 'pending'"#,
+                [deletion_run_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        transaction
+            .execute(
+                r#"UPDATE additional_deletion_items SET outcome = 'not_attempted'
                    WHERE deletion_run_id = ?1 AND outcome = 'pending'"#,
                 [deletion_run_id],
             )
@@ -1350,6 +1455,25 @@ impl Ledger {
             return Err(CoreError::LedgerCorrupt);
         }
         Ok(())
+    }
+
+    pub fn additional_deletion_outcomes(
+        &self,
+        deletion_run_id: &str,
+    ) -> Result<Vec<(String, String)>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT additional_file_id, outcome
+                   FROM additional_deletion_items
+                   WHERE deletion_run_id = ?1
+                   ORDER BY additional_file_id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([deletion_run_id], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| row.map_err(CoreError::Ledger)).collect()
     }
 
     pub fn deletion_item_outcomes(&self, id: &str) -> Result<Vec<String>, CoreError> {

@@ -6,7 +6,10 @@ use std::{
 };
 
 use backup_core::{
-    artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
+    artifact::{
+        ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties,
+    },
+    batch::{BatchPhase, FrozenPreferences, M4A_PROFILE_ID},
     deletion::{
         CompleteDeletionSnapshot, DeletionConfirmation, DeletionContext, DeletionOutcome,
         DeletionProposalStore, NoDeletionFaults, TrashAdapter,
@@ -58,7 +61,9 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
 
     let session_relative = PathBuf::from("TX_MIC001_20260809_010203");
     let source_relative = session_relative.join("TX01_MIC001_20260809_010203.wav");
-    let destination_relative = PathBuf::from("2026/2026-08-09/TX01").join(&source_relative);
+    let destination_relative = PathBuf::from("2026/2026-08-09/TX01")
+        .join(&source_relative)
+        .with_extension("m4a");
     let source_path = source.join(&source_relative);
     let destination_path = destination.join(&destination_relative);
     fs::create_dir_all(source_path.parent().unwrap()).unwrap();
@@ -83,11 +88,19 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
     let state = tempdir().unwrap();
     let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
     ledger
-        .begin_backup_run(
+        .begin_batch_run(
             "fat32-acceptance-backup",
             "2026-08-09T00:00:00Z",
             digest.size,
+            FrozenPreferences {
+                automatic_backup: true,
+                m4a_conversion: true,
+                automatic_trash: false,
+            },
         )
+        .unwrap();
+    ledger
+        .advance_batch_phase("fat32-acceptance-backup", BatchPhase::Copying)
         .unwrap();
     ledger
         .commit_verified_recording(&VerifiedRecording {
@@ -99,18 +112,40 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
             source_sha256: digest.sha256.clone(),
             artifact: VerifiedArtifact {
                 relative_path: destination_relative.clone(),
-                format: OutputFormat::Wav,
+                format: OutputFormat::M4a,
                 byte_count: digest.size,
                 sha256: digest.sha256,
-                audio: None,
+                audio: Some(VerifiedAudioProperties {
+                    codec: "aac".to_owned(),
+                    sample_rate_hz: 48_000,
+                    channel_count: 1,
+                    valid_frames: 48_000,
+                    duration_micros: 1_000_000,
+                }),
             },
-            conversion_status: ConversionStatus::NotRequired,
+            conversion_status: ConversionStatus::Complete,
             conversion_error_code: None,
             retirement_status: RetirementStatus::Present,
             retired_session_relative_path: None,
             verified_at: "2026-08-09T00:01:00Z".to_owned(),
             backup_run_id: "fat32-acceptance-backup".to_owned(),
         })
+        .unwrap();
+    ledger
+        .advance_batch_phase("fat32-acceptance-backup", BatchPhase::CopiesVerified)
+        .unwrap();
+    ledger
+        .begin_conversion_cohort(
+            "fat32-acceptance-backup",
+            &["fat32-acceptance-recording".to_owned()],
+            M4A_PROFILE_ID,
+        )
+        .unwrap();
+    ledger
+        .mark_conversion_item_verified("fat32-acceptance-backup", "fat32-acceptance-recording")
+        .unwrap();
+    ledger
+        .commit_m4a_barrier("fat32-acceptance-backup")
         .unwrap();
 
     // macOS may materialize AppleDouble metadata beside a file created on a
@@ -153,7 +188,9 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
             CompleteDeletionSnapshot {
                 context: context.clone(),
                 candidates: vec![candidate],
+                additional_files: Vec::new(),
                 current_source_paths: BTreeSet::from([source_relative]),
+                m4a_barrier_run_id: "fat32-acceptance-backup".to_owned(),
             },
             Duration::from_secs(1),
             true,

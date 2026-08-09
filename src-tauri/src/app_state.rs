@@ -12,7 +12,9 @@ use backup_core::{
     audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditSink, AuditValue, FileAuditLog},
     backup::CancellationToken,
     batch::FrozenPreferences,
-    deletion::{DeletionCandidate, DeletionProposalStore, ProposalInvalidation},
+    deletion::{
+        AdditionalDeletionCandidate, DeletionCandidate, DeletionProposalStore, ProposalInvalidation,
+    },
     device::{DeviceMatch, PairedDevice},
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
@@ -46,6 +48,8 @@ pub(crate) struct RuntimeState {
     pub destination_generation: u64,
     pub scan_generations: HashMap<Transmitter, u64>,
     pub verified: HashMap<Transmitter, Vec<DeletionCandidate>>,
+    pub verified_additional: HashMap<Transmitter, Vec<AdditionalDeletionCandidate>>,
+    pub m4a_barrier_runs: HashMap<Transmitter, String>,
     pub current_source_paths: HashMap<Transmitter, BTreeSet<PathBuf>>,
     pub preferences: BackupPreferences,
 }
@@ -141,6 +145,8 @@ impl AppState {
                 destination_generation: 1,
                 scan_generations: HashMap::new(),
                 verified: HashMap::new(),
+                verified_additional: HashMap::new(),
+                m4a_barrier_runs: HashMap::new(),
                 current_source_paths: HashMap::new(),
                 preferences,
             })),
@@ -290,6 +296,9 @@ impl AppState {
                 } else {
                     ArtifactFormatDto::Wav
                 };
+                if !enabled {
+                    clear_retirement_authority(&mut runtime);
+                }
             }
             PreferenceKey::AutomaticTrash => {
                 runtime.preferences.automatic_trash = enabled;
@@ -321,6 +330,9 @@ impl AppState {
         } else {
             RetirementModeDto::Manual
         };
+        if !preferences.m4a_conversion {
+            clear_retirement_authority(&mut runtime);
+        }
         runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
         runtime.snapshot.clone()
     }
@@ -402,6 +414,8 @@ impl AppState {
                 if let Some(transmitter) = removed {
                     runtime.mounted.remove(&transmitter);
                     runtime.verified.remove(&transmitter);
+                    runtime.verified_additional.remove(&transmitter);
+                    runtime.m4a_barrier_runs.remove(&transmitter);
                     runtime.current_source_paths.remove(&transmitter);
                     update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
                         snapshot.mounted = false;
@@ -583,6 +597,8 @@ impl AppState {
         runtime.snapshot.current_log_available = true;
         runtime.destination_generation = runtime.destination_generation.saturating_add(1);
         runtime.verified.clear();
+        runtime.verified_additional.clear();
+        runtime.m4a_barrier_runs.clear();
         runtime.current_source_paths.clear();
         for snapshot in &mut runtime.snapshot.transmitters {
             snapshot.deletion_ready = false;
@@ -767,6 +783,17 @@ fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
         .and_then(|item_name| item_name.to_str())
         .map(|item_name| item_name.chars().take(180).collect())
         .filter(|item_name: &String| !item_name.is_empty())
+}
+
+fn clear_retirement_authority(runtime: &mut RuntimeState) {
+    runtime.verified.clear();
+    runtime.verified_additional.clear();
+    runtime.m4a_barrier_runs.clear();
+    runtime.current_source_paths.clear();
+    for transmitter in &mut runtime.snapshot.transmitters {
+        transmitter.deletion_ready = false;
+        transmitter.deletion_phase = DeletionPhase::Inactive;
+    }
 }
 
 #[cfg(test)]
