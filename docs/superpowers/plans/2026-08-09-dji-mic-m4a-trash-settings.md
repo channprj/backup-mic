@@ -168,32 +168,32 @@ pub trait AuditSink: Send + Sync {
 }
 ```
 
-- [ ] **Step 1: Add failing path, escaping, privacy, and durability tests**
+- [x] **Step 1: Add failing path, escaping, privacy, and durability tests**
 
 Cover the KST instant `2026-08-09T20:01:42.613+09:00` mapping to `logs/2026/08/260809-backup-mic.log`; quote and backslash escaping; CR/LF normalization; rejection of unknown field names; absence of absolute source paths, UUID keys, full hashes, and proposal identifiers; concurrent append serialization; and `SyncData` propagation.
 
-- [ ] **Step 2: Run the audit-log test and observe the missing module failure**
+- [x] **Step 2: Run the audit-log test and observe the missing module failure**
 
 ```bash
 cargo test -p backup-core --test audit_log
 ```
 
-- [ ] **Step 3: Implement `FileAuditLog`**
+- [x] **Step 3: Implement `FileAuditLog`**
 
 Create parent directories lazily, open the dated file in append mode, serialize one event under one process-wide mutex, encode timestamps with local offset, and terminate each event with exactly one newline. Permit only an explicit field-name allowlist such as `source`, `output`, `source_bytes`, `output_bytes`, `format`, `count`, `reason`, and `mode`.
 
-- [ ] **Step 4: Wire lifecycle and run events**
+- [x] **Step 4: Wire lifecycle and run events**
 
 Initialize the sink from the configured destination. Log device detection, scan start, discovery, copy verification, conversion, artifact verification, finalization, refusal, Trash preflight/outcome, recovery, and run completion as those events become available. Use `SyncData` for run completion and immediately before source-retirement authority; a log error may leave a completed artifact but must set retirement ineligible.
 
-- [ ] **Step 5: Verify focused and application tests**
+- [x] **Step 5: Verify focused and application tests**
 
 ```bash
 cargo test -p backup-core --test audit_log
 cargo test --workspace --all-targets
 ```
 
-- [ ] **Step 6: Commit and push the audit checkpoint**
+- [x] **Step 6: Commit and push the audit checkpoint**
 
 Stage only the files listed for this task and commit:
 

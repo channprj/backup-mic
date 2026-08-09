@@ -15,6 +15,7 @@ pub enum PublicErrorCode {
     HashMismatch,
     DeviceRemoved,
     LedgerCorrupt,
+    AuditLogUnavailable,
     ProposalExpired,
     ProposalInvalidated,
     DeletionPreflightRefused,
@@ -57,6 +58,10 @@ pub enum CoreError {
     Ledger(#[source] rusqlite::Error),
     #[error("ledger filesystem operation failed")]
     LedgerIo(#[source] std::io::Error),
+    #[error("daily audit log is unavailable")]
+    AuditLogUnavailable(#[source] std::io::Error),
+    #[error("daily audit event contains unsafe data")]
+    InvalidAuditEvent,
     #[error("deletion proposal expired")]
     ProposalExpired,
     #[error("deletion proposal was invalidated")]
@@ -98,6 +103,12 @@ impl CoreError {
             Self::Ledger(_) | Self::LedgerIo(_) => {
                 (PublicErrorCode::Internal, "ledger_operation_failed", true)
             }
+            Self::AuditLogUnavailable(_) => (
+                PublicErrorCode::AuditLogUnavailable,
+                "audit_log_unavailable",
+                true,
+            ),
+            Self::InvalidAuditEvent => (PublicErrorCode::Internal, "audit_event_invalid", false),
             Self::ProposalExpired => (PublicErrorCode::ProposalExpired, "proposal_expired", true),
             Self::ProposalInvalidated => (
                 PublicErrorCode::ProposalInvalidated,

@@ -9,6 +9,8 @@ use std::{
 };
 
 use backup_core::{
+    artifact::OutputFormat,
+    audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue},
     backup::{
         BackupItemContext, NoCopyFaults, cleanup_owned_partials, ensure_capacity,
         execute_backup_item_observed, progress_for_plans,
@@ -150,6 +152,16 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     let mut last_error: Option<PublicError> = None;
     for (transmitter, mounted) in mounted {
         guard.cancellation.check()?;
+        state.append_audit(
+            &AuditEvent {
+                occurred_at: audit_now(),
+                level: AuditLevel::Info,
+                code: "scan.started",
+                transmitter: Some(transmitter),
+                fields: &[],
+            },
+            AuditDurability::Buffered,
+        )?;
         let scan = match scan_stable(
             &mounted.descriptor.mount_root,
             transmitter,
@@ -158,12 +170,40 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         ) {
             Ok(scan) => scan,
             Err(error) => {
+                let reason = error.public(Some(transmitter)).message_code;
+                let fields = [("reason", AuditValue::Text(&reason))];
+                state.append_audit(
+                    &AuditEvent {
+                        occurred_at: audit_now(),
+                        level: AuditLevel::Error,
+                        code: "scan.refused",
+                        transmitter: Some(transmitter),
+                        fields: &fields,
+                    },
+                    AuditDurability::Buffered,
+                )?;
                 failed_transmitters.insert(transmitter);
                 last_error = Some(error.public(Some(transmitter)));
                 mark_transmitter_failed(app, state, transmitter);
                 continue;
             }
         };
+        let fields = [(
+            "count",
+            AuditValue::Unsigned(
+                u64::try_from(scan.recordings.len()).map_err(|_| CoreError::InvalidRequest)?,
+            ),
+        )];
+        state.append_audit(
+            &AuditEvent {
+                occurred_at: audit_now(),
+                level: AuditLevel::Info,
+                code: "scan.complete",
+                transmitter: Some(transmitter),
+                fields: &fields,
+            },
+            AuditDurability::Buffered,
+        )?;
         let plans = match scan
             .recordings
             .iter()
@@ -284,6 +324,42 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             match verified_recording {
                 Ok(recording) => {
                     let artifact = recording.artifact;
+                    let source_name = recording
+                        .source_relative_path
+                        .file_name()
+                        .and_then(|name| name.to_str())
+                        .ok_or(CoreError::InvalidAuditEvent)?;
+                    let output = artifact
+                        .relative_path
+                        .to_str()
+                        .ok_or(CoreError::InvalidAuditEvent)?;
+                    let fields = [
+                        ("source", AuditValue::Text(source_name)),
+                        ("output", AuditValue::Text(output)),
+                        ("source_bytes", AuditValue::Unsigned(recording.source_size)),
+                        ("output_bytes", AuditValue::Unsigned(artifact.byte_count)),
+                        (
+                            "format",
+                            AuditValue::Text(match artifact.format {
+                                OutputFormat::Wav => "wav",
+                                OutputFormat::M4a => "m4a",
+                            }),
+                        ),
+                    ];
+                    if let Err(error) = state.append_audit(
+                        &AuditEvent {
+                            occurred_at: audit_now(),
+                            level: AuditLevel::Info,
+                            code: "backup.verified",
+                            transmitter: Some(prepared_tx.transmitter),
+                            fields: &fields,
+                        },
+                        AuditDurability::Buffered,
+                    ) {
+                        failed_transmitters.insert(prepared_tx.transmitter);
+                        last_error = Some(error.public(Some(prepared_tx.transmitter)));
+                        continue;
+                    }
                     verified.push(DeletionCandidate {
                         recording_id: recording.id,
                         source_relative_path: recording.source_relative_path,
@@ -328,6 +404,25 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             )
             .ok_or(CoreError::InvalidRequest)
     })?;
+    let fields = [
+        ("count", AuditValue::Unsigned(total_files)),
+        ("bytes", AuditValue::Unsigned(required_copy_bytes)),
+        ("mode", AuditValue::Text(outcome)),
+    ];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: if failed_transmitters.is_empty() {
+                AuditLevel::Info
+            } else {
+                AuditLevel::Error
+            },
+            code: "backup.run_complete",
+            transmitter: None,
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
     let mut runtime = state.runtime.lock();
     for prepared_tx in prepared {
         let verified = verified_by_tx
@@ -486,6 +581,17 @@ pub fn prepare_deletion(
         source_root: mounted.descriptor.mount_root,
         destination_root: destination,
     };
+    let fields = [("mode", AuditValue::Text("manual"))];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code: "retirement.preflight",
+            transmitter: Some(transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
     let summary = state.proposals.lock().prepare(
         CompleteDeletionSnapshot {
             context,
@@ -564,6 +670,17 @@ pub fn confirm_deletion(
         });
         publish_locked(&app_for_deletion, &mut runtime);
     };
+    let fields = [("mode", AuditValue::Text("manual"))];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code: "retirement.authorized",
+            transmitter: Some(transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
     let report = state.proposals.lock().confirm_observed(
         proposal_id,
         DeletionConfirmation {
@@ -616,6 +733,32 @@ pub fn confirm_deletion(
             },
         },
     );
+    let fields = [
+        ("files", AuditValue::Unsigned(report.deleted_files)),
+        ("bytes", AuditValue::Unsigned(report.deleted_bytes)),
+        (
+            "mode",
+            AuditValue::Text(match report.outcome {
+                DeletionOutcome::Deleted => "complete",
+                DeletionOutcome::Refused => "refused",
+                DeletionOutcome::PartiallyDeleted => "partial",
+            }),
+        ),
+    ];
+    state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: match report.outcome {
+                DeletionOutcome::Deleted => AuditLevel::Info,
+                DeletionOutcome::Refused => AuditLevel::Warning,
+                DeletionOutcome::PartiallyDeleted => AuditLevel::Error,
+            },
+            code: "retirement.complete",
+            transmitter: Some(context.transmitter),
+            fields: &fields,
+        },
+        AuditDurability::SyncData,
+    )?;
     let body = match report.outcome {
         DeletionOutcome::Deleted => "검증된 원본 삭제를 완료했습니다.",
         DeletionOutcome::Refused => "원본을 삭제하지 못했습니다.",
@@ -673,6 +816,11 @@ pub(crate) fn now_string() -> String {
     OffsetDateTime::now_utc()
         .format(&Rfc3339)
         .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
+}
+
+fn audit_now() -> OffsetDateTime {
+    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    OffsetDateTime::now_utc().to_offset(offset)
 }
 
 #[cfg(test)]

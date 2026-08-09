@@ -9,6 +9,7 @@ use std::{
 };
 
 use backup_core::{
+    audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditSink, AuditValue, FileAuditLog},
     backup::CancellationToken,
     deletion::{DeletionCandidate, DeletionProposalStore, ProposalInvalidation},
     device::{DeviceMatch, PairedDevice},
@@ -122,6 +123,21 @@ impl AppState {
         self.runtime.lock().destination.clone()
     }
 
+    pub fn append_audit(
+        &self,
+        event: &AuditEvent<'_>,
+        durability: AuditDurability,
+    ) -> Result<PathBuf, CoreError> {
+        let destination = {
+            let runtime = self.runtime.lock();
+            if !runtime.destination_configured {
+                return Err(CoreError::InvalidRequest);
+            }
+            runtime.destination.clone()
+        };
+        FileAuditLog::new(destination).append(event, durability)
+    }
+
     pub fn backup_is_ready(&self) -> bool {
         let runtime = self.runtime.lock();
         backup_requirements_met(
@@ -199,6 +215,21 @@ impl AppState {
                         app,
                         activity_entry("device_removed", transmitter, ActivitySeverity::Warning),
                     );
+                    let fields = [("reason", AuditValue::Text("device_removed"))];
+                    if self.runtime.lock().destination_configured
+                        && let Err(error) = self.append_audit(
+                            &AuditEvent {
+                                occurred_at: local_now(),
+                                level: AuditLevel::Warning,
+                                code: "device.removed",
+                                transmitter: Some(transmitter),
+                                fields: &fields,
+                            },
+                            AuditDurability::Buffered,
+                        )
+                    {
+                        self.set_error(app, error, Some(transmitter));
+                    }
                 }
                 None
             }
@@ -246,6 +277,20 @@ impl AppState {
                 app,
                 activity_entry("device_detected", transmitter, ActivitySeverity::Info),
             );
+            if self.runtime.lock().destination_configured
+                && let Err(error) = self.append_audit(
+                    &AuditEvent {
+                        occurred_at: local_now(),
+                        level: AuditLevel::Info,
+                        code: "device.detected",
+                        transmitter: Some(transmitter),
+                        fields: &[],
+                    },
+                    AuditDurability::Buffered,
+                )
+            {
+                self.set_error(app, error, Some(transmitter));
+            }
         }
         should_schedule
     }
@@ -469,9 +514,16 @@ fn activity_entry(
     }
 }
 
+fn local_now() -> time::OffsetDateTime {
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    time::OffsetDateTime::now_utc().to_offset(offset)
+}
+
 #[cfg(test)]
 mod tests {
+    use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
     use tempfile::tempdir;
+    use time::macros::datetime;
 
     use super::*;
 
@@ -525,5 +577,56 @@ mod tests {
         assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
         drop(first);
         assert!(state.begin_operation().is_ok());
+    }
+
+    #[test]
+    fn audit_events_follow_the_current_configured_destination() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+        let fields = [("count", AuditValue::Unsigned(2))];
+
+        let path = state
+            .append_audit(
+                &AuditEvent {
+                    occurred_at: datetime!(2026-08-09 20:01:42.613 +09:00),
+                    level: AuditLevel::Info,
+                    code: "scan.complete",
+                    transmitter: None,
+                    fields: &fields,
+                },
+                AuditDurability::SyncData,
+            )
+            .unwrap();
+
+        assert_eq!(
+            path,
+            destination
+                .path()
+                .join("logs/2026/08/260809-backup-mic.log")
+        );
+    }
+
+    #[test]
+    fn audit_events_do_not_touch_an_unconfirmed_default_destination() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), false, false).unwrap();
+
+        let result = state.append_audit(
+            &AuditEvent {
+                occurred_at: datetime!(2026-08-09 20:01:42.613 +09:00),
+                level: AuditLevel::Info,
+                code: "device.detected",
+                transmitter: Some(Transmitter::Tx01),
+                fields: &[],
+            },
+            AuditDurability::Buffered,
+        );
+
+        assert!(matches!(result, Err(CoreError::InvalidRequest)));
+        assert!(!destination.path().join("logs").exists());
     }
 }
