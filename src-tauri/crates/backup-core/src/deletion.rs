@@ -381,7 +381,12 @@ mod tests {
     use proptest::prelude::*;
     use tempfile::tempdir;
 
-    use crate::{filesystem::modified_nanos, hash::hash_file, ledger::VerifiedRecording};
+    use crate::{
+        artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
+        filesystem::modified_nanos,
+        hash::hash_file,
+        ledger::VerifiedRecording,
+    };
 
     use super::*;
 
@@ -427,9 +432,17 @@ mod tests {
                     source_size: digest.size,
                     source_mtime_ns: modified_nanos(&source_metadata).unwrap(),
                     source_sha256: digest.sha256.clone(),
-                    destination_relative_path: destination_relative.clone(),
-                    destination_size: digest.size,
-                    destination_sha256: digest.sha256.clone(),
+                    artifact: VerifiedArtifact {
+                        relative_path: destination_relative.clone(),
+                        format: OutputFormat::Wav,
+                        byte_count: digest.size,
+                        sha256: digest.sha256.clone(),
+                        audio: None,
+                    },
+                    conversion_status: ConversionStatus::NotRequired,
+                    conversion_error_code: None,
+                    retirement_status: RetirementStatus::Present,
+                    retired_session_relative_path: None,
                     verified_at: "2026-08-09T00:01:00Z".to_owned(),
                     backup_run_id: "backup-run".to_owned(),
                 })

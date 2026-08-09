@@ -7,9 +7,13 @@ use std::{
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{
+    artifact::{
+        ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties,
+    },
     device::PairedDevice,
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
+    preferences::{BackupPreferences, PreferenceKey, decode_bool},
     recovery::DELETION_DISABLED_REINDEX_REQUIRED,
     state::Transmitter,
 };
@@ -24,9 +28,11 @@ pub struct VerifiedRecording {
     pub source_size: u64,
     pub source_mtime_ns: i128,
     pub source_sha256: String,
-    pub destination_relative_path: PathBuf,
-    pub destination_size: u64,
-    pub destination_sha256: String,
+    pub artifact: VerifiedArtifact,
+    pub conversion_status: ConversionStatus,
+    pub conversion_error_code: Option<String>,
+    pub retirement_status: RetirementStatus,
+    pub retired_session_relative_path: Option<PathBuf>,
     pub verified_at: String,
     pub backup_run_id: String,
 }
@@ -227,6 +233,37 @@ impl Ledger {
             .map_err(CoreError::Ledger)
     }
 
+    pub fn read_preferences(&self) -> Result<BackupPreferences, CoreError> {
+        let defaults = BackupPreferences::default();
+        Ok(BackupPreferences {
+            automatic_backup: decode_bool(
+                self.setting(PreferenceKey::AutomaticBackup.storage_key())?,
+                defaults.automatic_backup,
+            )?,
+            m4a_conversion: decode_bool(
+                self.setting(PreferenceKey::M4aConversion.storage_key())?,
+                defaults.m4a_conversion,
+            )?,
+            automatic_trash: decode_bool(
+                self.setting(PreferenceKey::AutomaticTrash.storage_key())?,
+                defaults.automatic_trash,
+            )?,
+        })
+    }
+
+    pub fn set_preference(
+        &mut self,
+        key: PreferenceKey,
+        value: bool,
+        updated_at: &str,
+    ) -> Result<(), CoreError> {
+        self.set_setting(
+            key.storage_key(),
+            if value { "true" } else { "false" },
+            updated_at,
+        )
+    }
+
     pub fn append_activity(&mut self, entry: &ActivityEntry) -> Result<(), CoreError> {
         let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
         transaction
@@ -339,19 +376,24 @@ impl Ledger {
         &mut self,
         recording: &VerifiedRecording,
     ) -> Result<String, CoreError> {
-        if recording.source_sha256 != recording.destination_sha256
-            || recording.source_size != recording.destination_size
-            || !crate::filesystem::is_safe_relative_path(&recording.source_relative_path)
-            || !crate::filesystem::is_safe_relative_path(&recording.destination_relative_path)
-        {
-            return Err(CoreError::InvalidRequest);
-        }
+        validate_verified_recording(recording)?;
         let source_relative_path = path_text(&recording.source_relative_path)?;
-        let destination_relative_path = path_text(&recording.destination_relative_path)?;
+        let destination_relative_path = path_text(&recording.artifact.relative_path)?;
+        let retired_session_relative_path = recording
+            .retired_session_relative_path
+            .as_deref()
+            .map(path_text)
+            .transpose()?;
+        let audio = recording.artifact.audio.as_ref();
         let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
         let existing = transaction
             .query_row(
-                r#"SELECT id, destination_relative_path, destination_size, destination_sha256
+                r#"SELECT id, destination_relative_path, destination_size, destination_sha256,
+                          artifact_format, artifact_codec, artifact_sample_rate_hz,
+                          artifact_channel_count, artifact_valid_frames,
+                          artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
                    FROM recordings
                    WHERE transmitter = ?1 AND source_relative_path = ?2
                      AND source_size = ?3 AND source_mtime_ns = ?4 AND source_sha256 = ?5"#,
@@ -368,15 +410,51 @@ impl Ledger {
                         row.get::<_, String>(1)?,
                         row.get::<_, i64>(2)?,
                         row.get::<_, String>(3)?,
+                        row.get::<_, String>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<i64>>(6)?,
+                        row.get::<_, Option<i64>>(7)?,
+                        row.get::<_, Option<i64>>(8)?,
+                        row.get::<_, Option<i64>>(9)?,
+                        row.get::<_, String>(10)?,
+                        row.get::<_, Option<String>>(11)?,
+                        row.get::<_, String>(12)?,
+                        row.get::<_, Option<String>>(13)?,
                     ))
                 },
             )
             .optional()
             .map_err(CoreError::Ledger)?;
-        let id = if let Some((id, existing_path, existing_size, existing_hash)) = existing {
+        let id = if let Some((
+            id,
+            existing_path,
+            existing_size,
+            existing_hash,
+            existing_format,
+            existing_codec,
+            existing_sample_rate,
+            existing_channels,
+            existing_valid_frames,
+            existing_duration,
+            existing_conversion,
+            existing_conversion_error,
+            existing_retirement,
+            existing_retired_session,
+        )) = existing
+        {
             if existing_path != destination_relative_path
-                || optional_u64(Some(existing_size))? != Some(recording.destination_size)
-                || existing_hash != recording.destination_sha256
+                || optional_u64(Some(existing_size))? != Some(recording.artifact.byte_count)
+                || existing_hash != recording.artifact.sha256
+                || parse_output_format(&existing_format)? != recording.artifact.format
+                || existing_codec.as_deref() != audio.map(|value| value.codec.as_str())
+                || optional_u32(existing_sample_rate)? != audio.map(|value| value.sample_rate_hz)
+                || optional_u16(existing_channels)? != audio.map(|value| value.channel_count)
+                || optional_u64(existing_valid_frames)? != audio.map(|value| value.valid_frames)
+                || optional_u64(existing_duration)? != audio.map(|value| value.duration_micros)
+                || parse_conversion_status(&existing_conversion)? != recording.conversion_status
+                || existing_conversion_error != recording.conversion_error_code
+                || parse_retirement_status(&existing_retirement)? != recording.retirement_status
+                || existing_retired_session.as_deref() != retired_session_relative_path
             {
                 return Err(CoreError::LedgerCorrupt);
             }
@@ -395,8 +473,14 @@ impl Ledger {
                     r#"INSERT INTO recordings(
                          id, transmitter, source_relative_path, source_size, source_mtime_ns,
                          source_sha256, destination_relative_path, destination_size,
-                         destination_sha256, verified_at, backup_run_id
-                       ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
+                         destination_sha256, verified_at, backup_run_id, artifact_format,
+                         artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                         artifact_valid_frames, artifact_duration_micros, conversion_status,
+                         conversion_error_code, retirement_status, retired_session_relative_path
+                       ) VALUES (
+                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13,
+                         ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+                       )"#,
                     params![
                         recording.id,
                         transmitter_name(recording.transmitter),
@@ -405,10 +489,20 @@ impl Ledger {
                         recording.source_mtime_ns.to_string(),
                         recording.source_sha256,
                         destination_relative_path,
-                        to_i64(recording.destination_size)?,
-                        recording.destination_sha256,
+                        to_i64(recording.artifact.byte_count)?,
+                        recording.artifact.sha256,
                         recording.verified_at,
                         recording.backup_run_id,
+                        output_format_name(recording.artifact.format),
+                        audio.map(|value| value.codec.as_str()),
+                        audio.map(|value| i64::from(value.sample_rate_hz)),
+                        audio.map(|value| i64::from(value.channel_count)),
+                        optional_i64(audio.map(|value| value.valid_frames))?,
+                        optional_i64(audio.map(|value| value.duration_micros))?,
+                        conversion_status_name(recording.conversion_status),
+                        recording.conversion_error_code,
+                        retirement_status_name(recording.retirement_status),
+                        retired_session_relative_path,
                     ],
                 )
                 .map_err(CoreError::Ledger)?;
@@ -416,6 +510,24 @@ impl Ledger {
         };
         transaction.commit().map_err(CoreError::Ledger)?;
         Ok(id)
+    }
+
+    pub fn verified_recording(&self, id: &str) -> Result<Option<VerifiedRecording>, CoreError> {
+        self.connection
+            .query_row(
+                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings WHERE id = ?1"#,
+                [id],
+                row_to_verified_recording,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)
     }
 
     pub fn verified_recording_count(&self) -> Result<u64, CoreError> {
@@ -618,7 +730,22 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
         .map_err(CoreError::Ledger)?;
     connection
         .execute_batch(include_str!("../migrations/0001_initial.sql"))
-        .map_err(CoreError::Ledger)
+        .map_err(CoreError::Ledger)?;
+    let version_two_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 2)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_two_applied {
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0002_artifacts_and_preferences.sql"
+            ))
+            .map_err(CoreError::Ledger)?;
+    }
+    Ok(())
 }
 
 fn quarantine_existing(path: &Path) -> Result<(), CoreError> {
@@ -663,6 +790,217 @@ fn parse_transmitter(value: &str) -> Result<Transmitter, CoreError> {
     }
 }
 
+fn output_format_name(format: OutputFormat) -> &'static str {
+    match format {
+        OutputFormat::Wav => "wav",
+        OutputFormat::M4a => "m4a",
+    }
+}
+
+fn parse_output_format(value: &str) -> Result<OutputFormat, CoreError> {
+    match value {
+        "wav" => Ok(OutputFormat::Wav),
+        "m4a" => Ok(OutputFormat::M4a),
+        _ => Err(CoreError::LedgerCorrupt),
+    }
+}
+
+fn conversion_status_name(status: ConversionStatus) -> &'static str {
+    match status {
+        ConversionStatus::NotRequired => "not_required",
+        ConversionStatus::Pending => "pending",
+        ConversionStatus::Complete => "complete",
+        ConversionStatus::Failed => "failed",
+    }
+}
+
+fn parse_conversion_status(value: &str) -> Result<ConversionStatus, CoreError> {
+    match value {
+        "not_required" => Ok(ConversionStatus::NotRequired),
+        "pending" => Ok(ConversionStatus::Pending),
+        "complete" => Ok(ConversionStatus::Complete),
+        "failed" => Ok(ConversionStatus::Failed),
+        _ => Err(CoreError::LedgerCorrupt),
+    }
+}
+
+fn retirement_status_name(status: RetirementStatus) -> &'static str {
+    match status {
+        RetirementStatus::Present => "present",
+        RetirementStatus::TrashPending => "trash_pending",
+        RetirementStatus::MovedToTrash => "moved_to_trash",
+        RetirementStatus::LegacyDeleted => "legacy_deleted",
+        RetirementStatus::Failed => "failed",
+    }
+}
+
+fn parse_retirement_status(value: &str) -> Result<RetirementStatus, CoreError> {
+    match value {
+        "present" => Ok(RetirementStatus::Present),
+        "trash_pending" => Ok(RetirementStatus::TrashPending),
+        "moved_to_trash" => Ok(RetirementStatus::MovedToTrash),
+        "legacy_deleted" => Ok(RetirementStatus::LegacyDeleted),
+        "failed" => Ok(RetirementStatus::Failed),
+        _ => Err(CoreError::LedgerCorrupt),
+    }
+}
+
+fn validate_verified_recording(recording: &VerifiedRecording) -> Result<(), CoreError> {
+    let invalid_audio = recording.artifact.audio.as_ref().is_some_and(|audio| {
+        audio.codec.is_empty()
+            || audio.sample_rate_hz == 0
+            || audio.channel_count == 0
+            || audio.valid_frames == 0
+            || audio.duration_micros == 0
+    });
+    if !crate::filesystem::is_safe_relative_path(&recording.source_relative_path)
+        || !crate::filesystem::is_safe_relative_path(&recording.artifact.relative_path)
+        || recording.source_sha256.len() != 64
+        || recording.artifact.sha256.len() != 64
+        || recording.artifact.byte_count == 0
+        || invalid_audio
+        || recording
+            .retired_session_relative_path
+            .as_deref()
+            .is_some_and(|path| !crate::filesystem::is_safe_relative_path(path))
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    match recording.artifact.format {
+        OutputFormat::Wav
+            if recording.source_size == recording.artifact.byte_count
+                && recording.source_sha256 == recording.artifact.sha256
+                && recording.artifact.audio.is_none()
+                && recording.conversion_status == ConversionStatus::NotRequired =>
+        {
+            Ok(())
+        }
+        OutputFormat::M4a
+            if recording.artifact.audio.is_some()
+                && recording.conversion_status == ConversionStatus::Complete =>
+        {
+            Ok(())
+        }
+        OutputFormat::Wav | OutputFormat::M4a => Err(CoreError::InvalidRequest),
+    }
+}
+
+fn row_to_verified_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<VerifiedRecording> {
+    let source_size = u64::try_from(row.get::<_, i64>(3)?)
+        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(3, 0))?;
+    let source_mtime_text = row.get::<_, String>(4)?;
+    let source_mtime_ns = source_mtime_text.parse::<i128>().map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            4,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid source mtime",
+            )),
+        )
+    })?;
+    let artifact_size = u64::try_from(row.get::<_, i64>(7)?)
+        .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(7, 0))?;
+    let format_text = row.get::<_, String>(11)?;
+    let format = parse_output_format(&format_text).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            11,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid artifact format",
+            )),
+        )
+    })?;
+    let codec = row.get::<_, Option<String>>(12)?;
+    let sample_rate = optional_u32_sql(row.get::<_, Option<i64>>(13)?, 13)?;
+    let channels = optional_u16_sql(row.get::<_, Option<i64>>(14)?, 14)?;
+    let valid_frames = optional_u64_sql(row.get::<_, Option<i64>>(15)?, 15)?;
+    let duration_micros = optional_u64_sql(row.get::<_, Option<i64>>(16)?, 16)?;
+    let audio = match (codec, sample_rate, channels, valid_frames, duration_micros) {
+        (None, None, None, None, None) => None,
+        (
+            Some(codec),
+            Some(sample_rate_hz),
+            Some(channel_count),
+            Some(valid_frames),
+            Some(duration_micros),
+        ) => Some(VerifiedAudioProperties {
+            codec,
+            sample_rate_hz,
+            channel_count,
+            valid_frames,
+            duration_micros,
+        }),
+        _ => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                12,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "incomplete artifact audio properties",
+                )),
+            ));
+        }
+    };
+    let conversion_text = row.get::<_, String>(17)?;
+    let conversion_status = parse_conversion_status(&conversion_text).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            17,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid conversion status",
+            )),
+        )
+    })?;
+    let retirement_text = row.get::<_, String>(19)?;
+    let retirement_status = parse_retirement_status(&retirement_text).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            19,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid retirement status",
+            )),
+        )
+    })?;
+    Ok(VerifiedRecording {
+        id: row.get(0)?,
+        transmitter: parse_transmitter_sql(&row.get::<_, String>(1)?, 1)?,
+        source_relative_path: PathBuf::from(row.get::<_, String>(2)?),
+        source_size,
+        source_mtime_ns,
+        source_sha256: row.get(5)?,
+        artifact: VerifiedArtifact {
+            relative_path: PathBuf::from(row.get::<_, String>(6)?),
+            format,
+            byte_count: artifact_size,
+            sha256: row.get(8)?,
+            audio,
+        },
+        verified_at: row.get(9)?,
+        backup_run_id: row.get(10)?,
+        conversion_status,
+        conversion_error_code: row.get(18)?,
+        retirement_status,
+        retired_session_relative_path: row.get::<_, Option<String>>(20)?.map(PathBuf::from),
+    })
+}
+
+fn parse_transmitter_sql(value: &str, column: usize) -> rusqlite::Result<Transmitter> {
+    parse_transmitter(value).map_err(|_| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "invalid transmitter",
+            )),
+        )
+    })
+}
+
 fn severity_name(severity: ActivitySeverity) -> &'static str {
     match severity {
         ActivitySeverity::Info => "info",
@@ -693,6 +1031,45 @@ fn optional_i64(value: Option<u64>) -> Result<Option<i64>, CoreError> {
 fn optional_u64(value: Option<i64>) -> Result<Option<u64>, CoreError> {
     value
         .map(|value| u64::try_from(value).map_err(|_| CoreError::LedgerCorrupt))
+        .transpose()
+}
+
+fn optional_u32(value: Option<i64>) -> Result<Option<u32>, CoreError> {
+    value
+        .map(|value| u32::try_from(value).map_err(|_| CoreError::LedgerCorrupt))
+        .transpose()
+}
+
+fn optional_u16(value: Option<i64>) -> Result<Option<u16>, CoreError> {
+    value
+        .map(|value| u16::try_from(value).map_err(|_| CoreError::LedgerCorrupt))
+        .transpose()
+}
+
+fn optional_u64_sql(value: Option<i64>, column: usize) -> rusqlite::Result<Option<u64>> {
+    value
+        .map(|value| {
+            u64::try_from(value)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
+        })
+        .transpose()
+}
+
+fn optional_u32_sql(value: Option<i64>, column: usize) -> rusqlite::Result<Option<u32>> {
+    value
+        .map(|value| {
+            u32::try_from(value)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
+        })
+        .transpose()
+}
+
+fn optional_u16_sql(value: Option<i64>, column: usize) -> rusqlite::Result<Option<u16>> {
+    value
+        .map(|value| {
+            u16::try_from(value)
+                .map_err(|_| rusqlite::Error::IntegralValueOutOfRange(column, value))
+        })
         .transpose()
 }
 

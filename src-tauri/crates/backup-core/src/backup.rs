@@ -13,6 +13,7 @@ use tempfile::{NamedTempFile, TempPath};
 use uuid::Uuid;
 
 use crate::{
+    artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
     destination::{DestinationDisposition, DestinationPlan, required_copy_bytes},
     error::CoreError,
     filesystem::{is_safe_relative_path, modified_nanos},
@@ -174,9 +175,17 @@ pub fn execute_backup_item_observed(
         source_size: source_digest.size,
         source_mtime_ns: plan.source.modified_nanos,
         source_sha256: source_digest.sha256.clone(),
-        destination_relative_path: plan.relative_destination.clone(),
-        destination_size: source_digest.size,
-        destination_sha256: source_digest.sha256,
+        artifact: VerifiedArtifact {
+            relative_path: plan.relative_destination.clone(),
+            format: OutputFormat::Wav,
+            byte_count: source_digest.size,
+            sha256: source_digest.sha256,
+            audio: None,
+        },
+        conversion_status: ConversionStatus::NotRequired,
+        conversion_error_code: None,
+        retirement_status: RetirementStatus::Present,
+        retired_session_relative_path: None,
         verified_at: context.verified_at.to_owned(),
         backup_run_id: context.backup_run_id.to_owned(),
     };
@@ -645,10 +654,10 @@ mod tests {
 
         assert!(source.path().join(&plan.source.relative_path).exists());
         assert_eq!(
-            fs::read(destination.path().join(&verified.destination_relative_path)).unwrap(),
+            fs::read(destination.path().join(&verified.artifact.relative_path)).unwrap(),
             fs::read(source.path().join(&plan.source.relative_path)).unwrap()
         );
-        assert_eq!(verified.source_sha256, verified.destination_sha256);
+        assert_eq!(verified.source_sha256, verified.artifact.sha256);
         assert_eq!(ledger.verified_recording_count().unwrap(), 1);
         assert_eq!(progress.percent(), 100);
         assert_eq!(progress.verified_files, 1);

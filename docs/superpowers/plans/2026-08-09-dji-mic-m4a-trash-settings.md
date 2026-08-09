@@ -80,11 +80,11 @@ pub struct BackupPreferences {
 }
 ```
 
-- [ ] **Step 1: Add migration-first ledger tests**
+- [x] **Step 1: Add migration-first ledger tests**
 
 Add tests proving a database created from `0001_initial.sql` upgrades without losing existing recordings; historical rows read as `OutputFormat::Wav`; missing preferences yield `{ automatic_backup: true, m4a_conversion: true, automatic_trash: false }`; and typed preference writes survive a new `Ledger` instance.
 
-- [ ] **Step 2: Run the focused tests and observe the missing schema/model failure**
+- [x] **Step 2: Run the focused tests and observe the missing schema/model failure**
 
 Run:
 
@@ -94,19 +94,19 @@ cargo test -p backup-core --test ledger_recovery artifact_and_preferences
 
 Expected: compilation fails because the artifact and preference APIs do not exist.
 
-- [ ] **Step 3: Add the forward-only schema migration**
+- [x] **Step 3: Add the forward-only schema migration**
 
 Extend `recordings` with artifact format, codec, sample rate, channel count, valid frames, duration microseconds, conversion status, conversion error code, retirement status, and retired-session relative path. Preserve existing destination path, byte-count, and SHA columns as the finalized artifact fields so historical data remains readable. Add `CHECK` constraints for `wav|m4a`, known conversion states, and known retirement states. Do not rewrite historical hashes.
 
-- [ ] **Step 4: Add typed preference persistence**
+- [x] **Step 4: Add typed preference persistence**
 
 Use the existing settings table with stable keys `automatic_backup`, `m4a_conversion`, and `automatic_trash`. Implement only `read_preferences()` and `set_preference(PreferenceKey, bool, occurred_at)`; reject arbitrary public keys. Decode missing values through the documented defaults and return a typed error for malformed stored JSON.
 
-- [ ] **Step 5: Generalize verified recording reads and writes**
+- [x] **Step 5: Generalize verified recording reads and writes**
 
 Replace destination-only construction with `VerifiedArtifact`. Keep the verified source WAV byte count and SHA-256 separate from the artifact byte count and SHA-256. Update eligibility queries so an M4A row is eligible only when conversion is complete and all required audio fields are present.
 
-- [ ] **Step 6: Run format, focused tests, and the core suite**
+- [x] **Step 6: Run format, focused tests, and the core suite**
 
 ```bash
 cargo fmt --all -- --check
@@ -116,7 +116,7 @@ cargo test -p backup-core
 
 Expected: all pass; a migrated legacy fixture remains readable and default settings match the approved contract.
 
-- [ ] **Step 7: Commit and push the persistence checkpoint**
+- [x] **Step 7: Commit and push the persistence checkpoint**
 
 ```bash
 git add src-tauri/crates/backup-core/migrations/0002_artifacts_and_preferences.sql \

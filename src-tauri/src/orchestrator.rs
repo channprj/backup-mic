@@ -282,16 +282,19 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 &mut observer,
             );
             match verified_recording {
-                Ok(recording) => verified.push(DeletionCandidate {
-                    recording_id: recording.id,
-                    source_relative_path: recording.source_relative_path,
-                    source_size: recording.source_size,
-                    source_mtime_ns: recording.source_mtime_ns,
-                    source_sha256: recording.source_sha256,
-                    destination_relative_path: recording.destination_relative_path,
-                    destination_size: recording.destination_size,
-                    destination_sha256: recording.destination_sha256,
-                }),
+                Ok(recording) => {
+                    let artifact = recording.artifact;
+                    verified.push(DeletionCandidate {
+                        recording_id: recording.id,
+                        source_relative_path: recording.source_relative_path,
+                        source_size: recording.source_size,
+                        source_mtime_ns: recording.source_mtime_ns,
+                        source_sha256: recording.source_sha256,
+                        destination_relative_path: artifact.relative_path,
+                        destination_size: artifact.byte_count,
+                        destination_sha256: artifact.sha256,
+                    });
+                }
                 Err(error) => {
                     failed_transmitters.insert(prepared_tx.transmitter);
                     last_error = Some(error.public(Some(prepared_tx.transmitter)));

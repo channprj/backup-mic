@@ -1,6 +1,7 @@
 use std::{collections::BTreeSet, fs, path::PathBuf, time::Duration};
 
 use backup_core::{
+    artifact::{ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact},
     deletion::{
         CompleteDeletionSnapshot, DeletionConfirmation, DeletionContext, DeletionOutcome,
         DeletionProposalStore, NoDeletionFaults,
@@ -74,9 +75,17 @@ fn deletes_only_reverified_sources_on_an_isolated_fat32_volume() {
             source_size: digest.size,
             source_mtime_ns: candidate.source_mtime_ns,
             source_sha256: digest.sha256.clone(),
-            destination_relative_path: destination_relative.clone(),
-            destination_size: digest.size,
-            destination_sha256: digest.sha256,
+            artifact: VerifiedArtifact {
+                relative_path: destination_relative.clone(),
+                format: OutputFormat::Wav,
+                byte_count: digest.size,
+                sha256: digest.sha256,
+                audio: None,
+            },
+            conversion_status: ConversionStatus::NotRequired,
+            conversion_error_code: None,
+            retirement_status: RetirementStatus::Present,
+            retired_session_relative_path: None,
             verified_at: "2026-08-09T00:01:00Z".to_owned(),
             backup_run_id: "fat32-acceptance-backup".to_owned(),
         })

@@ -1,11 +1,17 @@
 use std::{fs, path::Path};
 
 use backup_core::{
+    artifact::{
+        ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties,
+    },
     device::PairedDevice,
+    error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
-    ledger::{Ledger, MAX_ACTIVITY_ENTRIES},
+    ledger::{Ledger, MAX_ACTIVITY_ENTRIES, VerifiedRecording},
+    preferences::{BackupPreferences, PreferenceKey},
     state::Transmitter,
 };
+use rusqlite::Connection;
 use tempfile::tempdir;
 
 fn paired_device() -> PairedDevice {
@@ -95,6 +101,134 @@ fn corrupt_database_is_quarantined_and_disables_deletion() {
     let quarantine = directory.path().join("quarantine");
     assert!(quarantine.is_dir());
     assert_eq!(count_files_recursively(&quarantine), 3);
+}
+
+#[test]
+fn artifact_and_preferences_migrate_a_version_one_ledger_without_rewriting_hashes() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            INSERT INTO backup_runs(id, started_at, finished_at, outcome, required_copy_bytes)
+            VALUES ('run-legacy', '2026-08-09T00:00:00Z', '2026-08-09T00:01:00Z', 'complete', 4);
+            INSERT INTO recordings(
+                id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                source_sha256, destination_relative_path, destination_size,
+                destination_sha256, verified_at, backup_run_id
+            ) VALUES (
+                'recording-legacy', 'TX01', 'TX_MIC001_20260809_021747/legacy.wav', 4, '1',
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                '2026/2026-08-09/TX01/legacy.wav', 4,
+                'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                '2026-08-09T00:01:00Z', 'run-legacy'
+            );
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let recording = ledger
+        .verified_recording("recording-legacy")
+        .unwrap()
+        .unwrap();
+    assert_eq!(recording.artifact.format, OutputFormat::Wav);
+    assert_eq!(recording.artifact.byte_count, 4);
+    assert_eq!(
+        recording.artifact.sha256,
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    );
+    assert_eq!(recording.source_sha256, recording.artifact.sha256);
+    assert_eq!(
+        ledger.read_preferences().unwrap(),
+        BackupPreferences::default()
+    );
+}
+
+#[test]
+fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    {
+        let mut ledger = Ledger::open(&path).unwrap();
+        ledger
+            .set_preference(
+                PreferenceKey::AutomaticBackup,
+                false,
+                "2026-08-09T00:00:00Z",
+            )
+            .unwrap();
+        ledger
+            .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-09T00:00:01Z")
+            .unwrap();
+    }
+
+    let ledger = Ledger::open(&path).unwrap();
+    assert_eq!(
+        ledger.read_preferences().unwrap(),
+        BackupPreferences {
+            automatic_backup: false,
+            m4a_conversion: true,
+            automatic_trash: true,
+        }
+    );
+}
+
+#[test]
+fn artifact_and_preferences_refuse_malformed_persisted_values() {
+    let directory = tempdir().unwrap();
+    let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    ledger
+        .set_setting("m4a_conversion", "\"sometimes\"", "2026-08-09T00:00:00Z")
+        .unwrap();
+
+    assert!(ledger.read_preferences().is_err());
+}
+
+#[test]
+fn artifact_and_preferences_reject_invalid_m4a_audio_properties_before_sqlite() {
+    let directory = tempdir().unwrap();
+    let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    ledger
+        .begin_backup_run("run-m4a", "2026-08-09T00:00:00Z", 4)
+        .unwrap();
+    let recording = VerifiedRecording {
+        id: "recording-m4a".to_owned(),
+        transmitter: Transmitter::Tx02,
+        source_relative_path: "TX_MIC001_20260809_021747/source.wav".into(),
+        source_size: 4,
+        source_mtime_ns: 1,
+        source_sha256: "a".repeat(64),
+        artifact: VerifiedArtifact {
+            relative_path: "2026/2026-08-09/TX02/source.m4a".into(),
+            format: OutputFormat::M4a,
+            byte_count: 2,
+            sha256: "b".repeat(64),
+            audio: Some(VerifiedAudioProperties {
+                codec: "aac".to_owned(),
+                sample_rate_hz: 0,
+                channel_count: 1,
+                valid_frames: 48_000,
+                duration_micros: 1_000_000,
+            }),
+        },
+        conversion_status: ConversionStatus::Complete,
+        conversion_error_code: None,
+        retirement_status: RetirementStatus::Present,
+        retired_session_relative_path: None,
+        verified_at: "2026-08-09T00:01:00Z".to_owned(),
+        backup_run_id: "run-m4a".to_owned(),
+    };
+
+    assert!(matches!(
+        ledger.commit_verified_recording(&recording),
+        Err(CoreError::InvalidRequest)
+    ));
 }
 
 fn count_files_recursively(root: &Path) -> usize {
