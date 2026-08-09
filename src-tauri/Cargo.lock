@@ -226,7 +226,7 @@ checksum = "f2032f911046de80f0a198e0901378627c33f59ea0ac00e363d481118bd70a53"
 
 [[package]]
 name = "backup-core"
-version = "0.260810.5"
+version = "0.260810.6"
 dependencies = [
  "fs2",
  "parking_lot",
@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "dji-mic-backup"
-version = "0.260810.5"
+version = "0.260810.6"
 dependencies = [
  "backup-core",
  "core-foundation",
