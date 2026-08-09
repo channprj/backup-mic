@@ -578,18 +578,26 @@ fn validate_destination(selected: &Path, state: &AppState) -> Result<PathBuf, Pu
     if !destination_path_is_allowed(&canonical) {
         return Err(adapter_error("destination_invalid", false));
     }
-    let overlaps_source = state.runtime.lock().mounted.values().any(|mounted| {
-        std::fs::canonicalize(&mounted.descriptor.mount_root)
-            .is_ok_and(|source| canonical.starts_with(&source) || source.starts_with(&canonical))
-    });
-    if overlaps_source {
+    if !state.destination_is_separate_from_mounted_sources(&canonical) {
         return Err(adapter_error("destination_invalid", false));
     }
     Ok(canonical)
 }
 
 fn destination_path_is_allowed(path: &Path) -> bool {
-    path.is_absolute() && path.parent().is_some() && !path.starts_with(Path::new("/Volumes"))
+    if !path.is_absolute()
+        || path.parent().is_none()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return false;
+    }
+    path.strip_prefix("/Volumes")
+        .map_or(true, |relative| relative.components().count() >= 2)
 }
 
 fn adapter_error(message_code: &str, retryable: bool) -> PublicError {
@@ -706,14 +714,17 @@ mod tests {
     }
 
     #[test]
-    fn removable_volume_hierarchy_is_never_a_destination() {
+    fn external_volume_subdirectory_is_allowed_but_volume_roots_are_not() {
         let fallback = PathBuf::from("/Users/example/Documents/DJI-Mic-Mini-2S");
         let persisted = serde_json::to_string("/Volumes/External/Backups").unwrap();
         assert_eq!(
-            persisted_destination(Some(persisted), fallback.clone()),
-            (fallback, false)
+            persisted_destination(Some(persisted), fallback),
+            (PathBuf::from("/Volumes/External/Backups"), true)
         );
         assert!(!destination_path_is_allowed(Path::new("/Volumes")));
-        assert!(!destination_path_is_allowed(Path::new("/Volumes/DJI-MIC")));
+        assert!(!destination_path_is_allowed(Path::new("/Volumes/External")));
+        assert!(destination_path_is_allowed(Path::new(
+            "/Volumes/990EVO+/labs/audio-records/dji"
+        )));
     }
 }

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap},
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -247,12 +247,34 @@ impl AppState {
     }
 
     pub fn backup_is_ready(&self) -> bool {
-        let runtime = self.runtime.lock();
-        backup_requirements_met(
-            runtime.destination_configured,
-            runtime.paired.len(),
-            runtime.mounted.len(),
-        )
+        let (destination_configured, paired_count, mounted_count, destination, source_roots) = {
+            let runtime = self.runtime.lock();
+            (
+                runtime.destination_configured,
+                runtime.paired.len(),
+                runtime.mounted.len(),
+                runtime.destination.clone(),
+                runtime
+                    .mounted
+                    .values()
+                    .map(|mounted| mounted.descriptor.mount_root.clone())
+                    .collect::<Vec<_>>(),
+            )
+        };
+
+        backup_requirements_met(destination_configured, paired_count, mounted_count)
+            && canonical_destination_is_separate(&destination, &source_roots)
+    }
+
+    pub(crate) fn destination_is_separate_from_mounted_sources(&self, destination: &Path) -> bool {
+        let source_roots = self
+            .runtime
+            .lock()
+            .mounted
+            .values()
+            .map(|mounted| mounted.descriptor.mount_root.clone())
+            .collect::<Vec<_>>();
+        canonical_destination_is_separate(destination, &source_roots)
     }
 
     pub fn automatic_backup_enabled(&self) -> bool {
@@ -859,6 +881,18 @@ fn clear_retirement_authority(runtime: &mut RuntimeState) {
     }
 }
 
+fn canonical_destination_is_separate(destination: &Path, source_roots: &[PathBuf]) -> bool {
+    let Ok(destination) = std::fs::canonicalize(destination) else {
+        return false;
+    };
+
+    source_roots.iter().all(|source_root| {
+        std::fs::canonicalize(source_root).is_ok_and(|source_root| {
+            !destination.starts_with(&source_root) && !source_root.starts_with(&destination)
+        })
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
@@ -889,6 +923,29 @@ mod tests {
         assert!(!backup_requirements_met(true, 2, 0));
         assert!(backup_requirements_met(true, 2, 1));
         assert!(backup_requirements_met(true, 2, 2));
+    }
+
+    #[test]
+    fn destination_must_stay_outside_every_mounted_source() {
+        let fixture = tempdir().unwrap();
+        let source = fixture.path().join("DJI-MIC-1");
+        let nested_destination = source.join("backups");
+        let separate_destination = fixture.path().join("990EVO-backups");
+        std::fs::create_dir_all(&nested_destination).unwrap();
+        std::fs::create_dir_all(&separate_destination).unwrap();
+
+        assert!(!canonical_destination_is_separate(
+            &nested_destination,
+            std::slice::from_ref(&source)
+        ));
+        assert!(!canonical_destination_is_separate(
+            fixture.path(),
+            std::slice::from_ref(&source)
+        ));
+        assert!(canonical_destination_is_separate(
+            &separate_destination,
+            &[source]
+        ));
     }
 
     #[test]
