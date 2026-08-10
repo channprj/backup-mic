@@ -263,6 +263,56 @@ fn upgrade_v3_restores_durable_evidence_for_already_retired_wavs() {
 }
 
 #[test]
+fn upgrade_v4_adds_the_same_dji_preset_as_a_fresh_ledger() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0002_artifacts_and_preferences.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0003_batch_manifests.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0004_durable_superseded_wav_evidence.sql"
+        ))
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let upgraded_preset = ledger.dji_rule().unwrap();
+    let fresh = Ledger::open(directory.path().join("fresh.sqlite3")).unwrap();
+    let fresh_preset = fresh.dji_rule().unwrap();
+
+    assert_eq!(upgraded_preset.id, fresh_preset.id);
+    assert_eq!(upgraded_preset.name, fresh_preset.name);
+    assert_eq!(
+        upgraded_preset.backup_file_globs,
+        fresh_preset.backup_file_globs
+    );
+    drop(ledger);
+    drop(fresh);
+
+    let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 5",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("ledger.sqlite3");

@@ -1,5 +1,6 @@
 use globset::{GlobBuilder, GlobMatcher};
 use serde::{Deserialize, Serialize};
+use unicode_normalization::UnicodeNormalization;
 use uuid::Uuid;
 
 use crate::error::CoreError;
@@ -41,11 +42,45 @@ pub enum FilenameProfile {
     DjiTxShort,
 }
 
+impl FilenameProfile {
+    pub(crate) fn storage_name(self) -> &'static str {
+        match self {
+            Self::Preserve => "preserve",
+            Self::DjiTxShort => "dji_tx_short",
+        }
+    }
+
+    pub(crate) fn parse_storage(value: &str) -> Result<Self, CoreError> {
+        match value {
+            "preserve" => Ok(Self::Preserve),
+            "dji_tx_short" => Ok(Self::DjiTxShort),
+            _ => Err(CoreError::LedgerCorrupt),
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DeviceConstraintProfile {
     GenericExternal,
     DjiMicMini2s,
+}
+
+impl DeviceConstraintProfile {
+    pub(crate) fn storage_name(self) -> &'static str {
+        match self {
+            Self::GenericExternal => "generic_external",
+            Self::DjiMicMini2s => "dji_mic_mini_2s",
+        }
+    }
+
+    pub(crate) fn parse_storage(value: &str) -> Result<Self, CoreError> {
+        match value {
+            "generic_external" => Ok(Self::GenericExternal),
+            "dji_mic_mini_2s" => Ok(Self::DjiMicMini2s),
+            _ => Err(CoreError::LedgerCorrupt),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -186,6 +221,14 @@ pub fn destination_stem(rule: &BackupRule, source_stem: &str) -> Result<String, 
     );
     validate_required_component(&stem)?;
     Ok(stem)
+}
+
+pub(crate) fn normalized_rule_name(value: &str) -> String {
+    let lowercase = value
+        .nfkc()
+        .flat_map(char::to_lowercase)
+        .collect::<String>();
+    lowercase.nfkc().collect()
 }
 
 fn validate_pattern_group(patterns: &[String], required: bool) -> Result<(), CoreError> {

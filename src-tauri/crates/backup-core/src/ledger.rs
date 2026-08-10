@@ -4,7 +4,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
 use crate::{
     additional_file::{AdditionalFileClass, VerifiedAdditionalFile},
@@ -16,7 +16,12 @@ use crate::{
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
     preferences::{BackupPreferences, PreferenceKey, decode_bool},
+    preset::{DJI_PRESET_KIND, DJI_PRESET_REVISION, dji_mic_mini_2s_preset},
     recovery::DELETION_DISABLED_REINDEX_REQUIRED,
+    rule::{
+        BackupRule, BackupRuleDraft, DeviceConstraintProfile, FilenameProfile, RuleId,
+        normalized_rule_name, validate_rule,
+    },
     state::Transmitter,
 };
 
@@ -134,6 +139,254 @@ impl Ledger {
 
     pub fn deletion_disabled(&self) -> bool {
         self.deletion_disabled
+    }
+
+    pub fn backup_rules(&self, include_archived: bool) -> Result<Vec<BackupRule>, CoreError> {
+        let query = format!(
+            "SELECT {RULE_COLUMNS} FROM backup_rules
+             WHERE ?1 OR archived_at IS NULL
+             ORDER BY CASE WHEN preset_kind IS NULL THEN 1 ELSE 0 END,
+                      normalized_name, id"
+        );
+        let mut statement = self.connection.prepare(&query).map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([include_archived], row_to_stored_rule)
+            .map_err(CoreError::Ledger)?;
+        let stored = rows
+            .map(|row| row.map_err(CoreError::Ledger))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        stored
+            .into_iter()
+            .map(|row| hydrate_rule(&self.connection, row))
+            .collect()
+    }
+
+    pub fn save_backup_rule(
+        &mut self,
+        mut draft: BackupRuleDraft,
+        updated_at: &str,
+    ) -> Result<BackupRule, CoreError> {
+        if updated_at.trim().is_empty() {
+            return Err(CoreError::InvalidRule);
+        }
+        draft.id = draft
+            .id
+            .as_ref()
+            .map(|id| RuleId::parse(id.as_str()))
+            .transpose()?;
+        let draft = validate_rule(draft)?;
+        let existing = draft
+            .id
+            .as_ref()
+            .map(|id| self.backup_rule_by_id(id))
+            .transpose()?
+            .flatten();
+        if draft.id.is_some() && existing.is_none() {
+            return Err(CoreError::InvalidRule);
+        }
+        if existing.as_ref().is_some_and(|rule| {
+            rule.archive_directory_locked
+                && rule.archive_directory_name != draft.archive_directory_name
+        }) {
+            return Err(CoreError::InvalidRule);
+        }
+
+        let id = draft.id.clone().unwrap_or_default();
+        let archived_at = existing
+            .as_ref()
+            .and_then(|rule| rule.archived_at.as_deref());
+        let normalized_name = normalized_rule_name(&draft.name);
+        if archived_at.is_none() && self.active_rule_name_conflicts(&normalized_name, Some(&id))? {
+            return Err(CoreError::InvalidRule);
+        }
+
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        if let Some(rule) = &existing {
+            transaction
+                .execute(
+                    r#"UPDATE backup_rules SET
+                         name = ?1, normalized_name = ?2, archive_directory_name = ?3,
+                         enabled = ?4, volume_name_glob = ?5, filename_prefix = ?6,
+                         filename_suffix = ?7, updated_at = ?8
+                       WHERE id = ?9"#,
+                    params![
+                        draft.name,
+                        normalized_name,
+                        draft.archive_directory_name,
+                        draft.enabled,
+                        draft.volume_name_glob,
+                        draft.filename_prefix,
+                        draft.filename_suffix,
+                        updated_at,
+                        id.as_str(),
+                    ],
+                )
+                .map_err(rule_write_error)?;
+            debug_assert_eq!(rule.id, id);
+        } else {
+            transaction
+                .execute(
+                    r#"INSERT INTO backup_rules(
+                         id, name, normalized_name, archive_directory_name, enabled,
+                         volume_name_glob, filename_prefix, filename_suffix,
+                         filename_profile, device_constraint_profile, preset_kind,
+                         preset_revision, archive_directory_locked, archived_at,
+                         created_at, updated_at
+                       ) VALUES (
+                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
+                         NULL, NULL, 0, NULL, ?11, ?11
+                       )"#,
+                    params![
+                        id.as_str(),
+                        draft.name,
+                        normalized_name,
+                        draft.archive_directory_name,
+                        draft.enabled,
+                        draft.volume_name_glob,
+                        draft.filename_prefix,
+                        draft.filename_suffix,
+                        FilenameProfile::Preserve.storage_name(),
+                        DeviceConstraintProfile::GenericExternal.storage_name(),
+                        updated_at,
+                    ],
+                )
+                .map_err(rule_write_error)?;
+        }
+        replace_rule_patterns(&transaction, &id, &draft)?;
+        transaction.commit().map_err(CoreError::Ledger)?;
+
+        self.backup_rule_by_id(&id)?.ok_or(CoreError::LedgerCorrupt)
+    }
+
+    pub fn archive_backup_rule(&mut self, id: &RuleId, archived_at: &str) -> Result<(), CoreError> {
+        if archived_at.trim().is_empty() {
+            return Err(CoreError::InvalidRule);
+        }
+        let reference_state = self
+            .connection
+            .query_row(
+                r#"SELECT preset_kind IS NOT NULL,
+                          EXISTS(
+                            SELECT 1 FROM rule_device_bindings WHERE rule_id = backup_rules.id
+                          )
+                   FROM backup_rules WHERE id = ?1"#,
+                [id.as_str()],
+                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?
+            .ok_or(CoreError::InvalidRule)?;
+
+        let changed = if reference_state.0 || reference_state.1 {
+            self.connection
+                .execute(
+                    r#"UPDATE backup_rules
+                       SET enabled = 0, archived_at = ?1, updated_at = ?1
+                       WHERE id = ?2"#,
+                    params![archived_at, id.as_str()],
+                )
+                .map_err(CoreError::Ledger)?
+        } else {
+            self.connection
+                .execute("DELETE FROM backup_rules WHERE id = ?1", [id.as_str()])
+                .map_err(CoreError::Ledger)?
+        };
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
+    pub fn restore_dji_preset(&mut self, updated_at: &str) -> Result<BackupRule, CoreError> {
+        if updated_at.trim().is_empty() {
+            return Err(CoreError::InvalidRule);
+        }
+        let current = self.dji_rule()?;
+        let mut defaults = validate_rule(dji_mic_mini_2s_preset())?;
+        defaults.id = Some(current.id.clone());
+        if current.archive_directory_locked {
+            defaults.archive_directory_name = current.archive_directory_name;
+        }
+        let normalized_name = normalized_rule_name(&defaults.name);
+        if self.active_rule_name_conflicts(&normalized_name, Some(&current.id))? {
+            return Err(CoreError::InvalidRule);
+        }
+
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE backup_rules SET
+                     name = ?1, normalized_name = ?2, archive_directory_name = ?3,
+                     enabled = 1, volume_name_glob = ?4, filename_prefix = ?5,
+                     filename_suffix = ?6, filename_profile = ?7,
+                     device_constraint_profile = ?8, preset_revision = ?9,
+                     archived_at = NULL, updated_at = ?10
+                   WHERE id = ?11 AND preset_kind = ?12"#,
+                params![
+                    defaults.name,
+                    normalized_name,
+                    defaults.archive_directory_name,
+                    defaults.volume_name_glob,
+                    defaults.filename_prefix,
+                    defaults.filename_suffix,
+                    FilenameProfile::DjiTxShort.storage_name(),
+                    DeviceConstraintProfile::DjiMicMini2s.storage_name(),
+                    i64::from(DJI_PRESET_REVISION),
+                    updated_at,
+                    current.id.as_str(),
+                    DJI_PRESET_KIND,
+                ],
+            )
+            .map_err(rule_write_error)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        replace_rule_patterns(&transaction, &current.id, &defaults)?;
+        transaction.commit().map_err(CoreError::Ledger)?;
+
+        self.dji_rule()
+    }
+
+    pub fn dji_rule(&self) -> Result<BackupRule, CoreError> {
+        let query = format!("SELECT {RULE_COLUMNS} FROM backup_rules WHERE preset_kind = ?1");
+        let stored = self
+            .connection
+            .query_row(&query, [DJI_PRESET_KIND], row_to_stored_rule)
+            .optional()
+            .map_err(CoreError::Ledger)?
+            .ok_or(CoreError::LedgerCorrupt)?;
+        hydrate_rule(&self.connection, stored)
+    }
+
+    fn backup_rule_by_id(&self, id: &RuleId) -> Result<Option<BackupRule>, CoreError> {
+        let query = format!("SELECT {RULE_COLUMNS} FROM backup_rules WHERE id = ?1");
+        let stored = self
+            .connection
+            .query_row(&query, [id.as_str()], row_to_stored_rule)
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        stored
+            .map(|row| hydrate_rule(&self.connection, row))
+            .transpose()
+    }
+
+    fn active_rule_name_conflicts(
+        &self,
+        normalized_name: &str,
+        excluding: Option<&RuleId>,
+    ) -> Result<bool, CoreError> {
+        self.connection
+            .query_row(
+                r#"SELECT EXISTS(
+                     SELECT 1 FROM backup_rules
+                     WHERE normalized_name = ?1 AND archived_at IS NULL
+                       AND (?2 IS NULL OR id <> ?2)
+                   )"#,
+                params![normalized_name, excluding.map(RuleId::as_str)],
+                |row| row.get(0),
+            )
+            .map_err(CoreError::Ledger)
     }
 
     pub fn pair_device(&mut self, device: &PairedDevice, paired_at: &str) -> Result<(), CoreError> {
@@ -1646,6 +1899,164 @@ impl Ledger {
     }
 }
 
+const RULE_COLUMNS: &str = r#"id, name, archive_directory_name, enabled,
+    volume_name_glob, filename_prefix, filename_suffix, filename_profile,
+    device_constraint_profile, preset_kind, preset_revision,
+    archive_directory_locked, archived_at, created_at, updated_at"#;
+
+struct StoredRuleRow {
+    id: String,
+    name: String,
+    archive_directory_name: String,
+    enabled: bool,
+    volume_name_glob: String,
+    filename_prefix: String,
+    filename_suffix: String,
+    filename_profile: String,
+    device_constraint_profile: String,
+    preset_kind: Option<String>,
+    preset_revision: Option<i64>,
+    archive_directory_locked: bool,
+    archived_at: Option<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+fn row_to_stored_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRuleRow> {
+    Ok(StoredRuleRow {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        archive_directory_name: row.get(2)?,
+        enabled: row.get(3)?,
+        volume_name_glob: row.get(4)?,
+        filename_prefix: row.get(5)?,
+        filename_suffix: row.get(6)?,
+        filename_profile: row.get(7)?,
+        device_constraint_profile: row.get(8)?,
+        preset_kind: row.get(9)?,
+        preset_revision: row.get(10)?,
+        archive_directory_locked: row.get(11)?,
+        archived_at: row.get(12)?,
+        created_at: row.get(13)?,
+        updated_at: row.get(14)?,
+    })
+}
+
+fn hydrate_rule(connection: &Connection, stored: StoredRuleRow) -> Result<BackupRule, CoreError> {
+    let mut rule = BackupRule {
+        id: RuleId::parse(&stored.id).map_err(|_| CoreError::LedgerCorrupt)?,
+        name: stored.name,
+        archive_directory_name: stored.archive_directory_name,
+        enabled: stored.enabled,
+        volume_name_glob: stored.volume_name_glob,
+        required_path_globs: Vec::new(),
+        backup_file_globs: Vec::new(),
+        session_directory_globs: Vec::new(),
+        filename_prefix: stored.filename_prefix,
+        filename_suffix: stored.filename_suffix,
+        filename_profile: FilenameProfile::parse_storage(&stored.filename_profile)?,
+        device_constraint_profile: DeviceConstraintProfile::parse_storage(
+            &stored.device_constraint_profile,
+        )?,
+        preset_kind: stored.preset_kind,
+        preset_revision: optional_u32(stored.preset_revision)?,
+        archive_directory_locked: stored.archive_directory_locked,
+        archived_at: stored.archived_at,
+        created_at: stored.created_at,
+        updated_at: stored.updated_at,
+    };
+
+    let mut statement = connection
+        .prepare(
+            r#"SELECT kind, ordinal, pattern FROM backup_rule_patterns
+               WHERE rule_id = ?1 ORDER BY kind, ordinal"#,
+        )
+        .map_err(CoreError::Ledger)?;
+    let rows = statement
+        .query_map([rule.id.as_str()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(CoreError::Ledger)?;
+    for row in rows {
+        let (kind, ordinal, pattern) = row.map_err(CoreError::Ledger)?;
+        let patterns = match kind.as_str() {
+            "required_path" => &mut rule.required_path_globs,
+            "backup_file" => &mut rule.backup_file_globs,
+            "session_directory" => &mut rule.session_directory_globs,
+            _ => return Err(CoreError::LedgerCorrupt),
+        };
+        if usize::try_from(ordinal).map_err(|_| CoreError::LedgerCorrupt)? != patterns.len() {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        patterns.push(pattern);
+    }
+
+    validate_rule(BackupRuleDraft {
+        id: Some(rule.id.clone()),
+        name: rule.name.clone(),
+        archive_directory_name: rule.archive_directory_name.clone(),
+        enabled: rule.enabled,
+        volume_name_glob: rule.volume_name_glob.clone(),
+        required_path_globs: rule.required_path_globs.clone(),
+        backup_file_globs: rule.backup_file_globs.clone(),
+        session_directory_globs: rule.session_directory_globs.clone(),
+        filename_prefix: rule.filename_prefix.clone(),
+        filename_suffix: rule.filename_suffix.clone(),
+    })
+    .map_err(|_| CoreError::LedgerCorrupt)?;
+
+    Ok(rule)
+}
+
+fn replace_rule_patterns(
+    transaction: &Transaction<'_>,
+    id: &RuleId,
+    draft: &BackupRuleDraft,
+) -> Result<(), CoreError> {
+    transaction
+        .execute(
+            "DELETE FROM backup_rule_patterns WHERE rule_id = ?1",
+            [id.as_str()],
+        )
+        .map_err(CoreError::Ledger)?;
+    for (kind, patterns) in [
+        ("required_path", &draft.required_path_globs),
+        ("backup_file", &draft.backup_file_globs),
+        ("session_directory", &draft.session_directory_globs),
+    ] {
+        for (ordinal, pattern) in patterns.iter().enumerate() {
+            transaction
+                .execute(
+                    r#"INSERT INTO backup_rule_patterns(rule_id, kind, ordinal, pattern)
+                       VALUES (?1, ?2, ?3, ?4)"#,
+                    params![
+                        id.as_str(),
+                        kind,
+                        i64::try_from(ordinal).map_err(|_| CoreError::LedgerCorrupt)?,
+                        pattern,
+                    ],
+                )
+                .map_err(rule_write_error)?;
+        }
+    }
+    Ok(())
+}
+
+fn rule_write_error(error: rusqlite::Error) -> CoreError {
+    match &error {
+        rusqlite::Error::SqliteFailure(details, _)
+            if details.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            CoreError::InvalidRule
+        }
+        _ => CoreError::Ledger(error),
+    }
+}
+
 fn open_validated(path: &Path) -> Result<Connection, CoreError> {
     let connection = Connection::open(path).map_err(CoreError::Ledger)?;
     connection
@@ -1719,6 +2130,18 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
             .execute_batch(include_str!(
                 "../migrations/0004_durable_superseded_wav_evidence.sql"
             ))
+            .map_err(CoreError::Ledger)?;
+    }
+    let version_five_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 5)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_five_applied {
+        connection
+            .execute_batch(include_str!("../migrations/0005_backup_rules.sql"))
             .map_err(CoreError::Ledger)?;
     }
     Ok(())

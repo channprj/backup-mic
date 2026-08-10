@@ -16,6 +16,7 @@ pub mod hash;
 pub mod layout;
 pub mod ledger;
 pub mod preferences;
+pub mod preset;
 pub mod recording;
 pub mod recovery;
 pub mod rule;
