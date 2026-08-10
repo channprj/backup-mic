@@ -27,6 +27,8 @@ it("shows recoverable session, file, and byte totals before Trash movement", () 
   );
 
   expect(screen.getByText("2개 세션")).toBeInTheDocument();
+  expect(screen.getByText("MIC_TX 원본을 휴지통으로 이동할까요?")).toBeInTheDocument();
+  expect(screen.queryByText(/transmitter/i)).not.toBeInTheDocument();
   expect(screen.getByText("9개 파일")).toBeInTheDocument();
   expect(screen.getByText(/MB/)).toBeInTheDocument();
   expect(screen.getByText(/휴지통이 비워지기 전에는 복구/)).toBeInTheDocument();

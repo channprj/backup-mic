@@ -37,7 +37,7 @@ export function formatCompactTime(value: string | null) {
 
 export function stageLabel(snapshot: AppSnapshot) {
   if (snapshot.phase === "scanning") {
-    return "연결된 송신기에서 백업할 WAV 파일을 확인하고 있습니다";
+    return "연결된 녹음기에서 백업할 WAV 파일을 확인하고 있습니다";
   }
   if (snapshot.phase === "checking_capacity") {
     return "백업에 필요한 저장 공간을 확인하고 있습니다";
@@ -61,7 +61,7 @@ export function stageLabel(snapshot: AppSnapshot) {
     return "검증을 마친 원본을 휴지통으로 옮기고 있습니다";
   }
   if (snapshot.phase === "detecting") {
-    return "연결된 송신기를 확인하고 있습니다";
+    return "연결된 녹음기를 확인하고 있습니다";
   }
   return "백업을 시작할 준비를 하고 있습니다";
 }
@@ -75,14 +75,14 @@ export function activeTitle(snapshot: AppSnapshot) {
   if (snapshot.current_stage === "artifact_verification") return "변환한 M4A를 확인하는 중";
   if (snapshot.current_stage === "source_revalidation") return "원본을 다시 확인하는 중";
   if (snapshot.current_stage === "trash") return "원본을 휴지통으로 옮기는 중";
-  if (snapshot.phase === "detecting") return "송신기를 확인하는 중";
+  if (snapshot.phase === "detecting") return "녹음기를 확인하는 중";
   return "백업을 준비하는 중";
 }
 
 const activityMessages: Record<string, string> = {
-  device_detected: "송신기를 감지했습니다",
-  device_removed: "송신기 연결이 해제됐습니다",
-  devices_paired: "두 송신기를 안전하게 연결했습니다",
+  device_detected: "녹음기를 감지했습니다",
+  device_removed: "녹음기 연결이 해제됐습니다",
+  devices_paired: "녹음기 연결 설정을 저장했습니다",
   destination_changed: "백업 폴더를 변경했습니다",
   copy_started: "녹음 백업을 시작했습니다",
   backup_complete: "복사와 검증을 마쳤습니다",
@@ -127,8 +127,8 @@ export function errorCopy(messageCode: string) {
       detail: "백업 폴더에 10GB 여유 공간을 확보한 뒤 다시 시도해 주세요.",
     },
     device_removed: {
-      title: "송신기 연결이 끊겼습니다",
-      detail: "원본은 변경되지 않았습니다. 케이스를 다시 연결해 주세요.",
+      title: "녹음기 연결이 끊겼습니다",
+      detail: "원본은 변경되지 않았습니다. 녹음기를 다시 연결해 주세요.",
     },
     source_changed: {
       title: "녹음이 변경됐습니다",
@@ -196,11 +196,11 @@ export function errorCopy(messageCode: string) {
     },
     partial_deletion: {
       title: "일부 원본만 휴지통으로 이동했습니다",
-      detail: "송신기를 분리하지 말고 로그에서 이동 결과를 확인해 주세요.",
+      detail: "녹음기를 분리하지 말고 로그에서 이동 결과를 확인해 주세요.",
     },
     partial_trash: {
       title: "일부 원본만 휴지통으로 이동했습니다",
-      detail: "송신기를 분리하지 말고 로그에서 이동 결과를 확인해 주세요.",
+      detail: "녹음기를 분리하지 말고 로그에서 이동 결과를 확인해 주세요.",
     },
     trash_move_failed: {
       title: "휴지통으로 이동하지 못했습니다",

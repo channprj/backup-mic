@@ -47,6 +47,28 @@ function renderPopover(snapshot = complete) {
 }
 
 describe("BackupPopover", () => {
+  it("renders zero, one, and three recorder sources without a fixed denominator", () => {
+    const zero = renderPopover({
+      ...complete,
+      phase: "idle",
+      sources: [],
+    });
+    expect(screen.getByRole("status", { name: "0개 녹음기 연결됨" })).toHaveTextContent("0개");
+    expect(screen.queryByText("/2")).not.toBeInTheDocument();
+    zero.unmount();
+
+    const third = {
+      ...complete.sources[1],
+      source_id: "44444444-4444-4444-8444-444444444444",
+      rule_name: "Sony PCM-A10",
+      volume_name: "PCMRECORDER",
+    };
+    renderPopover({ ...complete, sources: [...complete.sources, third] });
+    expect(screen.getByRole("status", { name: "3개 녹음기 연결됨" })).toHaveTextContent("3개");
+    expect(screen.getByText("PCMRECORDER")).toBeInTheDocument();
+    expect(screen.getByText(/Sony PCM-A10/)).toBeInTheDocument();
+  });
+
   it("shows accessible overall and per-recorder copy progress", () => {
     renderPopover(copying);
     expect(screen.getByText("WAV 파일을 복사하는 중")).toBeInTheDocument();
@@ -74,7 +96,7 @@ describe("BackupPopover", () => {
 
     expect(screen.getByText("백업할 파일을 찾는 중")).toBeInTheDocument();
     expect(
-      screen.getByText("연결된 송신기에서 백업할 WAV 파일을 확인하고 있습니다"),
+      screen.getByText("연결된 녹음기에서 백업할 WAV 파일을 확인하고 있습니다"),
     ).toBeInTheDocument();
     expect(screen.getByText("확인 중")).toBeInTheDocument();
     expect(screen.getByRole("progressbar", { name: "백업 파일 검색 상태" })).not.toHaveAttribute(

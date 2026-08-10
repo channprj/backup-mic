@@ -23,7 +23,8 @@ const previews: Record<string, AppSnapshot> = { complete, copying, error: failur
 function Preview() {
   const initial = new URLSearchParams(window.location.search).get("state") ?? "complete";
   const [snapshot, setSnapshot] = useState(previews[initial] ?? complete);
-  const settingsWindow = new URLSearchParams(window.location.search).get("window") === "settings";
+  const settingsWindow =
+    initial === "rules" || new URLSearchParams(window.location.search).get("window") === "settings";
   const actions = useMemo<BackupActions>(
     () => {
       const withSetting = (

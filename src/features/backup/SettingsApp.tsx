@@ -3,6 +3,7 @@ import {
   FileTextIcon,
   FolderOpenIcon,
   HardDriveIcon,
+  RadioTowerIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
 } from "lucide-react";
@@ -22,8 +23,10 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import { backupClient, type BackupActions } from "./client";
-import type { AppSnapshot } from "./contracts";
+import type { AppSnapshot, BackupRule, BackupRuleDraft } from "./contracts";
 import { errorCopy, retirementOutcomeLabel } from "./format";
+import { RuleEditor } from "./RuleEditor";
+import { RuleList, duplicateRuleDraft } from "./RuleList";
 import { useBackupSnapshot } from "./useBackupSnapshot";
 
 type SettingKey = keyof AppSnapshot["settings"];
@@ -87,6 +90,10 @@ export function SettingsView({
   const [destinationPending, setDestinationPending] = useState(false);
   const [actionError, setActionError] = useState<ActionError | null>(null);
   const [confirmAutomaticTrash, setConfirmAutomaticTrash] = useState(false);
+  const [editorRule, setEditorRule] = useState<BackupRule | null>(null);
+  const [editorDraft, setEditorDraft] = useState<BackupRuleDraft | undefined>();
+  const [editing, setEditing] = useState(false);
+  const [busyRuleId, setBusyRuleId] = useState<string | null>(null);
 
   useEffect(() => {
     setViewSnapshot((current) => (snapshot.revision > current.revision ? snapshot : current));
@@ -154,6 +161,55 @@ export function SettingsView({
     }
   }
 
+  function closeRuleEditor() {
+    setEditing(false);
+    setEditorRule(null);
+    setEditorDraft(undefined);
+  }
+
+  async function saveRule(draft: BackupRuleDraft) {
+    if (busyRuleId !== null) return;
+    setBusyRuleId(draft.id ?? "new-rule");
+    setActionError(null);
+    try {
+      setViewSnapshot(await actions.saveBackupRule(draft));
+      closeRuleEditor();
+    } catch (error) {
+      setActionError({ ...commandError(error), title: "규칙을 저장하지 못했습니다" });
+    } finally {
+      setBusyRuleId(null);
+    }
+  }
+
+  async function archiveRule(ruleId: string) {
+    if (busyRuleId !== null) return;
+    setBusyRuleId(ruleId);
+    setActionError(null);
+    try {
+      setViewSnapshot(await actions.archiveBackupRule(ruleId));
+    } catch (error) {
+      setActionError({ ...commandError(error), title: "규칙을 보관하지 못했습니다" });
+    } finally {
+      setBusyRuleId(null);
+    }
+  }
+
+  async function restoreDjiRule() {
+    if (busyRuleId !== null) return;
+    const djiRuleId =
+      viewSnapshot.backup_rules.find((rule) => rule.is_dji_preset)?.id ?? "dji-preset";
+    setBusyRuleId(djiRuleId);
+    setActionError(null);
+    try {
+      setViewSnapshot(await actions.restoreDjiRule());
+      closeRuleEditor();
+    } catch (error) {
+      setActionError({ ...commandError(error), title: "DJI 기본 규칙을 복원하지 못했습니다" });
+    } finally {
+      setBusyRuleId(null);
+    }
+  }
+
   const refusal = viewSnapshot.sources
     .map(({ retirement_outcome }) => retirementOutcomeLabel(retirement_outcome))
     .find((outcome) => outcome === "이동 중단됨" || outcome === "일부만 이동됨");
@@ -184,6 +240,57 @@ export function SettingsView({
         </Alert>
       ) : null}
 
+      <section className="settings-section" aria-labelledby="recorder-rules-title">
+        <div className="settings-section-title">
+          <RadioTowerIcon aria-hidden="true" />
+          <div>
+            <h2 id="recorder-rules-title">녹음기 규칙</h2>
+            <p>녹음기별 파일 선택과 파일명 프리픽스·서픽스를 관리합니다.</p>
+          </div>
+        </div>
+        <div className="settings-group rule-settings-group">
+          {editing ? (
+            <RuleEditor
+              rule={editorRule}
+              initialDraft={editorDraft}
+              connectedVolumeNames={[
+                ...new Set(
+                  viewSnapshot.sources
+                    .filter(({ mounted }) => mounted)
+                    .map(({ volume_name }) => volume_name),
+                ),
+              ]}
+              busy={busyRuleId !== null}
+              onCancel={closeRuleEditor}
+              onSave={saveRule}
+              onTest={actions.testBackupRule}
+            />
+          ) : (
+            <RuleList
+              rules={viewSnapshot.backup_rules}
+              busyRuleId={busyRuleId}
+              onAdd={() => {
+                setEditorRule(null);
+                setEditorDraft(undefined);
+                setEditing(true);
+              }}
+              onEdit={(rule) => {
+                setEditorRule(rule);
+                setEditorDraft(undefined);
+                setEditing(true);
+              }}
+              onDuplicate={(rule) => {
+                setEditorRule(null);
+                setEditorDraft(duplicateRuleDraft(rule));
+                setEditing(true);
+              }}
+              onArchive={archiveRule}
+              onRestoreDji={restoreDjiRule}
+            />
+          )}
+        </div>
+      </section>
+
       <section className="settings-section" aria-labelledby="backup-settings-title">
         <div className="settings-section-title">
           <HardDriveIcon aria-hidden="true" />
@@ -210,7 +317,7 @@ export function SettingsView({
           <SettingRow
             id="automatic-backup"
             label="자동으로 백업"
-            description="연결된 송신기에 새 녹음이 생기면 자동으로 확인합니다."
+            description="연결된 녹음기에 새 녹음이 생기면 자동으로 확인합니다."
             checked={viewSnapshot.settings.automatic_backup}
             pending={pending.has("automatic_backup")}
             onChange={(enabled) =>
@@ -242,7 +349,7 @@ export function SettingsView({
           <ShieldCheckIcon aria-hidden="true" />
           <div>
             <h2 id="source-safety-title">원본 안전</h2>
-            <p>각 송신기는 백업과 재검증을 독립적으로 마친 뒤 처리합니다.</p>
+            <p>각 녹음기는 백업과 재검증을 독립적으로 마친 뒤 처리합니다.</p>
           </div>
         </div>
         <div className="settings-group">
@@ -307,7 +414,7 @@ export function SettingsView({
           <AlertDialogHeader>
             <AlertDialogTitle>자동 휴지통 이동을 켤까요?</AlertDialogTitle>
             <AlertDialogDescription>
-              각 송신기의 모든 녹음과 M4A 백업을 다시 검증한 뒤 세션 폴더 전체를 macOS
+              각 녹음기의 모든 녹음과 M4A 백업을 다시 검증한 뒤 세션 폴더 전체를 macOS
               휴지통으로 이동합니다. 원본을 즉시 영구적으로 지우지 않습니다.
             </AlertDialogDescription>
           </AlertDialogHeader>

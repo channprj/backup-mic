@@ -870,6 +870,228 @@ button:not(:disabled):active {
   flex: 1 1 0;
 }
 
+.rule-settings-group {
+  overflow: visible;
+}
+
+.rule-list-wrap,
+.rule-editor {
+  padding: 12px;
+}
+
+.rule-list-toolbar,
+.rule-list-toolbar > div,
+.rule-list-actions,
+.rule-editor-heading,
+.rule-enabled,
+.rule-editor-actions {
+  display: flex;
+  align-items: center;
+}
+
+.rule-list-toolbar,
+.rule-editor-heading {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rule-list-toolbar {
+  margin-bottom: 9px;
+}
+
+.rule-list-toolbar p,
+.rule-editor-heading h3,
+.rule-editor-heading p,
+.rule-preview span,
+.rule-field-error {
+  margin: 0;
+}
+
+.rule-list-toolbar p,
+.rule-editor-heading p,
+.rule-preview span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.rule-list-toolbar > div,
+.rule-list-actions,
+.rule-editor-actions {
+  gap: 6px;
+}
+
+.rule-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rule-list > li {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--muted);
+}
+
+.rule-list > li.is-archived {
+  opacity: 0.72;
+}
+
+.rule-list-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rule-list-copy > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+
+.rule-list-copy strong {
+  font-size: 12px;
+}
+
+.rule-list-copy > span,
+.rule-list-copy code {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rule-list-copy code,
+.rule-preview code,
+.rule-pattern-row input {
+  font-family: "SF Mono", ui-monospace, monospace;
+}
+
+.rule-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.rule-editor-heading h3 {
+  font-size: 13px;
+}
+
+.rule-editor-heading p {
+  margin-top: 3px;
+}
+
+.rule-enabled {
+  gap: 8px;
+  font-size: 11px;
+}
+
+.rule-editor-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.rule-input {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.rule-input input,
+.rule-pattern-row input {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 11px;
+}
+
+.rule-input input:disabled,
+.rule-pattern-row input:disabled {
+  opacity: 0.62;
+}
+
+.rule-input input[aria-invalid="true"],
+.rule-pattern-row input[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.rule-pattern-group {
+  min-width: 0;
+  margin: 0;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.rule-pattern-group legend {
+  padding: 0 4px;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.rule-pattern-group > button {
+  margin-top: 7px;
+}
+
+.rule-pattern-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  gap: 5px;
+  margin-top: 5px;
+}
+
+.rule-pattern-row label {
+  min-width: 0;
+}
+
+.rule-field-error {
+  display: block;
+  margin-top: 4px;
+  color: var(--destructive);
+  font-size: 9px;
+}
+
+.rule-preview {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  padding: 9px;
+  border-radius: 8px;
+  background: var(--muted);
+}
+
+.rule-preview code {
+  overflow-wrap: anywhere;
+  font-size: 10px;
+}
+
+.rule-editor-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .settings-confirmation-dialog {
   max-width: 430px;
 }

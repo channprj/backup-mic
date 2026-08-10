@@ -150,4 +150,33 @@ describe("SettingsView", () => {
     render(<SettingsView snapshot={{ ...complete, setting_applies_next_run: true }} actions={actions} />);
     expect(screen.getByText("다음 백업부터 적용됩니다")).toBeInTheDocument();
   });
+
+  it("opens a duplicate as a new editable rule and replaces the snapshot after save", async () => {
+    const { actions } = renderSettings();
+    const zoomRule = complete.backup_rules.find(({ name }) => name === "Zoom H1n");
+    expect(zoomRule).toBeDefined();
+
+    fireEvent.click(screen.getByRole("button", { name: "Zoom H1n 복제" }));
+    expect(screen.getByRole("heading", { name: "녹음기 규칙 추가" })).toBeInTheDocument();
+    expect(screen.getByLabelText("규칙 이름")).toHaveValue("Zoom H1n 복사본");
+    expect(screen.getByLabelText("보관 폴더 이름")).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "규칙 저장" }));
+    await waitFor(() => expect(actions.saveBackupRule).toHaveBeenCalledOnce());
+    expect(actions.saveBackupRule.mock.calls[0][0]).toMatchObject({
+      id: null,
+      enabled: true,
+      name: "Zoom H1n 복사본",
+      archive_directory_name: "Zoom H1n 복사본",
+    });
+    await waitFor(() =>
+      expect(screen.queryByRole("heading", { name: "녹음기 규칙 추가" })).not.toBeInTheDocument(),
+    );
+  });
+
+  it("locks the archive directory after evidence exists", () => {
+    renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "DJI Mic Mini 2S 편집" }));
+    expect(screen.getByLabelText("보관 폴더 이름")).toBeDisabled();
+  });
 });
