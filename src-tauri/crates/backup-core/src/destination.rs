@@ -1,15 +1,23 @@
 use std::{
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
 };
 
+use sha2::{Digest, Sha256};
+
 use crate::{
+    artifact::{OutputFormat, VerifiedArtifact},
     error::CoreError,
     filesystem::{
-        is_recognized_session_name, is_safe_additional_relative_path, is_safe_relative_path,
+        canonical_regular_file, is_recognized_session_name, is_safe_additional_relative_path,
+        is_safe_relative_path,
     },
     hash::{FileDigest, hash_file},
     recording::{AdditionalFileObservation, RecordingObservation},
+    rule::{BackupRule, destination_stem},
+    rule_scanner::{RuleFileObservation, SelectedFileKind},
+    source::SourceId,
     state::Transmitter,
 };
 
@@ -35,6 +43,151 @@ pub struct AdditionalFilePlan {
     pub source_sha256: String,
     pub relative_destination: PathBuf,
     pub disposition: DestinationDisposition,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleDestinationPlan {
+    pub source: RuleFileObservation,
+    pub relative_destination: PathBuf,
+    pub disposition: DestinationDisposition,
+}
+
+pub fn plan_rule_file(
+    source_root: &Path,
+    destination_root: &Path,
+    rule: &BackupRule,
+    source_id: &SourceId,
+    source: RuleFileObservation,
+    existing: Option<&VerifiedArtifact>,
+) -> Result<RuleDestinationPlan, CoreError> {
+    validate_rule_observation(&source)?;
+    let source_path = canonical_regular_file(source_root, &source.relative_path)?;
+    let source_digest = hash_file(&source_path)?;
+    if source_digest.size != source.size {
+        return Err(CoreError::SourceChanged);
+    }
+    if let Some(existing) = existing
+        && let Some(relative_destination) = reusable_rule_artifact(
+            destination_root,
+            rule,
+            source.kind,
+            &source_digest,
+            existing,
+        )?
+    {
+        return Ok(RuleDestinationPlan {
+            source,
+            relative_destination,
+            disposition: DestinationDisposition::Reuse,
+        });
+    }
+    let default_relative = match source.kind {
+        SelectedFileKind::RecordingWav => recording_rule_destination(rule, &source)?,
+        SelectedFileKind::Companion => PathBuf::from(&rule.archive_directory_name)
+            .join("source-extras")
+            .join(source_evidence_key(source_id))
+            .join(&source.relative_path),
+    };
+    if !is_safe_additional_relative_path(&default_relative) {
+        return Err(CoreError::InvalidRequest);
+    }
+    let (relative_destination, disposition) =
+        choose_available_name(destination_root, &default_relative, &source_digest)?;
+    Ok(RuleDestinationPlan {
+        source,
+        relative_destination,
+        disposition,
+    })
+}
+
+fn validate_rule_observation(source: &RuleFileObservation) -> Result<(), CoreError> {
+    if !is_safe_additional_relative_path(&source.relative_path)
+        || source
+            .relative_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            != Some(source.file_name.as_str())
+        || (source.kind == SelectedFileKind::RecordingWav
+            && !source
+                .relative_path
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("wav")))
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    if let Some(session) = &source.session_relative_path
+        && (!is_safe_relative_path(session) || !source.relative_path.starts_with(session))
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(())
+}
+
+fn recording_rule_destination(
+    rule: &BackupRule,
+    source: &RuleFileObservation,
+) -> Result<PathBuf, CoreError> {
+    let source_stem = source
+        .relative_path
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .ok_or(CoreError::InvalidRequest)?;
+    let stem = destination_stem(rule, source_stem)?;
+    let date = source.archive_date;
+    let file_name = format!(
+        "{:02}{:02}{:02}-{stem}.wav",
+        date.year().rem_euclid(100),
+        date.month() as u8,
+        date.day()
+    );
+    Ok(PathBuf::from(&rule.archive_directory_name)
+        .join(date.year().to_string())
+        .join(format!("{:02}", date.month() as u8))
+        .join(file_name))
+}
+
+fn source_evidence_key(source_id: &SourceId) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"backup-mic-source-evidence-v1\0");
+    hasher.update(source_id.as_str().as_bytes());
+    let mut encoded = String::with_capacity(24);
+    for byte in hasher.finalize().iter().take(12) {
+        write!(&mut encoded, "{byte:02x}").expect("writing to a String cannot fail");
+    }
+    encoded
+}
+
+fn reusable_rule_artifact(
+    destination_root: &Path,
+    rule: &BackupRule,
+    kind: SelectedFileKind,
+    source_digest: &FileDigest,
+    existing: &VerifiedArtifact,
+) -> Result<Option<PathBuf>, CoreError> {
+    if !is_safe_relative_path(&existing.relative_path)
+        || !existing
+            .relative_path
+            .starts_with(Path::new(&rule.archive_directory_name))
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    if (kind == SelectedFileKind::Companion || existing.format == OutputFormat::Wav)
+        && (existing.byte_count != source_digest.size || existing.sha256 != source_digest.sha256)
+    {
+        return Ok(None);
+    }
+    let Some(disposition) = disposition_for(
+        &destination_root.join(&existing.relative_path),
+        &FileDigest {
+            size: existing.byte_count,
+            sha256: existing.sha256.clone(),
+        },
+    )?
+    else {
+        return Ok(None);
+    };
+    Ok((disposition == DestinationDisposition::Reuse).then(|| existing.relative_path.clone()))
 }
 
 pub fn plan_additional_file(

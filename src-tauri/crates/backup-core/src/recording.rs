@@ -3,7 +3,7 @@ use std::{path::PathBuf, sync::LazyLock};
 use regex::Regex;
 use time::{Date, Month};
 
-use crate::{additional_file::AdditionalFileClass, state::Transmitter};
+use crate::{additional_file::AdditionalFileClass, rule::FilenameProfile, state::Transmitter};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdditionalFileObservation {
@@ -63,6 +63,19 @@ pub fn parse_recording_name(file_name: &str, fallback_date: Date) -> ParsedRecor
         transmitter_hint,
         destination_date: fallback_date,
         used_fallback_date: true,
+    }
+}
+
+pub fn archive_date_for_filename(
+    profile: FilenameProfile,
+    file_name: &str,
+    fallback_date: Date,
+) -> Date {
+    match profile {
+        FilenameProfile::Preserve => fallback_date,
+        FilenameProfile::DjiTxShort => {
+            parse_recording_name(file_name, fallback_date).destination_date
+        }
     }
 }
 

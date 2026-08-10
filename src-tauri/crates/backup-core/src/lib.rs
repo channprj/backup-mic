@@ -20,6 +20,7 @@ pub mod preset;
 pub mod recording;
 pub mod recovery;
 pub mod rule;
+pub mod rule_scanner;
 pub mod scanner;
 pub mod source;
 pub mod state;

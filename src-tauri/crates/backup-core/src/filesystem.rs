@@ -1,6 +1,6 @@
 use std::{
-    fs::Metadata,
-    path::{Component, Path},
+    fs::{self, Metadata},
+    path::{Component, Path, PathBuf},
     time::UNIX_EPOCH,
 };
 
@@ -75,4 +75,25 @@ pub fn is_recognized_session_name(path: &Path) -> bool {
         && date.bytes().all(|byte| byte.is_ascii_digit())
         && time.len() == 6
         && time.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+pub fn canonical_regular_file(root: &Path, relative: &Path) -> Result<PathBuf, CoreError> {
+    if !is_safe_additional_relative_path(relative) {
+        return Err(CoreError::InvalidRequest);
+    }
+    let root_metadata = fs::symlink_metadata(root).map_err(CoreError::CopyFailed)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(CoreError::InvalidRequest);
+    }
+    let canonical_root = fs::canonicalize(root).map_err(CoreError::CopyFailed)?;
+    let candidate = root.join(relative);
+    let metadata = fs::symlink_metadata(&candidate).map_err(CoreError::CopyFailed)?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err(CoreError::InvalidRequest);
+    }
+    let canonical = fs::canonicalize(candidate).map_err(CoreError::CopyFailed)?;
+    if !canonical.starts_with(&canonical_root) {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(canonical)
 }

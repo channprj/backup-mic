@@ -26,6 +26,7 @@ pub enum PublicErrorCode {
     PartialDeletion,
     Busy,
     InvalidRule,
+    RuleScanLimit,
     InvalidRequest,
     Cancelled,
     Internal,
@@ -83,6 +84,8 @@ pub enum CoreError {
     Busy,
     #[error("invalid backup rule")]
     InvalidRule,
+    #[error("backup rule scan exceeded its safety limit")]
+    RuleScanLimit,
     #[error("invalid request")]
     InvalidRequest,
     #[error("operation was cancelled")]
@@ -112,6 +115,7 @@ impl CoreError {
             Self::DeletionPreflightRefused => "deletion_preflight_refused",
             Self::Busy => "operation_busy",
             Self::InvalidRule => "invalid_rule",
+            Self::RuleScanLimit => "rule_scan_limit",
             Self::InvalidRequest => "invalid_request",
             Self::Cancelled => "operation_cancelled",
         }
@@ -187,6 +191,7 @@ impl CoreError {
             ),
             Self::Busy => (PublicErrorCode::Busy, "operation_busy", true),
             Self::InvalidRule => (PublicErrorCode::InvalidRule, "invalid_rule", false),
+            Self::RuleScanLimit => (PublicErrorCode::RuleScanLimit, "rule_scan_limit", false),
             Self::InvalidRequest => (PublicErrorCode::InvalidRequest, "invalid_request", false),
             Self::Cancelled => (PublicErrorCode::Cancelled, "operation_cancelled", true),
         };
