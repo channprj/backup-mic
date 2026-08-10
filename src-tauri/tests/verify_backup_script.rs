@@ -39,15 +39,19 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
 
     let ledger_path = fixture.path().join("ledger.sqlite3");
     let mut ledger = Ledger::open(&ledger_path).unwrap();
+    let dji_rule = ledger.dji_rule().unwrap();
     let source_record = SourceRecord {
         id: SourceId::new(),
-        rule_id: ledger.dji_rule().unwrap().id,
+        rule_id: dji_rule.id.clone(),
         volume_uuid: "verify-script-tx01".to_owned(),
         legacy_slot: Some("TX01".to_owned()),
         display_name: "Verify Script TX01".to_owned(),
     };
     ledger
         .upsert_source(&source_record, "2026-08-10T00:00:00Z")
+        .unwrap();
+    ledger
+        .lock_rule_archive_directory(&dji_rule.id, &dji_rule.archive_directory_name)
         .unwrap();
     let required_bytes: u64 = [&first_source, &second_source, &external_m4a, &apple_double]
         .into_iter()
@@ -73,9 +77,11 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
     let mut wav_recordings = Vec::new();
     for (index, source_path) in [first_source, second_source].iter().enumerate() {
         let source_relative = source_path.strip_prefix(&source).unwrap().to_path_buf();
-        let destination_relative = Path::new("2026/2026-08-10/TX01")
-            .join(SESSION)
-            .join(source_path.file_name().unwrap());
+        let source_name = source_path.file_name().unwrap().to_string_lossy();
+        let destination_relative = Path::new("DJI Mic Mini 2S/2026/08").join(format!(
+            "260810-{}",
+            source_name.replacen("TX01_", "T01_", 1)
+        ));
         let destination_path = destination.join(&destination_relative);
         fs::create_dir_all(destination_path.parent().unwrap()).unwrap();
         fs::copy(source_path, &destination_path).unwrap();
@@ -243,7 +249,7 @@ fn commit_additional(
     classification: AdditionalFileClass,
 ) -> std::path::PathBuf {
     let source_relative = source_path.strip_prefix(source_root).unwrap().to_path_buf();
-    let artifact_relative = Path::new("source-extras/2026/2026-08-10/TX01")
+    let artifact_relative = Path::new("DJI Mic Mini 2S/source-extras/2026/2026-08-10/TX01")
         .join(SESSION)
         .join(source_path.file_name().unwrap());
     let artifact_path = destination_root.join(&artifact_relative);
@@ -276,7 +282,7 @@ fn run_verifier(ledger: &Path, destination: &Path, source: &Path) -> std::proces
         .arg("--ledger")
         .arg(ledger)
         .arg(destination)
-        .arg(format!("TX01={}", source.display()))
+        .arg(format!("DJI Mic Mini 2S={}", source.display()))
         .output()
         .unwrap()
 }

@@ -9,7 +9,7 @@ ledger="$APP_LEDGER"
 
 usage() {
   cat >&2 <<'EOF'
-Usage: verify-backup.sh [--diagnostic] [--ledger LEDGER] DESTINATION TX01=SOURCE_VOLUME [TX02=SOURCE_VOLUME]
+Usage: verify-backup.sh [--diagnostic] [--ledger LEDGER] DESTINATION RULE_NAME=SOURCE_VOLUME [...]
 
 The default output contains counts only. --diagnostic additionally prints
 relative paths and SHA-256 evidence. The command is read-only.
@@ -52,11 +52,11 @@ fi
 
 destination="$(cd "$destination" && pwd -P)"
 ledger="$(cd "$(dirname "$ledger")" && pwd -P)/$(basename "$ledger")"
-temporary="$(mktemp -d -t dji-mic-verify)"
+temporary="$(mktemp -d -t backup-mic-verify)"
 
 cleanup() {
   case "$(basename "$temporary")" in
-    dji-mic-verify.*) rm -rf -- "$temporary" ;;
+    backup-mic-verify.*) rm -rf -- "$temporary" ;;
     *) echo "Refusing to clean an unexpected verification directory." >&2 ;;
   esac
 }
@@ -66,21 +66,28 @@ separator=$'\034'
 source_map="$temporary/source-map"
 : > "$source_map"
 for source_spec in "$@"; do
-  case "$source_spec" in
-    TX01=*) transmitter="TX01"; source_root="${source_spec#TX01=}" ;;
-    TX02=*) transmitter="TX02"; source_root="${source_spec#TX02=}" ;;
-    *) echo "Each source must be labeled TX01=PATH or TX02=PATH." >&2; exit 2 ;;
-  esac
+  [[ "$source_spec" == *=* ]] || {
+    echo "Each source must be labeled RULE_NAME=PATH." >&2
+    exit 2
+  }
+  rule_name="${source_spec%%=*}"
+  source_root="${source_spec#*=}"
+  if [[ -z "$rule_name" || -z "$source_root" || "$rule_name" == *$separator* \
+    || "$rule_name" == *$'\n'* || "$rule_name" == *$'\r'* || "$rule_name" == */* ]]; then
+    echo "Each source must use a safe non-empty rule name and path." >&2
+    exit 2
+  fi
   if [[ ! -d "$source_root" || -L "$source_root" ]]; then
     echo "A labeled source volume is not mounted as a regular directory." >&2
     exit 2
   fi
-  if awk -F "$separator" -v tx="$transmitter" '$1 == tx { found = 1 } END { exit !found }' "$source_map"; then
-    echo "Each transmitter may be supplied only once." >&2
+  source_root="$(cd "$source_root" && pwd -P)"
+  if awk -F "$separator" -v rule="$rule_name" -v root="$source_root" \
+    '$1 == rule && $2 == root { found = 1 } END { exit !found }' "$source_map"; then
+    echo "The same rule source may be supplied only once." >&2
     exit 2
   fi
-  source_root="$(cd "$source_root" && pwd -P)"
-  printf '%s%s%s\n' "$transmitter" "$separator" "$source_root" >> "$source_map"
+  printf '%s%s%s\n' "$rule_name" "$separator" "$source_root" >> "$source_map"
 done
 
 query_ledger="$ledger"
@@ -122,6 +129,20 @@ if ! run_sqlite "$query_ledger" \
   exit 1
 fi
 
+active_rules="$temporary/active-rules"
+run_sqlite -separator "$separator" "$query_ledger" \
+  "SELECT name, archive_directory_name
+     FROM backup_rules
+    WHERE enabled = 1 AND archived_at IS NULL
+    ORDER BY name;" > "$active_rules"
+while IFS="$separator" read -r selected_rule _; do
+  match_count="$(awk -F "$separator" -v rule="$selected_rule" '$1 == rule { count++ } END { print count + 0 }' "$active_rules")"
+  if [[ "$match_count" -ne 1 ]]; then
+    echo "A selected source does not name exactly one active backup rule." >&2
+    exit 2
+  fi
+done < "$source_map"
+
 is_safe_relative() {
   local value="$1"
   local component
@@ -143,16 +164,6 @@ is_safe_additional_relative() {
   base="$(basename "$value")"
   [[ "$base" == .* && "$base" != "." && "$base" != ".." ]] || return 1
   is_safe_relative "$parent"
-}
-
-is_recognized_session_file() {
-  local relative="$1"
-  [[ "$relative" =~ ^TX_MIC[0-9]+_[0-9]{8}_[0-9]{6}/[^/]+$ ]]
-}
-
-is_recognized_session_name() {
-  local name="$1"
-  [[ "$name" =~ ^TX_MIC[0-9]+_[0-9]{8}_[0-9]{6}$ ]]
 }
 
 has_wav_extension() {
@@ -177,7 +188,7 @@ resolve_regular_artifact() {
 
 recording_evidence="$temporary/recording-evidence"
 run_sqlite -separator "$separator" "$query_ledger" \
-  "SELECT r.id, COALESCE(s.legacy_slot, ''), r.source_relative_path, r.source_size, r.source_sha256,
+  "SELECT r.id, br.name, r.source_relative_path, r.source_size, r.source_sha256,
           r.destination_relative_path, r.destination_size, r.destination_sha256,
           r.artifact_format, COALESCE(r.artifact_codec, ''),
           COALESCE(r.artifact_sample_rate_hz, ''),
@@ -210,26 +221,28 @@ run_sqlite -separator "$separator" "$query_ledger" \
                         WHERE other.backup_run_id = b.id AND other.source_id != r.source_id)
             ) THEN 1
             ELSE 0
-          END
+          END,
+          br.archive_directory_name, br.archive_directory_locked
      FROM recordings r
      JOIN backup_runs b ON b.id = r.backup_run_id
      JOIN sources s ON s.id = r.source_id
-    ORDER BY s.legacy_slot, r.source_relative_path, r.id;" > "$recording_evidence"
+     JOIN backup_rules br ON br.id = s.rule_id
+    ORDER BY br.name, r.source_relative_path, r.id;" > "$recording_evidence"
 
 verified_artifact_count=0
 m4a_count=0
 wav_count=0
 row_index=0
-while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded_source_size \
+while IFS="$separator" read -r recording_id recorded_rule recorded_source recorded_source_size \
   recorded_source_hash artifact_relative artifact_size artifact_hash artifact_format \
   artifact_codec artifact_sample_rate artifact_channels artifact_valid_frames artifact_duration \
   conversion_status superseded_wav_relative superseded_wav_size superseded_wav_hash \
   superseded_wav_status \
   backup_run_id run_outcome batch_phase frozen_m4a run_profile cohort_profile cohort_status \
-  cohort_count cohort_invalid_count recorded_source_id source_run_consistent; do
+  cohort_count cohort_invalid_count recorded_source_id source_run_consistent \
+  recorded_archive archive_locked; do
   [[ -n "$recording_id" ]] || continue
   row_index=$((row_index + 1))
-  case "$recorded_tx" in TX01|TX02) ;; *) echo "Recording evidence contains an invalid transmitter." >&2; exit 1 ;; esac
   if [[ ! "$recorded_source_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
     || "$source_run_consistent" != "1" ]]; then
     echo "Recording evidence contains an invalid source identity." >&2
@@ -237,6 +250,11 @@ while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded
   fi
   if ! is_safe_relative "$recorded_source" || ! resolve_regular_artifact "$artifact_relative"; then
     echo "Recording evidence contains an unsafe or unavailable artifact (1 invalid record)." >&2
+    exit 1
+  fi
+  if [[ "$archive_locked" != "1" || -z "$recorded_archive" \
+    || "$artifact_relative" != "$recorded_archive/"* ]]; then
+    echo "Recording artifact is outside its locked rule archive (1 invalid record)." >&2
     exit 1
   fi
   artifact_path="$destination/$artifact_relative"
@@ -314,13 +332,13 @@ while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded
   esac
   verified_artifact_count=$((verified_artifact_count + 1))
   if [[ "$diagnostic" -eq 1 ]]; then
-    echo "verified source_id=$recorded_source_id source=$recorded_tx:$recorded_source source_sha256=$recorded_source_hash artifact=$artifact_relative artifact_sha256=$artifact_hash format=$artifact_format run=$backup_run_id"
+    echo "verified source_id=$recorded_source_id source=$recorded_rule:$recorded_source source_sha256=$recorded_source_hash artifact=$artifact_relative artifact_sha256=$artifact_hash format=$artifact_format run=$backup_run_id"
   fi
 done < "$recording_evidence"
 
 additional_evidence="$temporary/additional-evidence"
 run_sqlite -separator "$separator" "$query_ledger" \
-  "SELECT a.id, COALESCE(s.legacy_slot, ''), a.source_relative_path, a.source_size, a.source_sha256,
+  "SELECT a.id, br.name, a.source_relative_path, a.source_size, a.source_sha256,
           a.artifact_relative_path, a.artifact_size, a.artifact_sha256, a.classification,
           a.backup_run_id, b.outcome, b.batch_phase, b.frozen_m4a_conversion,
           COALESCE(b.m4a_profile_id, ''), a.source_id,
@@ -333,19 +351,21 @@ run_sqlite -separator "$separator" "$query_ledger" \
                         WHERE other.backup_run_id = b.id AND other.source_id != a.source_id)
             ) THEN 1
             ELSE 0
-          END
+          END,
+          br.archive_directory_name, br.archive_directory_locked
      FROM additional_files a
      JOIN backup_runs b ON b.id = a.backup_run_id
      JOIN sources s ON s.id = a.source_id
-    ORDER BY s.legacy_slot, a.source_relative_path, a.id;" > "$additional_evidence"
+     JOIN backup_rules br ON br.id = s.rule_id
+    ORDER BY br.name, a.source_relative_path, a.id;" > "$additional_evidence"
 
 verified_additional_count=0
-while IFS="$separator" read -r additional_id additional_tx additional_source additional_source_size \
+while IFS="$separator" read -r additional_id additional_rule additional_source additional_source_size \
   additional_source_hash additional_artifact additional_artifact_size additional_artifact_hash \
   additional_classification additional_run_id additional_run_outcome additional_batch_phase \
-  additional_frozen_m4a additional_run_profile additional_source_id source_run_consistent; do
+  additional_frozen_m4a additional_run_profile additional_source_id source_run_consistent \
+  additional_archive archive_locked; do
   [[ -n "$additional_id" ]] || continue
-  case "$additional_tx" in TX01|TX02) ;; *) echo "Additional-file evidence contains an invalid transmitter." >&2; exit 1 ;; esac
   if [[ ! "$additional_source_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
     || "$source_run_consistent" != "1" ]]; then
     echo "Additional-file evidence contains an invalid source identity." >&2
@@ -357,6 +377,11 @@ while IFS="$separator" read -r additional_id additional_tx additional_source add
     || [[ "$additional_source_size" != "$additional_artifact_size" \
       || "$additional_source_hash" != "$additional_artifact_hash" ]]; then
     echo "Raw additional-file evidence verification failed (1 invalid record)." >&2
+    exit 1
+  fi
+  if [[ "$archive_locked" != "1" || -z "$additional_archive" \
+    || "$additional_artifact" != "$additional_archive/"* ]]; then
+    echo "Additional-file artifact is outside its locked rule archive (1 invalid record)." >&2
     exit 1
   fi
   if [[ "$additional_frozen_m4a" == "1" ]]; then
@@ -387,66 +412,57 @@ while IFS="$separator" read -r additional_id additional_tx additional_source add
   fi
   verified_additional_count=$((verified_additional_count + 1))
   if [[ "$diagnostic" -eq 1 ]]; then
-    echo "verified source_id=$additional_source_id additional=$additional_tx:$additional_source source_sha256=$additional_source_hash artifact=$additional_artifact artifact_sha256=$additional_artifact_hash classification=$additional_classification run=$additional_run_id"
+    echo "verified source_id=$additional_source_id additional=$additional_rule:$additional_source source_sha256=$additional_source_hash artifact=$additional_artifact artifact_sha256=$additional_artifact_hash classification=$additional_classification run=$additional_run_id"
   fi
 done < "$additional_evidence"
 
 live_source_count=0
 live_additional_count=0
-while IFS="$separator" read -r transmitter source_root; do
+source_ordinal=0
+while IFS="$separator" read -r rule_name source_root; do
+  source_ordinal=$((source_ordinal + 1))
   while IFS= read -r -d '' unsafe_entry; do
-    unsafe_relative="${unsafe_entry#"$source_root"/}"
-    first_component="${unsafe_relative%%/*}"
-    if [[ "$unsafe_relative" == */* ]] && is_recognized_session_name "$first_component"; then
-      echo "Live session safety verification failed (1 unsafe entry)." >&2
-      exit 1
-    fi
+    echo "Live source safety verification failed (1 unsafe entry)." >&2
+    exit 1
   done < <(find "$source_root" -mindepth 1 \
     \( -type d -path "$source_root/.*" -prune \) -o \
     \( -type l -o -type p -o -type s -o -type b -o -type c \) -print0)
-  while IFS= read -r -d '' nested_directory; do
-    nested_relative="${nested_directory#"$source_root"/}"
-    first_component="${nested_relative%%/*}"
-    if [[ "$nested_relative" == */* ]] && is_recognized_session_name "$first_component"; then
-      echo "Live session safety verification failed (1 nested directory)." >&2
-      exit 1
-    fi
-  done < <(find "$source_root" -mindepth 1 \
-    \( -type d -path "$source_root/.*" -prune \) -o -type d -print0)
+  file_ordinal=0
   while IFS= read -r -d '' source_file; do
+    file_ordinal=$((file_ordinal + 1))
     source_relative="${source_file#"$source_root"/}"
     base="$(basename "$source_relative")"
-    item_kind="ignored"
-    if is_recognized_session_file "$source_relative" \
-      && { [[ "$base" == .* ]] || ! has_wav_extension "$base"; }; then
-      item_kind="additional"
-    elif is_safe_relative "$source_relative" && has_wav_extension "$base"; then
-      item_kind="recording"
-    fi
-    [[ "$item_kind" != "ignored" ]] || continue
+    is_safe_additional_relative "$source_relative" || {
+      echo "Live source contains an unsafe relative path (1 invalid file)." >&2
+      exit 1
+    }
     source_size="$(stat -f '%z' "$source_file")"
     source_hash="$(shasum -a 256 "$source_file" | awk '{print $1}')"
-    matches="$temporary/live-matches-$transmitter-$((live_source_count + live_additional_count + 1))"
-    if [[ "$item_kind" == "recording" ]]; then
-      awk -F "$separator" -v tx="$transmitter" -v path="$source_relative" \
-        -v bytes="$source_size" -v digest="$source_hash" \
-        '$2 == tx && $3 == path && $4 == bytes && $5 == digest { print }' \
-        "$recording_evidence" > "$matches"
-      live_source_count=$((live_source_count + 1))
-      mismatch_message="Live source WAV evidence verification failed (1 unmatched file)."
-    else
-      awk -F "$separator" -v tx="$transmitter" -v path="$source_relative" \
-        -v bytes="$source_size" -v digest="$source_hash" \
-        '$2 == tx && $3 == path && $4 == bytes && $5 == digest { print }' \
-        "$additional_evidence" > "$matches"
-      live_additional_count=$((live_additional_count + 1))
-      mismatch_message="Live additional-file evidence verification failed (1 unmatched file)."
+    recording_matches="$temporary/live-recording-$source_ordinal-$file_ordinal"
+    additional_matches="$temporary/live-additional-$source_ordinal-$file_ordinal"
+    awk -F "$separator" -v rule="$rule_name" -v path="$source_relative" \
+      -v bytes="$source_size" -v digest="$source_hash" \
+      '$2 == rule && $3 == path && $4 == bytes && $5 == digest { print }' \
+      "$recording_evidence" > "$recording_matches"
+    awk -F "$separator" -v rule="$rule_name" -v path="$source_relative" \
+      -v bytes="$source_size" -v digest="$source_hash" \
+      '$2 == rule && $3 == path && $4 == bytes && $5 == digest { print }' \
+      "$additional_evidence" > "$additional_matches"
+    recording_match_count="$(wc -l < "$recording_matches" | tr -d ' ')"
+    additional_match_count="$(wc -l < "$additional_matches" | tr -d ' ')"
+    total_match_count=$((recording_match_count + additional_match_count))
+    if [[ "$total_match_count" -eq 0 && "$source_relative" != */* && "$base" == .* ]]; then
+      continue
     fi
-    match_count="$(wc -l < "$matches" | tr -d ' ')"
-    if [[ "$match_count" -ne 1 ]]; then
-      echo "$mismatch_message" >&2
-      [[ "$diagnostic" -eq 0 ]] || echo "source=$transmitter:$source_relative matches=$match_count" >&2
+    if [[ "$total_match_count" -ne 1 ]]; then
+      echo "Live rule source evidence verification failed (1 unmatched or ambiguous file)." >&2
+      [[ "$diagnostic" -eq 0 ]] || echo "source=$rule_name:$source_relative matches=$total_match_count" >&2
       exit 1
+    fi
+    if [[ "$recording_match_count" -eq 1 ]]; then
+      live_source_count=$((live_source_count + 1))
+    else
+      live_additional_count=$((live_additional_count + 1))
     fi
   done < <(find "$source_root" -type d -name '.*' -prune -o -type f -print0)
 done < "$source_map"

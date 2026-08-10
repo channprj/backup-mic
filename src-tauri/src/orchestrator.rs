@@ -1144,6 +1144,7 @@ pub fn start_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
 }
 
 fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Result<(), CoreError> {
+    state.migrate_legacy_layout(&MacTrash, &guard.cancellation)?;
     let matched = state.matched_sources().into_values().collect::<Vec<_>>();
     if matched.is_empty() {
         return Err(CoreError::DeviceRemoved);

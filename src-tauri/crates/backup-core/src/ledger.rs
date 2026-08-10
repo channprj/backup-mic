@@ -1671,6 +1671,68 @@ impl Ledger {
         Ok(row)
     }
 
+    pub fn verified_additional_files(&self) -> Result<Vec<VerifiedAdditionalFile>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, artifact_relative_path, artifact_size,
+                          artifact_sha256, classification, backup_run_id
+                   FROM additional_files
+                   ORDER BY artifact_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([], row_to_verified_additional_file)
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| {
+            let file = row.map_err(CoreError::Ledger)?;
+            validate_verified_additional_file(&file).map_err(|_| CoreError::LedgerCorrupt)?;
+            Ok(file)
+        })
+        .collect()
+    }
+
+    pub fn relocate_verified_additional_artifact(
+        &mut self,
+        file_id: &str,
+        from_relative_path: &Path,
+        to_relative_path: &Path,
+        byte_count: u64,
+        sha256: &str,
+    ) -> Result<(), CoreError> {
+        if file_id.is_empty()
+            || from_relative_path == to_relative_path
+            || !crate::filesystem::is_safe_additional_relative_path(from_relative_path)
+            || !crate::filesystem::is_safe_additional_relative_path(to_relative_path)
+            || byte_count == 0
+            || sha256.len() != 64
+            || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE additional_files
+                   SET artifact_relative_path = ?1
+                   WHERE id = ?2 AND artifact_relative_path = ?3
+                     AND artifact_size = ?4 AND artifact_sha256 = ?5"#,
+                params![
+                    path_text(to_relative_path)?,
+                    file_id,
+                    path_text(from_relative_path)?,
+                    to_i64(byte_count)?,
+                    sha256,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
     pub fn verified_additional_file_for_source(
         &self,
         source_id: &SourceId,
