@@ -3,10 +3,44 @@ use std::{
     time::{Duration, Instant},
 };
 
-use backup_core::{scanner::metadata_fingerprint, state::Transmitter};
+use backup_core::{
+    rule::{BackupRule, DeviceConstraintProfile, FilenameProfile, RuleId, compile_rule},
+    rule_scanner::scan_rule_once,
+    source::SourceId,
+};
 use dji_mic_backup_lib::rescan::{RescanDecision, RescanScheduler};
 use tempfile::tempdir;
 use time::UtcOffset;
+
+fn rule() -> backup_core::rule::CompiledBackupRule {
+    compile_rule(BackupRule {
+        id: RuleId::new(),
+        name: "Recorder".to_owned(),
+        archive_directory_name: "Recorder".to_owned(),
+        enabled: true,
+        volume_name_glob: "*".to_owned(),
+        required_path_globs: Vec::new(),
+        backup_file_globs: vec!["*.wav".to_owned()],
+        session_directory_globs: Vec::new(),
+        filename_prefix: String::new(),
+        filename_suffix: String::new(),
+        filename_profile: FilenameProfile::Preserve,
+        device_constraint_profile: DeviceConstraintProfile::GenericExternal,
+        preset_kind: None,
+        preset_revision: None,
+        archive_directory_locked: false,
+        archived_at: None,
+        created_at: "2026-08-10T00:00:00Z".to_owned(),
+        updated_at: "2026-08-10T00:00:00Z".to_owned(),
+    })
+    .unwrap()
+}
+
+fn fingerprint(root: &std::path::Path) -> backup_core::rule_scanner::RuleScanFingerprint {
+    scan_rule_once(root, &rule(), UtcOffset::UTC)
+        .unwrap()
+        .fingerprint
+}
 
 #[test]
 fn unchanged_deadlines_schedule_no_work_but_new_metadata_coalesces_one_pending_run() {
@@ -16,23 +50,24 @@ fn unchanged_deadlines_schedule_no_work_but_new_metadata_coalesces_one_pending_r
         b"first",
     )
     .unwrap();
-    let initial = metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    let initial = fingerprint(source.path());
+    let source_id = SourceId::new();
     let started = Instant::now();
     let mut scheduler = RescanScheduler::new(Duration::from_secs(15));
-    scheduler.mount(Transmitter::Tx01, initial.clone(), started);
+    scheduler.mount(source_id.clone(), initial.clone(), started);
 
     assert!(
         scheduler
-            .due_transmitters(started + Duration::from_secs(14))
+            .due_sources(started + Duration::from_secs(14))
             .is_empty()
     );
     assert_eq!(
-        scheduler.due_transmitters(started + Duration::from_secs(15)),
-        vec![Transmitter::Tx01]
+        scheduler.due_sources(started + Duration::from_secs(15)),
+        vec![source_id.clone()]
     );
     assert_eq!(
         scheduler.observe(
-            Transmitter::Tx01,
+            source_id.clone(),
             initial,
             started + Duration::from_secs(15),
             false,
@@ -45,10 +80,10 @@ fn unchanged_deadlines_schedule_no_work_but_new_metadata_coalesces_one_pending_r
         b"second",
     )
     .unwrap();
-    let added = metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    let added = fingerprint(source.path());
     assert_eq!(
         scheduler.observe(
-            Transmitter::Tx01,
+            source_id.clone(),
             added,
             started + Duration::from_secs(30),
             false,
@@ -62,11 +97,10 @@ fn unchanged_deadlines_schedule_no_work_but_new_metadata_coalesces_one_pending_r
         b"third",
     )
     .unwrap();
-    let changed_again =
-        metadata_fingerprint(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    let changed_again = fingerprint(source.path());
     assert_eq!(
         scheduler.observe(
-            Transmitter::Tx01,
+            source_id,
             changed_again,
             started + Duration::from_secs(45),
             true,
@@ -80,11 +114,13 @@ fn unchanged_deadlines_schedule_no_work_but_new_metadata_coalesces_one_pending_r
 #[test]
 fn unmount_clears_deadline_fingerprint_and_pending_authority() {
     let source = tempdir().unwrap();
-    let fingerprint =
-        metadata_fingerprint(source.path(), Transmitter::Tx02, UtcOffset::UTC).unwrap();
+    let initial = fingerprint(source.path());
+    let first = SourceId::new();
+    let second = SourceId::new();
     let started = Instant::now();
     let mut scheduler = RescanScheduler::new(Duration::from_secs(15));
-    scheduler.mount(Transmitter::Tx02, fingerprint.clone(), started);
+    scheduler.mount(first.clone(), initial.clone(), started);
+    scheduler.mount(second.clone(), initial, started);
     fs::write(
         source.path().join("TX02_MIC001_20260809_010203.wav"),
         b"new",
@@ -92,20 +128,19 @@ fn unmount_clears_deadline_fingerprint_and_pending_authority() {
     .unwrap();
     assert_eq!(
         scheduler.observe(
-            Transmitter::Tx02,
-            metadata_fingerprint(source.path(), Transmitter::Tx02, UtcOffset::UTC).unwrap(),
+            first.clone(),
+            fingerprint(source.path()),
             started + Duration::from_secs(15),
             false,
         ),
         RescanDecision::RequestBackup
     );
 
-    scheduler.unmount(Transmitter::Tx02);
+    scheduler.unmount(&first);
 
-    assert!(!scheduler.has_pending_backup());
-    assert!(
-        scheduler
-            .due_transmitters(started + Duration::from_secs(60))
-            .is_empty()
+    assert!(!scheduler.pending_sources().contains(&first));
+    assert_eq!(
+        scheduler.due_sources(started + Duration::from_secs(60)),
+        vec![second]
     );
 }

@@ -5,15 +5,21 @@ use backup_core::{
     batch::{BatchPhase, FrozenPreferences, M4A_PROFILE_ID},
     error::CoreError,
     ledger::{Ledger, VerifiedRecording},
-    state::Transmitter,
+    source::{SourceId, SourceRecord},
 };
 use dji_mic_backup_lib::artifact_pipeline::order_conversion_cohort;
 use tempfile::tempdir;
 
-fn wav(id: &str, destination: &str, hash: char, run: &str) -> VerifiedRecording {
+fn wav(
+    id: &str,
+    source_id: &SourceId,
+    destination: &str,
+    hash: char,
+    run: &str,
+) -> VerifiedRecording {
     VerifiedRecording {
         id: id.to_owned(),
-        transmitter: Transmitter::Tx01,
+        source_id: source_id.clone(),
         source_relative_path: format!("TX_MIC001_20260810_001116/{id}.wav").into(),
         source_size: 4,
         source_mtime_ns: 1,
@@ -57,11 +63,22 @@ fn converted(mut recording: VerifiedRecording, run: &str) -> VerifiedRecording {
 fn current_and_historical_wavs_form_one_deterministic_all_or_nothing_cohort() {
     let directory = tempdir().unwrap();
     let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    let source = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "conversion-cohort-tx01".to_owned(),
+        legacy_slot: Some("TX01".to_owned()),
+        display_name: "Conversion Cohort TX01".to_owned(),
+    };
     ledger
-        .begin_backup_run("historical", "2026-08-09T00:00:00Z", 4)
+        .upsert_source(&source, "2026-08-09T00:00:00Z")
+        .unwrap();
+    ledger
+        .begin_backup_run("historical", &source.id, "2026-08-09T00:00:00Z", 4)
         .unwrap();
     let historical = wav(
         "historical",
+        &source.id,
         "2026/2026-08-08/TX01/historical.wav",
         'a',
         "historical",
@@ -73,6 +90,7 @@ fn current_and_historical_wavs_form_one_deterministic_all_or_nothing_cohort() {
     ledger
         .begin_batch_run(
             "current",
+            &source.id,
             "2026-08-10T00:00:00Z",
             8,
             FrozenPreferences {
@@ -85,9 +103,16 @@ fn current_and_historical_wavs_form_one_deterministic_all_or_nothing_cohort() {
     ledger
         .advance_batch_phase("current", BatchPhase::Copying)
         .unwrap();
-    let later = wav("later", "2026/2026-08-10/TX01/later.wav", 'b', "current");
+    let later = wav(
+        "later",
+        &source.id,
+        "2026/2026-08-10/TX01/later.wav",
+        'b',
+        "current",
+    );
     let earlier = wav(
         "earlier",
+        &source.id,
         "2026/2026-08-10/TX01/earlier.wav",
         'c',
         "current",

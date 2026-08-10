@@ -10,6 +10,7 @@ pub mod orchestrator;
 pub mod pairing;
 pub mod platform;
 pub mod rescan;
+pub mod rule_runtime;
 pub mod tray;
 pub mod window;
 

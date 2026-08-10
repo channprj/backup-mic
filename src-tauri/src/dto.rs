@@ -140,7 +140,10 @@ mod tests {
         ActivityEntry {
             occurred_at: format!("2026-08-09T00:00:{index:02}Z"),
             code: "device_detected".to_owned(),
-            transmitter: Some(Transmitter::Tx01),
+            source_id: Some(
+                backup_core::source::SourceId::parse(backup_core::source::LEGACY_TX01_SOURCE_ID)
+                    .unwrap(),
+            ),
             count_value: None,
             byte_value: None,
             severity: ActivitySeverity::Info,

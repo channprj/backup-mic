@@ -3,7 +3,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use backup_core::{scanner::ScanFingerprint, state::Transmitter};
+use backup_core::{rule_scanner::RuleScanFingerprint, source::SourceId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RescanDecision {
@@ -15,9 +15,9 @@ pub enum RescanDecision {
 #[derive(Debug)]
 pub struct RescanScheduler {
     interval: Duration,
-    next_due: HashMap<Transmitter, Instant>,
-    fingerprints: HashMap<Transmitter, ScanFingerprint>,
-    pending: HashSet<Transmitter>,
+    next_due: HashMap<SourceId, Instant>,
+    fingerprints: HashMap<SourceId, RuleScanFingerprint>,
+    pending: HashSet<SourceId>,
 }
 
 impl RescanScheduler {
@@ -30,51 +30,50 @@ impl RescanScheduler {
         }
     }
 
-    pub fn mount(&mut self, transmitter: Transmitter, fingerprint: ScanFingerprint, now: Instant) {
-        self.fingerprints.insert(transmitter, fingerprint);
+    pub fn mount(&mut self, source_id: SourceId, fingerprint: RuleScanFingerprint, now: Instant) {
+        self.fingerprints.insert(source_id.clone(), fingerprint);
         self.next_due
-            .insert(transmitter, now.checked_add(self.interval).unwrap_or(now));
+            .insert(source_id, now.checked_add(self.interval).unwrap_or(now));
     }
 
-    pub fn unmount(&mut self, transmitter: Transmitter) {
-        self.next_due.remove(&transmitter);
-        self.fingerprints.remove(&transmitter);
-        self.pending.remove(&transmitter);
+    pub fn unmount(&mut self, source_id: &SourceId) {
+        self.next_due.remove(source_id);
+        self.fingerprints.remove(source_id);
+        self.pending.remove(source_id);
     }
 
-    pub fn is_mounted(&self, transmitter: Transmitter) -> bool {
-        self.fingerprints.contains_key(&transmitter)
+    pub fn is_mounted(&self, source_id: &SourceId) -> bool {
+        self.fingerprints.contains_key(source_id)
     }
 
-    pub fn due_transmitters(&self, now: Instant) -> Vec<Transmitter> {
+    pub fn due_sources(&self, now: Instant) -> Vec<SourceId> {
         let mut due = self
             .next_due
             .iter()
-            .filter_map(|(transmitter, deadline)| (*deadline <= now).then_some(*transmitter))
+            .filter_map(|(source_id, deadline)| (*deadline <= now).then_some(source_id.clone()))
             .collect::<Vec<_>>();
-        due.sort_by_key(|transmitter| match transmitter {
-            Transmitter::Tx01 => 1,
-            Transmitter::Tx02 => 2,
-        });
+        due.sort();
         due
     }
 
-    pub fn defer(&mut self, transmitter: Transmitter, now: Instant) {
-        if self.next_due.contains_key(&transmitter) {
-            self.next_due
-                .insert(transmitter, now.checked_add(self.interval).unwrap_or(now));
+    pub fn defer(&mut self, source_id: &SourceId, now: Instant) {
+        if self.next_due.contains_key(source_id) {
+            self.next_due.insert(
+                source_id.clone(),
+                now.checked_add(self.interval).unwrap_or(now),
+            );
         }
     }
 
     pub fn observe(
         &mut self,
-        transmitter: Transmitter,
-        fingerprint: ScanFingerprint,
+        source_id: SourceId,
+        fingerprint: RuleScanFingerprint,
         now: Instant,
         operation_busy: bool,
     ) -> RescanDecision {
-        self.defer(transmitter, now);
-        let Some(previous) = self.fingerprints.get_mut(&transmitter) else {
+        self.defer(&source_id, now);
+        let Some(previous) = self.fingerprints.get_mut(&source_id) else {
             return RescanDecision::Unchanged;
         };
         if *previous == fingerprint {
@@ -82,7 +81,7 @@ impl RescanScheduler {
         }
         *previous = fingerprint;
         let already_pending = !self.pending.is_empty();
-        self.pending.insert(transmitter);
+        self.pending.insert(source_id);
         if operation_busy || already_pending {
             RescanDecision::KeepPending
         } else {
@@ -92,6 +91,18 @@ impl RescanScheduler {
 
     pub fn has_pending_backup(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    pub fn pending_sources(&self) -> Vec<SourceId> {
+        let mut sources = self.pending.iter().cloned().collect::<Vec<_>>();
+        sources.sort();
+        sources
+    }
+
+    pub fn mounted_sources(&self) -> Vec<SourceId> {
+        let mut sources = self.fingerprints.keys().cloned().collect::<Vec<_>>();
+        sources.sort();
+        sources
     }
 
     pub fn mark_backup_started(&mut self) {

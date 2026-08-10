@@ -117,7 +117,7 @@ fn complete_volume(description: NativeDiskDescription) -> Option<MountedVolume> 
         },
         display_name: description
             .display_name
-            .unwrap_or_else(|| "DJI Mic".to_owned()),
+            .unwrap_or_else(|| "External Recorder".to_owned()),
     })
 }
 

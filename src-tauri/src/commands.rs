@@ -637,14 +637,14 @@ fn reported_public_error(
 
 fn activity(
     code: &str,
-    transmitter: Option<Transmitter>,
+    source_id: Option<backup_core::source::SourceId>,
     count_value: Option<u64>,
     severity: ActivitySeverity,
 ) -> ActivityEntry {
     ActivityEntry {
         occurred_at: orchestrator::now_string(),
         code: code.to_owned(),
-        transmitter,
+        source_id,
         count_value,
         byte_value: None,
         severity,

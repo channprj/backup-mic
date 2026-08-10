@@ -8,7 +8,8 @@ use backup_core::{
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
-    state::{CurrentStage, Transmitter},
+    source::{SourceId, SourceRecord},
+    state::CurrentStage,
 };
 use dji_mic_backup_lib::{
     artifact_pipeline::{publish_m4a, verify_published_artifact},
@@ -71,12 +72,22 @@ fn wav_recording(destination: &Path, ledger: &mut Ledger) -> VerifiedRecording {
     fs::write(&path, b"wav!").unwrap();
     let digest = hash_file(&path).unwrap();
     let source_mtime_ns = modified_nanos(&fs::metadata(&path).unwrap()).unwrap();
+    let source = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "artifact-pipeline-tx02".to_owned(),
+        legacy_slot: Some("TX02".to_owned()),
+        display_name: "Artifact Pipeline TX02".to_owned(),
+    };
     ledger
-        .begin_backup_run("run", "2026-08-09T00:00:00Z", digest.size)
+        .upsert_source(&source, "2026-08-09T00:00:00Z")
+        .unwrap();
+    ledger
+        .begin_backup_run("run", &source.id, "2026-08-09T00:00:00Z", digest.size)
         .unwrap();
     let recording = VerifiedRecording {
         id: "recording".to_owned(),
-        transmitter: Transmitter::Tx02,
+        source_id: source.id,
         source_relative_path: "TX_MIC001_20260809_021747/recording.wav".into(),
         source_size: digest.size,
         source_mtime_ns,
@@ -197,7 +208,7 @@ fn publishes_an_inspected_hashed_m4a_and_retains_the_superseded_wav() {
     );
     let from_source_identity = ledger
         .verified_recording_for_source(
-            Transmitter::Tx02,
+            &wav.source_id,
             &wav.source_relative_path,
             wav.source_size,
             wav.source_mtime_ns,

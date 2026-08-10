@@ -8,7 +8,7 @@ use backup_core::{
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
-    state::Transmitter,
+    source::{SourceId, SourceRecord},
 };
 use dji_mic_backup_lib::{
     artifact_pipeline::{finalize_prepared_m4a, prepare_m4a},
@@ -39,13 +39,24 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
 
     let ledger_path = fixture.path().join("ledger.sqlite3");
     let mut ledger = Ledger::open(&ledger_path).unwrap();
-    let required_bytes = [&first_source, &second_source, &external_m4a, &apple_double]
+    let source_record = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "verify-script-tx01".to_owned(),
+        legacy_slot: Some("TX01".to_owned()),
+        display_name: "Verify Script TX01".to_owned(),
+    };
+    ledger
+        .upsert_source(&source_record, "2026-08-10T00:00:00Z")
+        .unwrap();
+    let required_bytes: u64 = [&first_source, &second_source, &external_m4a, &apple_double]
         .into_iter()
         .map(|path| fs::metadata(path).unwrap().len())
         .sum();
     ledger
         .begin_batch_run(
             RUN_ID,
+            &source_record.id,
             "2026-08-10T00:00:00Z",
             required_bytes,
             FrozenPreferences {
@@ -73,7 +84,7 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
         assert_eq!(source_digest, destination_digest);
         let recording = VerifiedRecording {
             id: format!("recording-{index}"),
-            transmitter: Transmitter::Tx01,
+            source_id: source_record.id.clone(),
             source_relative_path: source_relative,
             source_size: source_digest.size,
             source_mtime_ns: modified_nanos(&fs::metadata(source_path).unwrap()).unwrap(),
@@ -101,6 +112,7 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
             &source,
             &destination,
             &mut ledger,
+            &source_record.id,
             &external_m4a,
             "additional-m4a",
             AdditionalFileClass::M4a,
@@ -109,6 +121,7 @@ fn independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failu
             &source,
             &destination,
             &mut ledger,
+            &source_record.id,
             &apple_double,
             "additional-apple-double",
             AdditionalFileClass::AppleDouble,
@@ -224,6 +237,7 @@ fn commit_additional(
     source_root: &Path,
     destination_root: &Path,
     ledger: &mut Ledger,
+    source_id: &SourceId,
     source_path: &Path,
     id: &str,
     classification: AdditionalFileClass,
@@ -241,7 +255,7 @@ fn commit_additional(
     ledger
         .commit_verified_additional_file(&VerifiedAdditionalFile {
             id: id.to_owned(),
-            transmitter: Transmitter::Tx01,
+            source_id: source_id.clone(),
             source_relative_path: source_relative,
             source_size: source_digest.size,
             source_mtime_ns: modified_nanos(&fs::metadata(source_path).unwrap()).unwrap(),

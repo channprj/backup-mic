@@ -15,11 +15,12 @@ use backup_core::{
     deletion::{
         AdditionalDeletionCandidate, DeletionCandidate, DeletionProposalStore, ProposalInvalidation,
     },
-    device::{DeviceMatch, PairedDevice},
+    device::PairedDevice,
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     ledger::Ledger,
     preferences::{BackupPreferences, PreferenceKey},
+    source::{LEGACY_TX01_SOURCE_ID, LEGACY_TX02_SOURCE_ID, SourceId, SourceRecord},
     state::{BackupPhase, DeletionPhase, Progress, Transmitter},
 };
 use parking_lot::Mutex;
@@ -33,6 +34,7 @@ use crate::{
     failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome},
     pairing::{PairingAssignment, PairingManager},
     platform::device_registry::{MountedVolume, VolumeLifecycleEvent},
+    rule_runtime::{MatchedSource, RuleVolumeMatch, match_mounted_volume},
 };
 
 pub const SNAPSHOT_EVENT: &str = "app-snapshot-changed";
@@ -42,6 +44,7 @@ pub(crate) struct RuntimeState {
     pub pairing: PairingManager,
     pub paired: Vec<PairedDevice>,
     pub observed: HashMap<String, MountedVolume>,
+    pub matched: HashMap<SourceId, MatchedSource>,
     pub mounted: HashMap<Transmitter, MountedVolume>,
     pub destination: PathBuf,
     pub destination_configured: bool,
@@ -93,12 +96,10 @@ impl AppState {
     ) -> Result<Self, CoreError> {
         let paired = ledger.paired_devices()?;
         let preferences = ledger.read_preferences()?;
-        let setup_state = if !destination_configured {
-            SetupStateDto::NeedsDestination
-        } else if paired.len() == 2 {
+        let setup_state = if destination_configured {
             SetupStateDto::Ready
         } else {
-            SetupStateDto::NeedsPairing
+            SetupStateDto::NeedsDestination
         };
         Ok(Self {
             runtime: Arc::new(Mutex::new(RuntimeState {
@@ -142,6 +143,7 @@ impl AppState {
                 pairing: PairingManager::default(),
                 paired,
                 observed: HashMap::new(),
+                matched: HashMap::new(),
                 mounted: HashMap::new(),
                 destination,
                 destination_configured,
@@ -247,22 +249,21 @@ impl AppState {
     }
 
     pub fn backup_is_ready(&self) -> bool {
-        let (destination_configured, paired_count, mounted_count, destination, source_roots) = {
+        let (destination_configured, mounted_count, destination, source_roots) = {
             let runtime = self.runtime.lock();
             (
                 runtime.destination_configured,
-                runtime.paired.len(),
-                runtime.mounted.len(),
+                runtime.matched.len(),
                 runtime.destination.clone(),
                 runtime
-                    .mounted
+                    .matched
                     .values()
-                    .map(|mounted| mounted.descriptor.mount_root.clone())
+                    .map(|matched| matched.authority.descriptor.mount_root.clone())
                     .collect::<Vec<_>>(),
             )
         };
 
-        backup_requirements_met(destination_configured, paired_count, mounted_count)
+        backup_requirements_met(destination_configured, mounted_count)
             && canonical_destination_is_separate(&destination, &source_roots)
     }
 
@@ -270,9 +271,9 @@ impl AppState {
         let source_roots = self
             .runtime
             .lock()
-            .mounted
+            .matched
             .values()
-            .map(|mounted| mounted.descriptor.mount_root.clone())
+            .map(|matched| matched.authority.descriptor.mount_root.clone())
             .collect::<Vec<_>>();
         canonical_destination_is_separate(destination, &source_roots)
     }
@@ -389,6 +390,10 @@ impl AppState {
             .collect()
     }
 
+    pub fn matched_sources(&self) -> HashMap<SourceId, MatchedSource> {
+        self.runtime.lock().matched.clone()
+    }
+
     pub fn cancel_active_operation(&self) {
         self.cancellation.lock().cancel();
     }
@@ -428,57 +433,61 @@ impl AppState {
         &self,
         app: &AppHandle,
         event: VolumeLifecycleEvent,
-    ) -> Option<Transmitter> {
+    ) -> Option<SourceId> {
         match event {
             VolumeLifecycleEvent::Mounted(mounted) => self.handle_mounted(app, mounted),
             VolumeLifecycleEvent::Unmounted {
                 volume_uuid,
                 mount_generation,
             } => {
-                self.cancellation.lock().cancel();
                 self.proposals
                     .lock()
                     .invalidate(ProposalInvalidation::DeviceDisappeared);
                 let mut runtime = self.runtime.lock();
                 runtime.pairing.remove(&volume_uuid, mount_generation);
                 runtime.observed.remove(&volume_uuid);
-                let removed = runtime
-                    .mounted
+                let removed_source = runtime
+                    .matched
                     .iter()
-                    .find(|(_, mounted)| {
-                        mounted
+                    .find(|(_, matched)| {
+                        matched
+                            .authority
                             .descriptor
                             .volume_uuid
                             .eq_ignore_ascii_case(&volume_uuid)
-                            && mounted.descriptor.mount_generation == mount_generation
+                            && matched.authority.descriptor.mount_generation == mount_generation
                     })
-                    .map(|(transmitter, _)| *transmitter);
-                if let Some(transmitter) = removed {
-                    runtime.mounted.remove(&transmitter);
-                    runtime.verified.remove(&transmitter);
-                    runtime.verified_additional.remove(&transmitter);
-                    runtime.m4a_barrier_runs.remove(&transmitter);
-                    runtime.current_source_paths.remove(&transmitter);
-                    update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                        snapshot.mounted = false;
-                        snapshot.phase = BackupPhase::Idle;
-                        snapshot.deletion_ready = false;
-                        snapshot.deletion_phase = DeletionPhase::Inactive;
-                    });
+                    .map(|(source_id, matched)| (source_id.clone(), matched.clone()));
+                if let Some((source_id, matched)) = &removed_source {
+                    runtime.matched.remove(source_id);
+                    if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
+                        runtime.mounted.remove(&transmitter);
+                        runtime.verified.remove(&transmitter);
+                        runtime.verified_additional.remove(&transmitter);
+                        runtime.m4a_barrier_runs.remove(&transmitter);
+                        runtime.current_source_paths.remove(&transmitter);
+                        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                            snapshot.mounted = false;
+                            snapshot.phase = BackupPhase::Idle;
+                            snapshot.deletion_ready = false;
+                            snapshot.deletion_phase = DeletionPhase::Inactive;
+                        });
+                    }
                 }
                 sync_pairing_snapshot(&mut runtime);
                 publish_locked(app, &mut runtime);
                 drop(runtime);
-                if let Some(transmitter) = removed {
+                if let Some((source_id, matched)) = removed_source {
+                    let transmitter = legacy_transmitter(&matched.authority.source);
                     if let Err(error) = self.record_activity(
                         app,
-                        activity_entry("device_removed", transmitter, ActivitySeverity::Warning),
+                        activity_entry("device_removed", source_id, ActivitySeverity::Warning),
                     ) {
                         self.report_failure(
                             "device_lifecycle",
                             "activity_persistence",
                             &error,
-                            Some(transmitter),
+                            transmitter,
                             None,
                         );
                     }
@@ -489,7 +498,7 @@ impl AppState {
                                 occurred_at: local_now(),
                                 level: AuditLevel::Warning,
                                 code: "device.removed",
-                                transmitter: Some(transmitter),
+                                transmitter,
                                 fields: &fields,
                             },
                             AuditDurability::Buffered,
@@ -499,10 +508,10 @@ impl AppState {
                             "device_lifecycle",
                             "audit_log",
                             &error,
-                            Some(transmitter),
+                            transmitter,
                             None,
                         );
-                        self.set_error(app, error, Some(transmitter));
+                        self.set_error(app, error, transmitter);
                     }
                 }
                 None
@@ -510,58 +519,96 @@ impl AppState {
         }
     }
 
-    fn handle_mounted(&self, app: &AppHandle, mounted: MountedVolume) -> Option<Transmitter> {
-        let mut runtime = self.runtime.lock();
+    fn handle_mounted(&self, app: &AppHandle, mounted: MountedVolume) -> Option<SourceId> {
         let volume_uuid = mounted.descriptor.volume_uuid.clone();
-        runtime.observed.insert(volume_uuid, mounted.clone());
-        let paired = runtime.paired.clone();
-        let result = runtime.pairing.observe(mounted.clone(), &paired);
+        self.runtime
+            .lock()
+            .observed
+            .insert(volume_uuid, mounted.clone());
+        let result = {
+            let mut ledger = self.ledger.lock();
+            let rules = match ledger.backup_rules(false) {
+                Ok(rules) => rules,
+                Err(error) => {
+                    drop(ledger);
+                    self.set_error(app, error, None);
+                    return None;
+                }
+            };
+            match_mounted_volume(
+                &mut ledger,
+                &mounted,
+                &rules,
+                time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
+                &crate::orchestrator::now_string(),
+            )
+        };
+        let mut runtime = self.runtime.lock();
         let mut rejected_error = None;
-        let trusted = match result {
-            DeviceMatch::Trusted(transmitter) => {
-                runtime.mounted.insert(transmitter, mounted);
-                update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                    snapshot.mounted = true;
-                    snapshot.phase = BackupPhase::Detecting;
-                    snapshot.deletion_ready = false;
-                });
+        let matched_source = match result {
+            Ok(RuleVolumeMatch::Matched(matched)) => {
+                let matched = *matched;
+                let source_id = matched.authority.source.id.clone();
+                if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
+                    runtime.mounted.insert(transmitter, mounted);
+                    update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                        snapshot.mounted = true;
+                        snapshot.phase = BackupPhase::Detecting;
+                        snapshot.deletion_ready = false;
+                    });
+                }
+                runtime.matched.insert(source_id.clone(), matched);
                 runtime.snapshot.phase = BackupPhase::Detecting;
                 runtime.snapshot.message_code = "device_detected".to_owned();
-                Some(transmitter)
+                Some(source_id)
             }
-            DeviceMatch::Rejected(error) => {
+            Ok(RuleVolumeMatch::Conflict { .. }) => {
+                let mut error = CoreError::InvalidRule.public(None);
+                error.message_code = "rule_conflict".to_owned();
                 rejected_error = Some(error.clone());
                 runtime.snapshot.phase = BackupPhase::Error;
                 runtime.snapshot.message_code = error.message_code.clone();
                 runtime.snapshot.error = Some(error);
                 None
             }
-            DeviceMatch::UnpairedCandidate | DeviceMatch::Unrelated => None,
+            Ok(RuleVolumeMatch::Rejected(error)) => {
+                rejected_error = Some(error.clone());
+                runtime.snapshot.phase = BackupPhase::Error;
+                runtime.snapshot.message_code = error.message_code.clone();
+                runtime.snapshot.error = Some(error);
+                None
+            }
+            Ok(RuleVolumeMatch::Unrelated) => None,
+            Err(error) => {
+                let public = error.public(None);
+                rejected_error = Some(public.clone());
+                runtime.snapshot.phase = BackupPhase::Error;
+                runtime.snapshot.message_code = public.message_code.clone();
+                runtime.snapshot.error = Some(public);
+                None
+            }
         };
         sync_pairing_snapshot(&mut runtime);
-        let should_schedule = trusted.filter(|_| {
+        let should_schedule = matched_source.clone().filter(|_| {
             runtime.preferences.automatic_backup
-                && backup_requirements_met(
-                    runtime.destination_configured,
-                    runtime.paired.len(),
-                    runtime.mounted.len(),
-                )
+                && backup_requirements_met(runtime.destination_configured, runtime.matched.len())
         });
         publish_locked(app, &mut runtime);
         drop(runtime);
         if let Some(error) = rejected_error {
             self.report_public_failure("device_lifecycle", "identity_validation", &error, None);
         }
-        if let Some(transmitter) = trusted {
+        if let Some(source_id) = matched_source {
+            let transmitter = runtime_legacy_transmitter(self, &source_id);
             if let Err(error) = self.record_activity(
                 app,
-                activity_entry("device_detected", transmitter, ActivitySeverity::Info),
+                activity_entry("device_detected", source_id.clone(), ActivitySeverity::Info),
             ) {
                 self.report_failure(
                     "device_lifecycle",
                     "activity_persistence",
                     &error,
-                    Some(transmitter),
+                    transmitter,
                     None,
                 );
             }
@@ -571,20 +618,14 @@ impl AppState {
                         occurred_at: local_now(),
                         level: AuditLevel::Info,
                         code: "device.detected",
-                        transmitter: Some(transmitter),
+                        transmitter,
                         fields: &[],
                     },
                     AuditDurability::Buffered,
                 )
             {
-                self.report_failure(
-                    "device_lifecycle",
-                    "audit_log",
-                    &error,
-                    Some(transmitter),
-                    None,
-                );
-                self.set_error(app, error, Some(transmitter));
+                self.report_failure("device_lifecycle", "audit_log", &error, transmitter, None);
+                self.set_error(app, error, transmitter);
             }
         }
         should_schedule
@@ -604,6 +645,15 @@ impl AppState {
         };
         let mut mounted_transmitters = Vec::new();
         for device in &paired {
+            let dji_rule = self.ledger.lock().dji_rule()?;
+            let source = SourceRecord {
+                id: legacy_source_id(device.transmitter),
+                rule_id: dji_rule.id,
+                volume_uuid: device.expected_uuid.clone(),
+                legacy_slot: Some(transmitter_name(device.transmitter).to_owned()),
+                display_name: format!("DJI Mic Mini 2S ({})", transmitter_name(device.transmitter)),
+            };
+            self.ledger.lock().upsert_source(&source, paired_at)?;
             if let Some(mounted) = runtime
                 .observed
                 .values()
@@ -646,11 +696,7 @@ impl AppState {
             snapshot.deletion_ready = false;
             snapshot.deletion_phase = DeletionPhase::Inactive;
         }
-        runtime.snapshot.setup_state = if runtime.paired.len() == 2 {
-            SetupStateDto::Ready
-        } else {
-            SetupStateDto::NeedsPairing
-        };
+        runtime.snapshot.setup_state = SetupStateDto::Ready;
         publish_locked(app, &mut runtime);
     }
 
@@ -814,19 +860,13 @@ fn sync_pairing_snapshot(runtime: &mut RuntimeState) {
     runtime.snapshot.pairing_candidates = runtime.pairing.summaries();
     runtime.snapshot.setup_state = if !runtime.destination_configured {
         SetupStateDto::NeedsDestination
-    } else if runtime.paired.len() == 2 {
-        SetupStateDto::Ready
     } else {
-        SetupStateDto::NeedsPairing
+        SetupStateDto::Ready
     };
 }
 
-fn backup_requirements_met(
-    destination_configured: bool,
-    paired_devices: usize,
-    mounted_devices: usize,
-) -> bool {
-    destination_configured && paired_devices == 2 && mounted_devices > 0
+fn backup_requirements_met(destination_configured: bool, mounted_devices: usize) -> bool {
+    destination_configured && mounted_devices > 0
 }
 
 fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
@@ -840,20 +880,48 @@ fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
     }
 }
 
-fn activity_entry(
-    code: &str,
-    transmitter: Transmitter,
-    severity: ActivitySeverity,
-) -> ActivityEntry {
+fn activity_entry(code: &str, source_id: SourceId, severity: ActivitySeverity) -> ActivityEntry {
     ActivityEntry {
         occurred_at: time::OffsetDateTime::now_utc()
             .format(&time::format_description::well_known::Rfc3339)
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
         code: code.to_owned(),
-        transmitter: Some(transmitter),
+        source_id: Some(source_id),
         count_value: None,
         byte_value: None,
         severity,
+    }
+}
+
+fn legacy_transmitter(source: &SourceRecord) -> Option<Transmitter> {
+    match source.legacy_slot.as_deref() {
+        Some("TX01") => Some(Transmitter::Tx01),
+        Some("TX02") => Some(Transmitter::Tx02),
+        _ => None,
+    }
+}
+
+fn runtime_legacy_transmitter(state: &AppState, source_id: &SourceId) -> Option<Transmitter> {
+    state
+        .runtime
+        .lock()
+        .matched
+        .get(source_id)
+        .and_then(|matched| legacy_transmitter(&matched.authority.source))
+}
+
+fn legacy_source_id(transmitter: Transmitter) -> SourceId {
+    SourceId::parse(match transmitter {
+        Transmitter::Tx01 => LEGACY_TX01_SOURCE_ID,
+        Transmitter::Tx02 => LEGACY_TX02_SOURCE_ID,
+    })
+    .expect("legacy source IDs are canonical UUID literals")
+}
+
+fn transmitter_name(transmitter: Transmitter) -> &'static str {
+    match transmitter {
+        Transmitter::Tx01 => "TX01",
+        Transmitter::Tx02 => "TX02",
     }
 }
 
@@ -918,11 +986,10 @@ mod tests {
 
     #[test]
     fn automatic_backup_waits_for_every_setup_requirement() {
-        assert!(!backup_requirements_met(false, 2, 2));
-        assert!(!backup_requirements_met(true, 1, 1));
-        assert!(!backup_requirements_met(true, 2, 0));
-        assert!(backup_requirements_met(true, 2, 1));
-        assert!(backup_requirements_met(true, 2, 2));
+        assert!(!backup_requirements_met(false, 2));
+        assert!(!backup_requirements_met(true, 0));
+        assert!(backup_requirements_met(true, 1));
+        assert!(backup_requirements_met(true, 2));
     }
 
     #[test]

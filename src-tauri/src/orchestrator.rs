@@ -30,7 +30,11 @@ use backup_core::{
     events::{ActivityEntry, ActivitySeverity},
     hash::hash_file,
     layout::flatten_verified_recording_layout,
-    scanner::{ScanIssue, ScanResult, metadata_fingerprint, scan_stable},
+    ledger::Ledger,
+    rule::compile_rule,
+    rule_scanner::scan_rule_once,
+    scanner::{ScanIssue, ScanResult, scan_stable},
+    source::SourceId,
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
 };
 use tauri::AppHandle;
@@ -49,12 +53,14 @@ use crate::{
         macos::{DiskArbitrationMonitor, audio::AppleAudioTools, trash::MacTrash},
     },
     rescan::{RescanDecision, RescanScheduler},
+    rule_runtime::MatchedSource,
 };
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(15);
 
 struct PreparedTransmitter {
     transmitter: Transmitter,
+    source_id: SourceId,
     source_root: std::path::PathBuf,
     scan: ScanResult,
     plans: Vec<DestinationPlan>,
@@ -104,48 +110,44 @@ impl DeviceOrchestrator {
                         }
                     }
                     let now = Instant::now();
-                    let mounted_roots = state.mounted_roots();
-                    for transmitter in [Transmitter::Tx01, Transmitter::Tx02] {
-                        if !mounted_roots.contains_key(&transmitter)
-                            && scheduler.is_mounted(transmitter)
-                        {
-                            scheduler.unmount(transmitter);
+                    let matched_sources = state.matched_sources();
+                    for source_id in scheduler.mounted_sources() {
+                        if !matched_sources.contains_key(&source_id) {
+                            scheduler.unmount(&source_id);
                         }
                     }
                     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-                    for (transmitter, root) in &mounted_roots {
-                        if !scheduler.is_mounted(*transmitter) {
-                            match metadata_fingerprint(root, *transmitter, local_offset) {
-                                Ok(fingerprint) => {
-                                    scheduler.mount(*transmitter, fingerprint, now);
-                                }
-                                Err(error) => {
-                                    state.report_failure(
-                                        "device_lifecycle",
-                                        "initial_metadata_scan",
-                                        &error,
-                                        Some(*transmitter),
-                                        None,
-                                    );
-                                    state.set_error(&app, error, Some(*transmitter));
-                                }
-                            }
+                    for (source_id, matched) in &matched_sources {
+                        if !scheduler.is_mounted(source_id) {
+                            scheduler.mount(
+                                source_id.clone(),
+                                matched.initial_fingerprint.clone(),
+                                now,
+                            );
                         }
                     }
-                    for transmitter in scheduler.due_transmitters(now) {
+                    for source_id in scheduler.due_sources(now) {
                         if !state.automatic_backup_enabled() {
-                            scheduler.defer(transmitter, now);
+                            scheduler.defer(&source_id, now);
                             continue;
                         }
-                        let Some(root) = mounted_roots.get(&transmitter) else {
-                            scheduler.unmount(transmitter);
+                        let Some(matched) = matched_sources.get(&source_id) else {
+                            scheduler.unmount(&source_id);
                             continue;
                         };
-                        match metadata_fingerprint(root, transmitter, local_offset) {
+                        let fingerprint = compile_rule(matched.rule.clone()).and_then(|rule| {
+                            scan_rule_once(
+                                &matched.authority.descriptor.mount_root,
+                                &rule,
+                                local_offset,
+                            )
+                            .map(|scan| scan.fingerprint)
+                        });
+                        match fingerprint {
                             Ok(fingerprint) => {
                                 if matches!(
                                     scheduler.observe(
-                                        transmitter,
+                                        source_id.clone(),
                                         fingerprint,
                                         now,
                                         state.operation_is_active(),
@@ -156,19 +158,20 @@ impl DeviceOrchestrator {
                                 }
                             }
                             Err(error) => {
-                                scheduler.defer(transmitter, now);
+                                scheduler.defer(&source_id, now);
+                                let transmitter = matched_legacy_transmitter(matched);
                                 state.report_failure(
                                     "automatic_rescan",
                                     "metadata_scan",
                                     &error,
-                                    Some(transmitter),
+                                    transmitter,
                                     None,
                                 );
-                                state.set_error(&app, error, Some(transmitter));
+                                state.set_error(&app, error, transmitter);
                             }
                         }
                     }
-                    if mounted_roots.is_empty() {
+                    if matched_sources.is_empty() {
                         backup_pending = false;
                     }
                     if backup_pending {
@@ -289,6 +292,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     let mut last_error: Option<PublicError> = None;
     for (transmitter, mounted) in mounted {
         guard.cancellation.check()?;
+        let source_id = legacy_source_id_for_transmitter(&state.ledger.lock(), transmitter)?;
         state.append_audit(
             &AuditEvent {
                 occurred_at: audit_now(),
@@ -377,7 +381,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             let ledger = state.ledger.lock();
             for plan in &mut plans {
                 let Some(existing) = ledger.verified_recording_for_source(
-                    transmitter,
+                    &source_id,
                     &plan.source.relative_path,
                     plan.source.size,
                     plan.source.modified_nanos,
@@ -435,6 +439,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             .ok_or(CoreError::InvalidRequest)?;
         prepared.push(PreparedTransmitter {
             transmitter,
+            source_id,
             source_root: mounted.descriptor.mount_root,
             scan,
             plans,
@@ -478,10 +483,21 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
 
     let run_id = Uuid::new_v4().to_string();
     let started_at = now_string();
+    let run_source_id = prepared
+        .first()
+        .map(|prepared| prepared.source_id.clone())
+        .ok_or(CoreError::DeviceRemoved)?;
+    if prepared
+        .iter()
+        .any(|prepared| prepared.source_id != run_source_id)
+    {
+        return Err(CoreError::InvalidRequest);
+    }
     {
         let mut ledger = state.ledger.lock();
         ledger.begin_batch_run(
             &run_id,
+            &run_source_id,
             &started_at,
             required_copy_bytes,
             frozen_preferences,
@@ -495,7 +511,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 .plans
                 .iter()
                 .map(|plan| BatchItemKey::Recording {
-                    transmitter: prepared.transmitter,
+                    source_id: prepared.source_id.clone(),
                     relative_path: plan.source.relative_path.clone(),
                 })
                 .chain(
@@ -503,7 +519,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         .additional_plans
                         .iter()
                         .map(|plan| BatchItemKey::Additional {
-                            transmitter: prepared.transmitter,
+                            source_id: prepared.source_id.clone(),
                             relative_path: plan.source.relative_path.clone(),
                         }),
                 )
@@ -526,6 +542,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 &BackupItemContext {
                     source_root: &prepared_tx.source_root,
                     destination_root: &destination,
+                    source_id: &prepared_tx.source_id,
                     transmitter: prepared_tx.transmitter,
                     backup_run_id: &run_id,
                     verified_at: &now_string(),
@@ -539,7 +556,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                     let additional_file_id =
                         state.ledger.lock().commit_verified_additional_file(&file)?;
                     copy_barrier.record_verified(&BatchItemKey::Additional {
-                        transmitter: prepared_tx.transmitter,
+                        source_id: prepared_tx.source_id.clone(),
                         relative_path: plan.source.relative_path.clone(),
                     })?;
                     let source = file
@@ -579,7 +596,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 }
                 Ok(_) => {
                     copy_barrier.record_failed(&BatchItemKey::Additional {
-                        transmitter: prepared_tx.transmitter,
+                        source_id: prepared_tx.source_id.clone(),
                         relative_path: plan.source.relative_path.clone(),
                     })?;
                     let error = CoreError::HashMismatch;
@@ -596,7 +613,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 }
                 Err(error) => {
                     copy_barrier.record_failed(&BatchItemKey::Additional {
-                        transmitter: prepared_tx.transmitter,
+                        source_id: prepared_tx.source_id.clone(),
                         relative_path: plan.source.relative_path.clone(),
                     })?;
                     state.report_failure(
@@ -674,6 +691,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                     &BackupItemContext {
                         source_root: &prepared_tx.source_root,
                         destination_root: &destination,
+                        source_id: &prepared_tx.source_id,
                         transmitter: prepared_tx.transmitter,
                         backup_run_id: &run_id,
                         verified_at: &now_string(),
@@ -708,7 +726,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         observer(progress, CurrentStage::Sha256Verification);
                     }
                     copy_barrier.record_verified(&BatchItemKey::Recording {
-                        transmitter: prepared_tx.transmitter,
+                        source_id: prepared_tx.source_id.clone(),
                         relative_path: plan.source.relative_path.clone(),
                     })?;
                     let artifact = recording.artifact;
@@ -785,7 +803,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 }
                 Err(error) => {
                     copy_barrier.record_failed(&BatchItemKey::Recording {
-                        transmitter: prepared_tx.transmitter,
+                        source_id: prepared_tx.source_id.clone(),
                         relative_path: plan.source.relative_path.clone(),
                     })?;
                     state.report_failure(
@@ -869,7 +887,8 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 .begin_conversion_cohort(&run_id, &recording_ids, M4A_PROFILE_ID)?;
         }
         'conversion: for mut recording in conversion_cohort {
-            let transmitter = recording.transmitter;
+            let transmitter =
+                legacy_transmitter_for_source(&state.ledger.lock(), &recording.source_id)?;
             if recording.artifact.format == OutputFormat::M4a {
                 state
                     .ledger
@@ -989,6 +1008,8 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             }
             let pending_superseded = state.ledger.lock().pending_superseded_wavs()?;
             for superseded in pending_superseded {
+                let transmitter =
+                    legacy_transmitter_for_source(&state.ledger.lock(), &superseded.source_id)?;
                 let path = destination.join(&superseded.relative_path);
                 let metadata = match std::fs::symlink_metadata(&path) {
                     Ok(metadata) => metadata,
@@ -1007,10 +1028,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                             "artifact_migration",
                             "superseded_wav_revalidation",
                             &error,
-                            Some(superseded.transmitter),
+                            Some(transmitter),
                             superseded.relative_path.to_str(),
                         );
-                        last_error = Some(error.public(Some(superseded.transmitter)));
+                        last_error = Some(error.public(Some(transmitter)));
                         for prepared_tx in &prepared {
                             failed_transmitters.insert(prepared_tx.transmitter);
                         }
@@ -1023,10 +1044,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         "artifact_migration",
                         "superseded_wav_revalidation",
                         &error,
-                        Some(superseded.transmitter),
+                        Some(transmitter),
                         superseded.relative_path.to_str(),
                     );
-                    last_error = Some(error.public(Some(superseded.transmitter)));
+                    last_error = Some(error.public(Some(transmitter)));
                     for prepared_tx in &prepared {
                         failed_transmitters.insert(prepared_tx.transmitter);
                     }
@@ -1039,10 +1060,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         "artifact_migration",
                         "superseded_wav_revalidation",
                         &error,
-                        Some(superseded.transmitter),
+                        Some(transmitter),
                         superseded.relative_path.to_str(),
                     );
-                    last_error = Some(error.public(Some(superseded.transmitter)));
+                    last_error = Some(error.public(Some(transmitter)));
                     for prepared_tx in &prepared {
                         failed_transmitters.insert(prepared_tx.transmitter);
                     }
@@ -1053,10 +1074,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                         "artifact_migration",
                         "trash",
                         &error,
-                        Some(superseded.transmitter),
+                        Some(transmitter),
                         superseded.relative_path.to_str(),
                     );
-                    last_error = Some(error.public(Some(superseded.transmitter)));
+                    last_error = Some(error.public(Some(transmitter)));
                     for prepared_tx in &prepared {
                         failed_transmitters.insert(prepared_tx.transmitter);
                     }
@@ -1144,6 +1165,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             .mounted
             .get(&prepared_tx.transmitter)
             .map(|mounted| DeletionContext {
+                source_id: prepared_tx.source_id.clone(),
                 transmitter: prepared_tx.transmitter,
                 paired_volume_uuid: mounted.descriptor.volume_uuid.clone(),
                 mount_generation: mounted.descriptor.mount_generation,
@@ -1254,7 +1276,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         ActivityEntry {
             occurred_at: finished_at,
             code: activity_code.to_owned(),
-            transmitter: None,
+            source_id: None,
             count_value: Some(total_files),
             byte_value: Some(required_copy_bytes),
             severity,
@@ -1294,7 +1316,7 @@ fn reconcile_legacy_sessions(
     if state
         .ledger
         .lock()
-        .legacy_retired_recordings(context.transmitter)?
+        .legacy_retired_recordings(&context.source_id)?
         .is_empty()
     {
         return Ok(());
@@ -1335,7 +1357,7 @@ fn reconcile_legacy_sessions(
         ActivityEntry {
             occurred_at: moved_at,
             code: "legacy_session_moved_to_trash".to_owned(),
-            transmitter: Some(context.transmitter),
+            source_id: Some(context.source_id.clone()),
             count_value: Some(moved),
             byte_value: None,
             severity: ActivitySeverity::Success,
@@ -1459,7 +1481,7 @@ fn retire_automatically(
                 "automatic_trash_partial"
             }
             .to_owned(),
-            transmitter: Some(transmitter),
+            source_id: Some(snapshot.context.source_id.clone()),
             count_value: Some(report.deleted_files),
             byte_value: Some(report.deleted_bytes),
             severity: if report.outcome == DeletionOutcome::Deleted {
@@ -1538,6 +1560,7 @@ pub fn prepare_trash(
         *generation
     };
     let context = DeletionContext {
+        source_id: legacy_source_id_for_transmitter(&state.ledger.lock(), transmitter)?,
         transmitter,
         paired_volume_uuid: mounted.descriptor.volume_uuid,
         mount_generation: mounted.descriptor.mount_generation,
@@ -1618,6 +1641,7 @@ pub fn confirm_trash(
             .cloned()
             .ok_or(CoreError::DeviceRemoved)?;
         let context = DeletionContext {
+            source_id: legacy_source_id_for_transmitter(&state.ledger.lock(), transmitter)?,
             transmitter,
             paired_volume_uuid: mounted.descriptor.volume_uuid,
             mount_generation: mounted.descriptor.mount_generation,
@@ -1697,7 +1721,7 @@ pub fn confirm_trash(
                 DeletionOutcome::PartiallyDeleted => "partial_trash",
             }
             .to_owned(),
-            transmitter: Some(context.transmitter),
+            source_id: Some(context.source_id.clone()),
             count_value: Some(report.deleted_files),
             byte_value: Some(report.deleted_bytes),
             severity: match report.outcome {
@@ -1840,6 +1864,41 @@ fn resolve_live_source(
         return Err(CoreError::SourceChanged);
     }
     Ok(canonical)
+}
+
+fn legacy_source_id_for_transmitter(
+    ledger: &Ledger,
+    transmitter: Transmitter,
+) -> Result<SourceId, CoreError> {
+    let slot = match transmitter {
+        Transmitter::Tx01 => "TX01",
+        Transmitter::Tx02 => "TX02",
+    };
+    ledger
+        .sources_for_rule(&ledger.dji_rule()?.id)?
+        .into_iter()
+        .find(|source| source.legacy_slot.as_deref() == Some(slot))
+        .map(|source| source.id)
+        .ok_or(CoreError::IdentityMismatch)
+}
+
+fn legacy_transmitter_for_source(
+    ledger: &Ledger,
+    source_id: &SourceId,
+) -> Result<Transmitter, CoreError> {
+    match ledger.source(source_id)?.legacy_slot.as_deref() {
+        Some("TX01") => Ok(Transmitter::Tx01),
+        Some("TX02") => Ok(Transmitter::Tx02),
+        _ => Err(CoreError::IdentityMismatch),
+    }
+}
+
+fn matched_legacy_transmitter(matched: &MatchedSource) -> Option<Transmitter> {
+    match matched.authority.source.legacy_slot.as_deref() {
+        Some("TX01") => Some(Transmitter::Tx01),
+        Some("TX02") => Some(Transmitter::Tx02),
+        _ => None,
+    }
 }
 
 pub(crate) fn now_string() -> String {
