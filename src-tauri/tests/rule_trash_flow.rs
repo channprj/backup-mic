@@ -20,7 +20,7 @@ use backup_core::{
     rule_scanner::scan_rule_once,
     source::{MountedSourceAuthority, SourceId, SourceRecord},
 };
-use dji_mic_backup_lib::{
+use backup_mic_lib::{
     app_state::AppState,
     orchestrator::{
         NoSourceCopyFaults, confirm_rule_trash_with_adapter, prepare_rule_trash,

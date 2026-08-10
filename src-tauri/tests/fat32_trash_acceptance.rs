@@ -17,7 +17,7 @@ use backup_core::{
     rule::BackupRuleDraft,
     source::{MountedSourceAuthority, SourceId, SourceRecord},
 };
-use dji_mic_backup_lib::platform::macos::{
+use backup_mic_lib::platform::macos::{
     audio::{AppleAudioTools, AudioTools},
     trash::MacTrash,
 };

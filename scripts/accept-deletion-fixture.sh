@@ -54,7 +54,7 @@ DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
   --test fat32_deletion_acceptance -- --ignored --exact \
   moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume
 DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
-  cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
+  cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic \
   --test fat32_trash_acceptance -- --ignored --exact \
   foundation_moves_only_the_requested_generic_session_on_the_isolated_fat32_fixture
 

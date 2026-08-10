@@ -1,7 +1,7 @@
 use std::{fs, path::PathBuf};
 
-use dji_mic_backup_lib::commands::REGISTERED_COMMANDS;
-use dji_mic_backup_lib::dto::{AppSnapshotDto, TrashProposalSummaryDto};
+use backup_mic_lib::commands::REGISTERED_COMMANDS;
+use backup_mic_lib::dto::{AppSnapshotDto, TrashProposalSummaryDto};
 use serde_json::Value;
 
 fn fixture_path(name: &str) -> PathBuf {

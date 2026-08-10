@@ -88,7 +88,7 @@ pub(crate) async fn choose_destination_for_state(
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
         .file()
-        .set_title("DJI Mic Backup 폴더 선택")
+        .set_title("Backup Mic 폴더 선택")
         .set_directory(state.destination())
         .pick_folder(move |selection| {
             let _ = sender.send(selection);
@@ -749,7 +749,7 @@ mod tests {
     #[test]
     fn valid_persisted_destination_skips_first_run_confirmation() {
         let fallback = PathBuf::from("/tmp/fallback");
-        let selected = PathBuf::from("/Users/example/Backups/DJI-Mic-Mini-2S");
+        let selected = PathBuf::from("/Users/example/Backups/Backup Mic");
         let persisted = serde_json::to_string(&selected.to_string_lossy()).unwrap();
 
         assert_eq!(
@@ -760,7 +760,7 @@ mod tests {
 
     #[test]
     fn external_volume_subdirectory_is_allowed_but_volume_roots_are_not() {
-        let fallback = PathBuf::from("/Users/example/Documents/DJI-Mic-Mini-2S");
+        let fallback = PathBuf::from("/Users/example/Documents/Backup Mic");
         let persisted = serde_json::to_string("/Volumes/External/Backups").unwrap();
         assert_eq!(
             persisted_destination(Some(persisted), fallback),

@@ -1,12 +1,12 @@
-use std::fs;
+use std::{fs, path::PathBuf};
 
 use backup_core::state::Transmitter;
 use backup_core::{
     error::{CoreError, PublicError, PublicErrorCode},
     ledger::Ledger,
 };
-use dji_mic_backup_lib::app_state::AppState;
-use dji_mic_backup_lib::failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome};
+use backup_mic_lib::app_state::AppState;
+use backup_mic_lib::failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome};
 use tempfile::tempdir;
 use time::macros::datetime;
 
@@ -20,6 +20,12 @@ fn setting_failure() -> FailureEvent {
         os_kind: Some("permission_denied".to_owned()),
         retryable: true,
     }
+}
+
+fn only_daily_log(root: PathBuf) -> PathBuf {
+    let year = fs::read_dir(root).unwrap().next().unwrap().unwrap().path();
+    let month = fs::read_dir(year).unwrap().next().unwrap().unwrap().path();
+    fs::read_dir(month).unwrap().next().unwrap().unwrap().path()
 }
 
 #[test]
@@ -58,7 +64,7 @@ fn failure_reporter_uses_a_privacy_safe_fallback_when_primary_is_unavailable() {
     );
 
     assert_eq!(outcome, FailureWriteOutcome::Fallback);
-    let output = fs::read_to_string(fallback.path().join("2026/08/260810-backup-mic.log")).unwrap();
+    let output = fs::read_to_string(only_daily_log(fallback.path().to_path_buf())).unwrap();
     assert!(output.contains("operation=\"set_m4a_conversion\""));
     assert!(output.contains("stage=\"setting_persistence\""));
     assert!(output.contains("error_code=\"ledger_operation_failed\""));
@@ -98,7 +104,7 @@ fn app_state_reports_a_sanitized_failure_when_the_destination_log_is_unavailable
     );
 
     assert_eq!(outcome, FailureWriteOutcome::Fallback);
-    let output = fs::read_to_string(fallback.path().join("2026/08/260810-backup-mic.log")).unwrap();
+    let output = fs::read_to_string(only_daily_log(fallback.path().to_path_buf())).unwrap();
     assert!(output.contains("item=\"private.wav\""));
     assert!(output.contains("error_code=\"copy_failed\""));
     assert!(!output.contains("/Volumes/"));
@@ -130,12 +136,7 @@ fn app_state_reports_adapter_failures_with_the_public_support_code() {
     let outcome = state.report_public_failure("set_autostart", "adapter", &error, None);
 
     assert_eq!(outcome, FailureWriteOutcome::Primary);
-    let output = fs::read_to_string(
-        destination
-            .path()
-            .join("logs/2026/08/260810-backup-mic.log"),
-    )
-    .unwrap();
+    let output = fs::read_to_string(only_daily_log(destination.path().join("logs"))).unwrap();
     assert!(output.contains("operation=\"set_autostart\""));
     assert!(output.contains("error_code=\"autostart_failed\""));
 }

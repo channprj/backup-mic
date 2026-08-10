@@ -1,10 +1,10 @@
-# DJI Mic Backup
+# Backup Mic
 
-DJI Mic Mini 2S 케이스를 USB-C로 연결하면 두 송신기의 녹음을 로컬 폴더에 자동 백업하는 macOS 메뉴 막대 앱입니다. 원본 WAV를 먼저 복사하고 SHA-256으로 검증한 뒤, 기본 설정에서는 AAC-LC M4A를 만들어 다시 검사합니다. 검증된 원본을 정리할 때도 영구 삭제하지 않고 macOS 휴지통으로 이동합니다.
+이동식 녹음기를 연결하면 사용자가 입력한 glob 규칙에 맞는 녹음을 로컬 폴더에 자동 백업하는 macOS 메뉴 막대 앱입니다. DJI Mic Mini 2S 규칙은 처음부터 등록되어 있습니다. 원본 WAV를 먼저 복사하고 SHA-256으로 검증한 뒤, 기본 설정에서는 AAC-LC M4A를 만들어 다시 검사합니다. 검증된 원본을 정리할 때도 영구 삭제하지 않고 macOS 휴지통으로 이동합니다.
 
 ## 기본 동작
 
-- TX01과 TX02를 볼륨 이름이나 마운트 경로가 아닌 페어링된 장치 UUID와 물리 속성으로 식별합니다.
+- 볼륨 이름, 필수 경로와 백업 파일 glob으로 녹음기를 찾고, DJI 프리셋은 장치 UUID와 물리 속성 검증을 추가로 적용합니다.
 - 자동 백업과 M4A 변환은 기본으로 켜져 있고, `백업 후 휴지통으로 이동`은 기본으로 꺼져 있습니다.
 - 연결된 녹음과 같은 세션의 외부 M4A, AppleDouble(`._…`) 및 기타 일반 파일이 2초 동안 변하지 않았는지 확인한 뒤 처리합니다.
 - 장치가 계속 연결되어 있어도 15초마다 파일 메타데이터를 확인하므로 새 녹음을 감지합니다. 변경이 없으면 백업 작업이나 로그를 만들지 않습니다.
@@ -15,7 +15,7 @@ DJI Mic Mini 2S 케이스를 USB-C로 연결하면 두 송신기의 녹음을 �
 - 같은 녹음을 다시 연결하면 ledger와 파일을 재검증하며 중복 복사본을 만들지 않습니다.
 - 네트워크 통신, 클라우드 업로드, 분석 도구, 전사 기능은 없습니다.
 
-기본 백업 위치는 `/Users/channprj/Documents/DJI-Mic-Mini-2S`입니다. 날짜별 작업 기록은 다음 위치에 UTF-8 텍스트로 계속 추가됩니다.
+새 설치의 기본 백업 위치는 `/Users/channprj/Documents/Backup Mic`입니다. 기존 설치는 SQLite에 저장된 백업 위치를 그대로 사용합니다. 날짜별 작업 기록은 다음 위치에 UTF-8 텍스트로 계속 추가됩니다.
 
 ```text
 <백업 위치>/logs/YYYY/MM/YYMMDD-backup-mic.log
@@ -26,7 +26,7 @@ DJI Mic Mini 2S 케이스를 USB-C로 연결하면 두 송신기의 녹음을 �
 백업 위치의 로그를 만들 수 없는 시작·설정·목적지 오류는 다음 사용자 로그 폴더에 같은 개인정보 보호 형식으로 기록됩니다.
 
 ```text
-~/Library/Logs/com.channprj.DJIMicBackup/YYYY/MM/YYMMDD-backup-mic.log
+~/Library/Logs/com.channprj.BackupMic/YYYY/MM/YYMMDD-backup-mic.log
 ```
 
 ## 빌드와 로컬 설치
@@ -40,8 +40,8 @@ headatever init 0 --dry-run
 # package.json, Cargo.toml, tauri.conf.json 등의 버전을 미리 맞춘 뒤
 headatever init 0 --push
 ./scripts/package-local.sh "$(tr -d '\r\n' < VERSION)"
-./scripts/install-local.sh "src-tauri/target/release/bundle/macos/DJI Mic Backup.app" "$(tr -d '\r\n' < VERSION)"
-open -a "/Users/channprj/Applications/DJI Mic Backup.app"
+./scripts/install-local.sh "src-tauri/target/release/bundle/macos/Backup Mic.app" "$(tr -d '\r\n' < VERSION)"
+open -a "/Users/channprj/Applications/Backup Mic.app"
 ```
 
 `VERSION`은 직접 만들거나 수정하지 않고 Headatever가 생성합니다. Headatever 릴리스 커밋과 annotated tag를 먼저 일반 push한 뒤에만 패키징합니다. 패키징 스크립트는 앱과 DMG의 번들 식별자, `CFBundleShortVersionString`, 최소 macOS 버전, arm64 아키텍처, deep strict 코드 서명, DMG와 SHA-256을 검사합니다.
@@ -51,13 +51,12 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 ## 처음 사용과 설정
 
 1. 앱을 처음 열면 나타나는 macOS 폴더 선택 창에서 기본 백업 폴더를 확인하거나 다른 로컬 폴더를 선택합니다.
-2. DJI Mic 케이스에 두 송신기를 넣고 USB-C로 Mac에 연결합니다.
-3. 메뉴 막대의 DJI Mic Backup 아이콘을 누릅니다.
-4. 표시된 두 저장 장치를 TX01과 TX02에 지정하고 `이 송신기로 연결`을 누릅니다.
-5. 첫 백업이 끝날 때까지 케이스를 분리하지 않습니다.
-6. `백업 검증 완료`와 녹음 수·용량·완료 시간이 표시되는지 확인합니다.
+2. DJI Mic Mini 2S 또는 설정에 규칙을 추가한 녹음기를 Mac에 연결합니다.
+3. 메뉴 막대의 Backup Mic 아이콘을 누릅니다.
+4. 첫 백업이 끝날 때까지 녹음기를 분리하지 않습니다.
+5. `백업 검증 완료`와 녹음 수·용량·완료 시간이 표시되는지 확인합니다.
 
-`설정…` 창에서 백업 위치, 자동 백업, `WAV 백업 후 M4A로 변환`, 백업 후 휴지통 이동, 로그인할 때 시작을 바꿀 수 있습니다. 설정은 Rust가 SQLite에 저장하고 다시 읽은 뒤에만 UI에 확정됩니다. 백업 중 저장한 설정은 현재 실행을 바꾸지 않고 `다음 백업부터 적용됩니다`. 실패 카드의 안전한 오류 코드와 `로그 열기`로 원인 기록을 바로 확인할 수 있습니다.
+`설정…` 창에서 녹음기 규칙과 파일명 프리픽스·서픽스, 백업 위치, 자동 백업, `WAV 백업 후 M4A로 변환`, 백업 후 휴지통 이동, 로그인할 때 시작을 바꿀 수 있습니다. 설정은 Rust가 SQLite에 저장하고 다시 읽은 뒤에만 UI에 확정됩니다. 백업 중 저장한 설정은 현재 실행을 바꾸지 않고 `다음 백업부터 적용됩니다`. 실패 카드의 안전한 오류 코드와 `로그 열기`로 원인 기록을 바로 확인할 수 있습니다.
 
 ## 원본을 휴지통으로 이동
 
@@ -72,7 +71,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 
 `TX_MIC001_20260809_021747`처럼 인식된 세션 폴더의 WAV, 외부 M4A, AppleDouble 및 기타 일반 파일은 각각 백업·검증 증거를 가져야 합니다. 조건을 만족하면 개별 파일이 아니라 폴더 전체를 한 항목으로 외장 볼륨의 macOS 휴지통에 이동하므로 빈 원본 폴더를 남기지 않고 폴더 구조까지 복구할 수 있습니다. 백업 후 새로 생기거나 바뀐 파일, 하위 폴더, 심볼릭 링크가 하나라도 있으면 세션 전체를 그대로 두고 거부합니다. 세션 밖의 검증된 루트 WAV는 파일별로 휴지통에 이동합니다.
 
-자동 정리를 켜면 TX01과 TX02가 서로 독립적으로 처리됩니다. 한 송신기의 전체 snapshot이 끝났더라도 다른 송신기의 실패 상태를 덮어쓰지 않습니다. 앱은 Finder, AppleScript, 셸, `rm` 또는 `.Trashes` 직접 조작 없이 Foundation의 macOS Trash API만 사용하며 휴지통을 비우지 않습니다.
+자동 정리를 켜면 각 녹음기가 서로 독립적으로 처리됩니다. 한 녹음기의 전체 snapshot이 끝났더라도 다른 녹음기의 실패 상태를 덮어쓰지 않습니다. 앱은 Finder, AppleScript, 셸, `rm` 또는 `.Trashes` 직접 조작 없이 Foundation의 macOS Trash API만 사용하며 휴지통을 비우지 않습니다.
 
 기존 버전이 WAV를 영구 정리한 뒤 남긴 빈 세션 폴더는 이름이 정확하고, 현재도 완전히 비어 있고, 같은 폴더 아래의 녹음이 정리됐다는 ledger 증거가 있으며, 페어링된 장치가 일치할 때만 휴지통으로 이동합니다. 비슷하게 생긴 빈 폴더만으로는 정리 권한이 생기지 않습니다.
 
@@ -95,7 +94,7 @@ open -a "/Users/channprj/Applications/DJI Mic Backup.app"
 
 ```bash
 ./scripts/verify-backup.sh \
-  /Users/channprj/Documents/DJI-Mic-Mini-2S \
+  "/Users/channprj/Documents/Backup Mic" \
   "TX01=/Volumes/DJI-MIC-1" \
   "TX02=/Volumes/DJI-MIC-2"
 ```
@@ -115,9 +114,9 @@ pnpm tauri dev
 
 `accept-deletion-fixture.sh`는 새 64 MiB MS-DOS FAT32 이미지를 정확히 `/Volumes/DJI-DELTEST`로 마운트하고 sentinel을 기록한 뒤에만 실행됩니다. 테스트는 두 PCM WAV, 외부 M4A, 명시적·FAT32 생성 AppleDouble을 모두 백업한 상태에서 한 `TX_MIC…` 세션이 source 위치에서 사라지고 복구 가능 Trash에 폴더 전체로 존재하는지 확인합니다. 생산 Apple 도구로 FAT32 위에서 128kbps M4A를 만들고 검사하며, raw 추가 파일과 destination이 유지되고 ledger 증거가 있는 빈 세션 폴더도 휴지통으로 이동하는지 증명합니다. 이미 같은 이름의 마운트가 있으면 실행을 거부하고, 연결된 `DJI-MIC-1/2`는 대상으로 허용하지 않습니다.
 
-브라우저에서 네이티브 IPC 없이 UI 상태만 확인하려면 `pnpm dev` 실행 후 `preview.html?state=copying`, `complete`, `error`, `pairing`을 엽니다.
+브라우저에서 네이티브 IPC 없이 UI 상태만 확인하려면 `pnpm dev` 실행 후 `preview.html?state=copying`, `complete`, `error`, `rules`를 엽니다.
 
-안전 핵심은 `src-tauri/crates/backup-core`의 Tauri 비의존 Rust 코드에 있습니다. React는 엄격한 Zod DTO와 열네 개의 고정된 명령만 사용하며 파일 시스템, 셸, 네트워크 또는 임의 경로 열기 권한을 갖지 않습니다.
+안전 핵심은 `src-tauri/crates/backup-core`의 Tauri 비의존 Rust 코드에 있습니다. React는 엄격한 Zod DTO와 17개의 고정된 명령만 사용하며 파일 시스템, 셸, 네트워크 또는 임의 경로 열기 권한을 갖지 않습니다.
 
 ## 범위 밖
 

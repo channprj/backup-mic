@@ -1,10 +1,11 @@
-pub const PRODUCT_NAME: &str = "DJI Mic Backup";
+pub const PRODUCT_NAME: &str = "Backup Mic";
 
 pub mod app_state;
 pub mod artifact_pipeline;
 pub mod commands;
 pub mod dto;
 pub mod failure_reporter;
+pub mod legacy_app_data;
 pub mod lifecycle;
 pub mod orchestrator;
 pub mod pairing;
@@ -17,6 +18,7 @@ pub mod window;
 use backup_core::{error::CoreError, ledger::Ledger};
 use commands::{DESTINATION_SETTING, persisted_destination};
 use failure_reporter::{FailureEvent, FailureReporter};
+use legacy_app_data::{LEGACY_BUNDLE_IDENTIFIER, prepare_app_data};
 use lifecycle::AppLifecycle;
 use tauri::Manager;
 use tauri_plugin_autostart::{MacosLauncher, ManagerExt as _};
@@ -62,6 +64,13 @@ pub fn run() {
             let app_data = app.path().app_data_dir().inspect_err(|_| {
                 report_setup_adapter_failure(&setup_reporter, "app_data_resolution");
             })?;
+            let base_directories = directories::BaseDirs::new().ok_or_else(|| {
+                report_setup_adapter_failure(&setup_reporter, "legacy_app_data_resolution");
+                "user application support directory is unavailable"
+            })?;
+            let legacy_app_data = base_directories.data_dir().join(LEGACY_BUNDLE_IDENTIFIER);
+            prepare_app_data(&app_data, &legacy_app_data)
+                .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             let documents = app.path().document_dir().inspect_err(|_| {
                 report_setup_adapter_failure(&setup_reporter, "documents_resolution");
             })?;
@@ -74,7 +83,7 @@ pub fn run() {
                 ledger
                     .setting(DESTINATION_SETTING)
                     .map_err(|error| report_setup_core_failure(&setup_reporter, error))?,
-                documents.join("DJI-Mic-Mini-2S"),
+                documents.join(PRODUCT_NAME),
             );
             let autostart_enabled = match app.autolaunch().is_enabled() {
                 Ok(enabled) => enabled,
@@ -132,7 +141,7 @@ pub fn run() {
         })
         .on_window_event(window::handle_event)
         .build(tauri::generate_context!())
-        .expect("failed to build DJI Mic Backup");
+        .expect("failed to build Backup Mic");
     app.run(|app, event| {
         if let tauri::RunEvent::ExitRequested { api, .. } = event
             && !app.state::<AppLifecycle>().is_quitting()
@@ -187,6 +196,6 @@ mod tests {
 
     #[test]
     fn exposes_the_product_name() {
-        assert_eq!(PRODUCT_NAME, "DJI Mic Backup");
+        assert_eq!(PRODUCT_NAME, "Backup Mic");
     }
 }

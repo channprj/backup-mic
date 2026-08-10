@@ -133,7 +133,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   }
 
   return (
-    <main className="app-shell" aria-label="DJI Mic Backup">
+    <main className="app-shell" aria-label="Backup Mic">
       <header className="app-header">
         <div className="product-identity">
           <div className="product-mark" aria-hidden="true">
@@ -141,7 +141,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
             <span />
           </div>
           <div>
-            <h1>DJI Mic Backup</h1>
+            <h1>Backup Mic</h1>
             <p>로컬 · SHA-256 검증</p>
           </div>
         </div>

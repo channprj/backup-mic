@@ -29,7 +29,7 @@ function renderPopover(snapshot = complete) {
       session_count: 1,
       file_count: 9,
       byte_count: 99_000_000,
-      destination_summary: "DJI-Mic-Mini-2S 백업 폴더",
+      destination_summary: "Backup Mic 백업 폴더",
       expires_at: new Date(Date.now() + 5 * 60 * 1_000).toISOString(),
     } satisfies TrashProposalSummary),
     confirmTrash: vi.fn().mockResolvedValue(snapshot),

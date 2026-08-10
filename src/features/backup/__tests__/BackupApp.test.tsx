@@ -13,6 +13,6 @@ import { BackupApp } from "../BackupApp";
 
 it("renders the glanceable backup surface from the shared typed snapshot", () => {
   render(<BackupApp />);
-  expect(screen.getByRole("main", { name: "DJI Mic Backup" })).toBeInTheDocument();
+  expect(screen.getByRole("main", { name: "Backup Mic" })).toBeInTheDocument();
   expect(screen.getByRole("button", { name: "Settings…" })).toBeInTheDocument();
 });

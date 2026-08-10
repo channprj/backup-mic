@@ -3,10 +3,13 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET_APP="/Users/channprj/Applications/DJI Mic Backup.app"
+TARGET_APP="/Users/channprj/Applications/Backup Mic.app"
+LEGACY_TARGET_APP="/Users/channprj/Applications/DJI Mic Backup.app"
 TARGET_PARENT="/Users/channprj/Applications"
-EXPECTED_IDENTIFIER="com.channprj.DJIMicBackup"
-EXPECTED_EXECUTABLE="dji-mic-backup"
+EXPECTED_IDENTIFIER="com.channprj.BackupMic"
+LEGACY_IDENTIFIER="com.channprj.DJIMicBackup"
+EXPECTED_EXECUTABLE="backup-mic"
+LEGACY_EXECUTABLE="dji-mic-backup"
 EXPECTED_MINIMUM_SYSTEM="13.0"
 
 if [[ $# -lt 1 || $# -gt 2 ]]; then
@@ -52,7 +55,8 @@ verify_app() {
 running_pids() {
   local pid command
   while read -r pid command; do
-    if [[ "$command" == "$TARGET_APP/Contents/MacOS/$EXPECTED_EXECUTABLE" ]]; then
+    if [[ "$command" == "$TARGET_APP/Contents/MacOS/$EXPECTED_EXECUTABLE" \
+      || "$command" == "$LEGACY_TARGET_APP/Contents/MacOS/$LEGACY_EXECUTABLE" ]]; then
       echo "$pid"
     fi
   done < <(ps -axo pid=,command=)
@@ -71,12 +75,16 @@ verify_app "$release_app" || {
 }
 
 mkdir -p "$TARGET_PARENT"
-install_temp="$(mktemp -d "$TARGET_PARENT/.dji-mic-install.XXXXXX")"
+install_temp="$(mktemp -d "$TARGET_PARENT/.backup-mic-install.XXXXXX")"
 chmod 700 "$install_temp"
-staged_app="$install_temp/DJI Mic Backup.app"
-rollback_app="$install_temp/DJI Mic Backup.previous.app"
-failed_app="$install_temp/DJI Mic Backup.failed.app"
-previous_moved=0
+staged_app="$install_temp/Backup Mic.app"
+rollback_root="$install_temp/Previous Apps"
+current_rollback_app="$rollback_root/Backup Mic.app"
+legacy_rollback_app="$rollback_root/DJI Mic Backup.app"
+failed_app="$install_temp/Backup Mic.failed.app"
+mkdir "$rollback_root"
+current_moved=0
+legacy_moved=0
 new_installed=0
 completed=0
 
@@ -90,8 +98,11 @@ rollback_on_exit() {
   if [[ "$new_installed" -eq 1 && -e "$TARGET_APP" ]]; then
     mv "$TARGET_APP" "$failed_app"
   fi
-  if [[ "$previous_moved" -eq 1 && -e "$rollback_app" ]]; then
-    mv "$rollback_app" "$TARGET_APP"
+  if [[ "$current_moved" -eq 1 && -e "$current_rollback_app" ]]; then
+    mv "$current_rollback_app" "$TARGET_APP"
+  fi
+  if [[ "$legacy_moved" -eq 1 && -e "$legacy_rollback_app" ]]; then
+    mv "$legacy_rollback_app" "$LEGACY_TARGET_APP"
   fi
   if [[ -d "$install_temp" ]]; then
     if ! move_to_trash "$install_temp"; then
@@ -112,14 +123,15 @@ if [[ "$release_hash" != "$staged_hash" ]]; then
   exit 1
 fi
 
+/usr/bin/osascript -e "tell application id \"$EXPECTED_IDENTIFIER\" to quit" >/dev/null 2>&1 || true
+/usr/bin/osascript -e "tell application id \"$LEGACY_IDENTIFIER\" to quit" >/dev/null 2>&1 || true
 if [[ -n "$(running_pids)" ]]; then
-  /usr/bin/osascript -e 'tell application id "com.channprj.DJIMicBackup" to quit' >/dev/null 2>&1 || true
   for _ in 1 2 3 4 5 6 7 8 9 10; do
     [[ -z "$(running_pids)" ]] && break
     sleep 1
   done
   if [[ -n "$(running_pids)" ]]; then
-    echo "The running DJI Mic Backup app did not quit; installation was not started." >&2
+    echo "A running Backup Mic app did not quit; installation was not started." >&2
     exit 1
   fi
 fi
@@ -129,8 +141,17 @@ if [[ -e "$TARGET_APP" ]]; then
     echo "The exact installation target is not a regular app bundle." >&2
     exit 1
   }
-  mv "$TARGET_APP" "$rollback_app"
-  previous_moved=1
+  mv "$TARGET_APP" "$current_rollback_app"
+  current_moved=1
+fi
+
+if [[ -e "$LEGACY_TARGET_APP" ]]; then
+  [[ -d "$LEGACY_TARGET_APP" && ! -L "$LEGACY_TARGET_APP" ]] || {
+    echo "The exact legacy installation target is not a regular app bundle." >&2
+    exit 1
+  }
+  mv "$LEGACY_TARGET_APP" "$legacy_rollback_app"
+  legacy_moved=1
 fi
 
 mv "$staged_app" "$TARGET_APP"
@@ -142,13 +163,15 @@ if [[ "$installed_hash" != "$release_hash" ]]; then
   exit 1
 fi
 
-if [[ "$previous_moved" -eq 1 ]]; then
-  move_to_trash "$rollback_app"
+if [[ "$current_moved" -eq 1 || "$legacy_moved" -eq 1 ]]; then
+  move_to_trash "$rollback_root"
+else
+  rmdir "$rollback_root"
 fi
-rmdir "$install_temp"
 completed=1
+rmdir "$install_temp" || echo "Installation succeeded, but empty staging remains at: $install_temp" >&2
 
 echo "Installed app: $TARGET_APP"
 echo "Version: $expected_version"
 echo "Executable SHA-256: $installed_hash"
-echo "The previous app bundle was moved to macOS Trash when one existed."
+echo "Prior exact Backup Mic bundles were moved to macOS Trash when they existed."

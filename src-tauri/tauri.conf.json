@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DJI Mic Backup",
+  "productName": "Backup Mic",
   "version": "0.260810.8",
-  "identifier": "com.channprj.DJIMicBackup",
+  "identifier": "com.channprj.BackupMic",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:1420",
@@ -13,7 +13,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DJI Mic Backup",
+        "title": "Backup Mic",
         "width": 380,
         "height": 640,
         "minWidth": 380,
@@ -29,7 +29,7 @@
       },
       {
         "label": "settings",
-        "title": "DJI Mic Backup 설정",
+        "title": "Backup Mic 설정",
         "url": "index.html?window=settings",
         "width": 540,
         "height": 620,

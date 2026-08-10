@@ -8,7 +8,7 @@ use backup_core::{
     rule_scanner::scan_rule_once,
     source::SourceId,
 };
-use dji_mic_backup_lib::rescan::{RescanDecision, RescanScheduler};
+use backup_mic_lib::rescan::{RescanDecision, RescanScheduler};
 use tempfile::tempdir;
 use time::UtcOffset;
 

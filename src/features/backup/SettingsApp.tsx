@@ -51,7 +51,7 @@ export function SettingsApp() {
 
   if (loading) {
     return (
-      <main className="settings-shell settings-loading" aria-label="DJI Mic Backup 설정" aria-busy>
+      <main className="settings-shell settings-loading" aria-label="Backup Mic 설정" aria-busy>
         <Skeleton className="settings-title-skeleton" />
         <Skeleton className="settings-group-skeleton" />
         <Skeleton className="settings-group-skeleton" />
@@ -62,7 +62,7 @@ export function SettingsApp() {
   if (!snapshot) {
     const copy = errorCopy(errorCode ?? "snapshot_unavailable");
     return (
-      <main className="settings-shell settings-unavailable" aria-label="DJI Mic Backup 설정">
+      <main className="settings-shell settings-unavailable" aria-label="Backup Mic 설정">
         <Alert variant="destructive">
           <AlertTitle>{copy.title}</AlertTitle>
           <AlertDescription>{copy.detail}</AlertDescription>
@@ -215,10 +215,10 @@ export function SettingsView({
     .find((outcome) => outcome === "이동 중단됨" || outcome === "일부만 이동됨");
 
   return (
-    <main className="settings-shell" aria-label="DJI Mic Backup 설정">
+    <main className="settings-shell" aria-label="Backup Mic 설정">
       <header className="settings-header">
         <div>
-          <p>DJI Mic Backup</p>
+          <p>Backup Mic</p>
           <h1>설정</h1>
         </div>
         <span>v0.260810.8</span>
@@ -303,7 +303,7 @@ export function SettingsView({
           <div className="settings-row settings-destination-row">
             <div>
               <strong>백업 폴더</strong>
-              <span>DJI-Mic-Mini-2S 백업 폴더</span>
+              <span>선택한 백업 폴더</span>
             </div>
             <Button
               variant="outline"

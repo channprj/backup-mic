@@ -1,7 +1,7 @@
 use std::fs;
 
 use backup_core::deletion::TrashAdapter;
-use dji_mic_backup_lib::platform::macos::trash::MacTrash;
+use backup_mic_lib::platform::macos::trash::MacTrash;
 use tempfile::tempdir;
 
 #[test]

@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-APP_LEDGER="/Users/channprj/Library/Application Support/com.channprj.DJIMicBackup/ledger.sqlite3"
+APP_LEDGER="/Users/channprj/Library/Application Support/com.channprj.BackupMic/ledger.sqlite3"
 PROFILE_ID="aac_lc_128k_v1"
 diagnostic=0
 ledger="$APP_LEDGER"

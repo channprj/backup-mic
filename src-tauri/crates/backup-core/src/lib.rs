@@ -1,4 +1,4 @@
-pub const PRODUCT_NAME: &str = "DJI Mic Backup";
+pub const PRODUCT_NAME: &str = "Backup Mic";
 
 pub mod additional_file;
 pub mod artifact;
@@ -31,6 +31,6 @@ mod tests {
 
     #[test]
     fn exposes_the_product_name() {
-        assert_eq!(PRODUCT_NAME, "DJI Mic Backup");
+        assert_eq!(PRODUCT_NAME, "Backup Mic");
     }
 }

@@ -1,8 +1,6 @@
 use std::{ffi::OsString, fs, path::Path};
 
-use dji_mic_backup_lib::platform::macos::audio::{
-    AppleAudioTools, AudioTools, afconvert_arguments,
-};
+use backup_mic_lib::platform::macos::audio::{AppleAudioTools, AudioTools, afconvert_arguments};
 use tempfile::tempdir;
 
 #[test]

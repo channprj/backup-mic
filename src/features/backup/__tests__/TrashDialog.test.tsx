@@ -10,7 +10,7 @@ const proposal = {
   session_count: 2,
   file_count: 9,
   byte_count: 99_000_000,
-  destination_summary: "DJI-Mic-Mini-2S 백업 폴더",
+  destination_summary: "Backup Mic 백업 폴더",
   expires_at: "2026-08-09T02:25:00Z",
 } satisfies TrashProposalSummary;
 

@@ -992,7 +992,7 @@ impl DeviceOrchestrator {
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
-            .name("dji-device-events".to_owned())
+            .name("backup-mic-device-events".to_owned())
             .spawn(move || {
                 let mut registry = DeviceRegistry::default();
                 let mut scheduler = RescanScheduler::new(RESCAN_INTERVAL);
@@ -1865,7 +1865,7 @@ pub fn confirm_trash(
     let _ = app
         .notification()
         .builder()
-        .title("DJI Mic Backup")
+        .title("Backup Mic")
         .body(body)
         .show();
     Ok(())

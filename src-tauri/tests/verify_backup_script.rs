@@ -10,7 +10,7 @@ use backup_core::{
     ledger::{Ledger, VerifiedRecording},
     source::{SourceId, SourceRecord},
 };
-use dji_mic_backup_lib::{
+use backup_mic_lib::{
     artifact_pipeline::{finalize_prepared_m4a, prepare_m4a},
     platform::macos::audio::AppleAudioTools,
 };

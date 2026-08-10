@@ -6,7 +6,7 @@ use backup_core::{
     rule::BackupRuleDraft,
     source::{SourceId, SourceRecord},
 };
-use dji_mic_backup_lib::{
+use backup_mic_lib::{
     app_state::AppState,
     dto::{BackupRuleDto, RuleTestResultDto, SourceSnapshotDto},
 };
@@ -121,5 +121,5 @@ fn saving_and_archiving_rules_refreshes_the_public_snapshot() {
 fn public_snapshot_json_rejects_unknown_authority_fields() {
     let mut value = serde_json::to_value(state().snapshot()).expect("snapshot");
     value["volume_uuid"] = Value::String("private".to_owned());
-    assert!(serde_json::from_value::<dji_mic_backup_lib::dto::AppSnapshotDto>(value).is_err());
+    assert!(serde_json::from_value::<backup_mic_lib::dto::AppSnapshotDto>(value).is_err());
 }

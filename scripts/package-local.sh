@@ -38,7 +38,16 @@ fi
 
 app="${apps[0]}"
 dmg="${dmgs[0]}"
-executable="$app/Contents/MacOS/dji-mic-backup"
+executable="$app/Contents/MacOS/backup-mic"
+
+if [[ "$app" != "$BUNDLE_ROOT/macos/Backup Mic.app" ]]; then
+  echo "Unexpected app bundle name: $(basename "$app")" >&2
+  exit 1
+fi
+if [[ "$(basename "$dmg")" != "Backup Mic_"* ]]; then
+  echo "Unexpected DMG name: $(basename "$dmg")" >&2
+  exit 1
+fi
 
 codesign --verify --deep --strict --verbose=2 "$app"
 identifier="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
@@ -49,7 +58,7 @@ executable_hash="$(shasum -a 256 "$executable" | awk '{print $1}')"
 dmg_hash="$(shasum -a 256 "$dmg" | awk '{print $1}')"
 hdiutil verify "$dmg"
 
-if [[ "$identifier" != "com.channprj.DJIMicBackup" ]]; then
+if [[ "$identifier" != "com.channprj.BackupMic" ]]; then
   echo "Unexpected bundle identifier: $identifier" >&2
   exit 1
 fi

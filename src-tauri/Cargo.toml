@@ -1,13 +1,13 @@
 [package]
-name = "dji-mic-backup"
+name = "backup-mic"
 version = "0.260810.8"
-description = "Safe local backups for DJI Mic Mini recordings"
+description = "Safe local backups for removable audio recorders"
 authors = ["channprj"]
 edition = "2024"
 rust-version = "1.97"
 
 [lib]
-name = "dji_mic_backup_lib"
+name = "backup_mic_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [workspace]
@@ -22,6 +22,7 @@ backup-core = { path = "crates/backup-core" }
 directories = "=6.0.0"
 parking_lot = "=0.12.5"
 quick-xml = { version = "=0.41.0", features = ["serialize"] }
+rusqlite = { version = "=0.40.2", features = ["backup", "bundled"] }
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = "=1.0.151"
 tauri = { version = "=2.11.5", features = ["tray-icon"] }

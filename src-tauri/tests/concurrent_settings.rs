@@ -1,7 +1,7 @@
 use std::{fs, time::Duration};
 
 use backup_core::ledger::Ledger;
-use dji_mic_backup_lib::{app_state::AppState, commands::set_m4a_conversion_for_state};
+use backup_mic_lib::{app_state::AppState, commands::set_m4a_conversion_for_state};
 use tempfile::tempdir;
 
 #[tokio::test]
@@ -35,9 +35,14 @@ async fn m4a_setting_saves_while_an_operation_keeps_its_frozen_preferences() {
             .unwrap()
             .m4a_conversion
     );
-    let log = destination
-        .path()
-        .join("logs/2026/08/260810-backup-mic.log");
+    let year = fs::read_dir(destination.path().join("logs"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let month = fs::read_dir(year).unwrap().next().unwrap().unwrap().path();
+    let log = fs::read_dir(month).unwrap().next().unwrap().unwrap().path();
     let text = fs::read_to_string(log).unwrap();
     assert!(text.contains("INFO setting.saved"));
     assert!(text.contains("setting=\"m4a_conversion\""));

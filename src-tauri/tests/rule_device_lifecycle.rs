@@ -5,7 +5,7 @@ use backup_core::{
     ledger::Ledger,
     rule::{BackupRule, BackupRuleDraft},
 };
-use dji_mic_backup_lib::{
+use backup_mic_lib::{
     platform::device_registry::MountedVolume,
     rule_runtime::{RuleVolumeMatch, match_mounted_volume},
 };
@@ -55,7 +55,7 @@ fn save(ledger: &mut Ledger, draft: BackupRuleDraft) -> BackupRule {
         .unwrap()
 }
 
-fn matched(result: RuleVolumeMatch) -> dji_mic_backup_lib::rule_runtime::MatchedSource {
+fn matched(result: RuleVolumeMatch) -> backup_mic_lib::rule_runtime::MatchedSource {
     let RuleVolumeMatch::Matched(source) = result else {
         panic!("expected one matched source");
     };

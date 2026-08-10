@@ -27,7 +27,7 @@ impl DiskArbitrationMonitor {
         let thread_stop = Arc::clone(&stop);
         let (ready_sender, ready_receiver) = sync_channel(1);
         let thread = thread::Builder::new()
-            .name("dji-disk-arbitration".to_owned())
+            .name("backup-mic-disk-arbitration".to_owned())
             .spawn(move || {
                 let result = ffi::run(sender, thread_stop, &ready_sender);
                 if let Err(error) = result {

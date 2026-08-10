@@ -1,4 +1,4 @@
-use dji_mic_backup_lib::commands::REGISTERED_COMMANDS;
+use backup_mic_lib::commands::REGISTERED_COMMANDS;
 
 #[test]
 fn command_surface_is_exact_and_has_no_arbitrary_settings_or_path_ipc() {

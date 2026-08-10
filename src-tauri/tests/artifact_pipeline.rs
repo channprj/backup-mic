@@ -11,7 +11,7 @@ use backup_core::{
     source::{SourceId, SourceRecord},
     state::CurrentStage,
 };
-use dji_mic_backup_lib::{
+use backup_mic_lib::{
     artifact_pipeline::{publish_m4a, verify_published_artifact},
     platform::macos::audio::AudioTools,
 };

@@ -7,7 +7,7 @@ use backup_core::{
     ledger::{Ledger, VerifiedRecording},
     source::{SourceId, SourceRecord},
 };
-use dji_mic_backup_lib::artifact_pipeline::order_conversion_cohort;
+use backup_mic_lib::artifact_pipeline::order_conversion_cohort;
 use tempfile::tempdir;
 
 fn wav(

@@ -18,7 +18,7 @@ use backup_core::{
     source::{MountedSourceAuthority, SourceId, SourceRecord},
     state::BackupPhase,
 };
-use dji_mic_backup_lib::{
+use backup_mic_lib::{
     app_state::AppState,
     orchestrator::{
         NoSourceCopyFaults, SourceCopyFaults, overall_backup_phase,

@@ -12,8 +12,8 @@ export function BackupApp() {
 
   if (loading) {
     return (
-      <main className="app-shell loading-shell" aria-label="DJI Mic Backup" aria-busy="true">
-        <h1 className="sr-only">DJI Mic Backup</h1>
+      <main className="app-shell loading-shell" aria-label="Backup Mic" aria-busy="true">
+        <h1 className="sr-only">Backup Mic</h1>
         <div className="loading-brand">
           <Skeleton className="brand-skeleton" />
           <div>
@@ -31,9 +31,9 @@ export function BackupApp() {
   if (!snapshot) {
     const copy = errorCopy(errorCode ?? "snapshot_unavailable");
     return (
-      <main className="app-shell unavailable-shell" aria-label="DJI Mic Backup">
+      <main className="app-shell unavailable-shell" aria-label="Backup Mic">
         <div className="unavailable-brand">
-          <h1>DJI Mic Backup</h1>
+          <h1>Backup Mic</h1>
           <p>로컬 녹음 백업</p>
         </div>
         <Alert variant="destructive">
