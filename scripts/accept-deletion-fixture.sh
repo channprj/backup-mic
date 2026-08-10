@@ -56,7 +56,7 @@ DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
 DJI_MIC_DELETION_FIXTURE="$FIXTURE_MOUNT" \
   cargo test --manifest-path src-tauri/Cargo.toml -p dji-mic-backup \
   --test fat32_trash_acceptance -- --ignored --exact \
-  foundation_moves_a_whole_session_on_the_isolated_fat32_fixture
+  foundation_moves_only_the_requested_generic_session_on_the_isolated_fat32_fixture
 
 if rg -n 'remove_file|remove_dir|\.Trashes|Command::|AppleScript|Finder' \
   src-tauri/crates/backup-core/src/deletion.rs \

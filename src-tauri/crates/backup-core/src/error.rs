@@ -80,6 +80,8 @@ pub enum CoreError {
     ProposalInvalidated,
     #[error("deletion preflight was refused")]
     DeletionPreflightRefused,
+    #[error("session contains an entry that cannot be retired safely")]
+    UnsafeSessionEntry,
     #[error("another operation is active")]
     Busy,
     #[error("invalid backup rule")]
@@ -113,6 +115,7 @@ impl CoreError {
             Self::ProposalExpired => "proposal_expired",
             Self::ProposalInvalidated => "proposal_invalidated",
             Self::DeletionPreflightRefused => "deletion_preflight_refused",
+            Self::UnsafeSessionEntry => "unsafe_session_entry",
             Self::Busy => "operation_busy",
             Self::InvalidRule => "invalid_rule",
             Self::RuleScanLimit => "rule_scan_limit",
@@ -187,6 +190,11 @@ impl CoreError {
             Self::DeletionPreflightRefused => (
                 PublicErrorCode::DeletionPreflightRefused,
                 "deletion_preflight_refused",
+                true,
+            ),
+            Self::UnsafeSessionEntry => (
+                PublicErrorCode::DeletionPreflightRefused,
+                "unsafe_session_entry",
                 true,
             ),
             Self::Busy => (PublicErrorCode::Busy, "operation_busy", true),

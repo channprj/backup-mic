@@ -1186,6 +1186,40 @@ impl Ledger {
         .collect()
     }
 
+    pub fn verified_recordings_for_backup_run(
+        &self,
+        source_id: &SourceId,
+        backup_run_id: &str,
+    ) -> Result<Vec<VerifiedRecording>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings
+                   WHERE source_id = ?1 AND backup_run_id = ?2
+                   ORDER BY source_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map(
+                params![source_id.as_str(), backup_run_id],
+                row_to_verified_recording,
+            )
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| {
+            let recording = row.map_err(CoreError::Ledger)?;
+            validate_verified_recording(&recording).map_err(|_| CoreError::LedgerCorrupt)?;
+            Ok(recording)
+        })
+        .collect()
+    }
+
     pub fn relocate_verified_artifact(
         &mut self,
         recording_id: &str,
@@ -1671,6 +1705,36 @@ impl Ledger {
             validate_verified_additional_file(file).map_err(|_| CoreError::LedgerCorrupt)?;
         }
         Ok(row)
+    }
+
+    pub fn verified_additional_files_for_backup_run(
+        &self,
+        source_id: &SourceId,
+        backup_run_id: &str,
+    ) -> Result<Vec<VerifiedAdditionalFile>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, artifact_relative_path, artifact_size,
+                          artifact_sha256, classification, backup_run_id
+                   FROM additional_files
+                   WHERE source_id = ?1 AND backup_run_id = ?2
+                   ORDER BY source_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map(
+                params![source_id.as_str(), backup_run_id],
+                row_to_verified_additional_file,
+            )
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| {
+            let file = row.map_err(CoreError::Ledger)?;
+            validate_verified_additional_file(&file).map_err(|_| CoreError::LedgerCorrupt)?;
+            Ok(file)
+        })
+        .collect()
     }
 
     pub fn historical_wav_recordings(&self) -> Result<Vec<VerifiedRecording>, CoreError> {

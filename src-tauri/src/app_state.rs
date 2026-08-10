@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -12,9 +12,7 @@ use backup_core::{
     audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditSink, AuditValue, FileAuditLog},
     backup::CancellationToken,
     batch::FrozenPreferences,
-    deletion::{
-        AdditionalDeletionCandidate, DeletionCandidate, DeletionProposalStore, ProposalInvalidation,
-    },
+    deletion::{CompleteRuleDeletionSnapshot, DeletionProposalStore, ProposalInvalidation},
     device::PairedDevice,
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
@@ -53,12 +51,19 @@ pub(crate) struct RuntimeState {
     pub destination: PathBuf,
     pub destination_configured: bool,
     pub destination_generation: u64,
-    pub scan_generations: HashMap<Transmitter, u64>,
-    pub verified: HashMap<Transmitter, Vec<DeletionCandidate>>,
-    pub verified_additional: HashMap<Transmitter, Vec<AdditionalDeletionCandidate>>,
-    pub m4a_barrier_runs: HashMap<Transmitter, String>,
-    pub current_source_paths: HashMap<Transmitter, BTreeSet<PathBuf>>,
+    pub rule_scan_generations: HashMap<SourceId, u64>,
+    pub rule_deletions: HashMap<SourceId, RuleDeletionState>,
+    pub awaiting_rule_deletion: Option<SourceId>,
     pub preferences: BackupPreferences,
+}
+
+#[derive(Clone)]
+pub(crate) struct RuleDeletionState {
+    pub authority: MountedSourceAuthority,
+    pub rule: BackupRule,
+    pub snapshot: CompleteRuleDeletionSnapshot,
+    pub destination_generation: u64,
+    pub scan_generation: u64,
 }
 
 #[derive(Clone)]
@@ -152,11 +157,9 @@ impl AppState {
                 destination,
                 destination_configured,
                 destination_generation: 1,
-                scan_generations: HashMap::new(),
-                verified: HashMap::new(),
-                verified_additional: HashMap::new(),
-                m4a_barrier_runs: HashMap::new(),
-                current_source_paths: HashMap::new(),
+                rule_scan_generations: HashMap::new(),
+                rule_deletions: HashMap::new(),
+                awaiting_rule_deletion: None,
                 preferences,
             })),
             ledger: Arc::new(Mutex::new(ledger)),
@@ -426,7 +429,14 @@ impl AppState {
         updated_at: &str,
     ) -> Result<BackupRule, CoreError> {
         let rule = self.ledger.lock().save_backup_rule(draft, updated_at)?;
+        self.proposals
+            .lock()
+            .invalidate(ProposalInvalidation::NewScanResults);
         let mut runtime = self.runtime.lock();
+        runtime
+            .rule_deletions
+            .retain(|_, evidence| evidence.rule.id != rule.id);
+        runtime.awaiting_rule_deletion = None;
         runtime.snapshot.setting_applies_next_run = self.operation_is_active();
         runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
         Ok(rule)
@@ -513,12 +523,13 @@ impl AppState {
                     .map(|(source_id, matched)| (source_id.clone(), matched.clone()));
                 if let Some((source_id, matched)) = &removed_source {
                     runtime.matched.remove(source_id);
+                    runtime.rule_deletions.remove(source_id);
+                    runtime.rule_scan_generations.remove(source_id);
+                    if runtime.awaiting_rule_deletion.as_ref() == Some(source_id) {
+                        runtime.awaiting_rule_deletion = None;
+                    }
                     if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
                         runtime.mounted.remove(&transmitter);
-                        runtime.verified.remove(&transmitter);
-                        runtime.verified_additional.remove(&transmitter);
-                        runtime.m4a_barrier_runs.remove(&transmitter);
-                        runtime.current_source_paths.remove(&transmitter);
                         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
                             snapshot.mounted = false;
                             snapshot.phase = BackupPhase::Idle;
@@ -741,10 +752,9 @@ impl AppState {
         runtime.destination_configured = true;
         runtime.snapshot.current_log_available = true;
         runtime.destination_generation = runtime.destination_generation.saturating_add(1);
-        runtime.verified.clear();
-        runtime.verified_additional.clear();
-        runtime.m4a_barrier_runs.clear();
-        runtime.current_source_paths.clear();
+        runtime.rule_deletions.clear();
+        runtime.rule_scan_generations.clear();
+        runtime.awaiting_rule_deletion = None;
         for snapshot in &mut runtime.snapshot.transmitters {
             snapshot.deletion_ready = false;
             snapshot.deletion_phase = DeletionPhase::Inactive;
@@ -992,10 +1002,9 @@ fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
 }
 
 fn clear_retirement_authority(runtime: &mut RuntimeState) {
-    runtime.verified.clear();
-    runtime.verified_additional.clear();
-    runtime.m4a_barrier_runs.clear();
-    runtime.current_source_paths.clear();
+    runtime.rule_deletions.clear();
+    runtime.rule_scan_generations.clear();
+    runtime.awaiting_rule_deletion = None;
     for transmitter in &mut runtime.snapshot.transmitters {
         transmitter.deletion_ready = false;
         transmitter.deletion_phase = DeletionPhase::Inactive;

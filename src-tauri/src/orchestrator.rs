@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -19,8 +19,9 @@ use backup_core::{
     batch::{BatchItemKey, BatchPhase, CopyBarrier, M4A_PROFILE_ID},
     clock::{Clock, SystemClock},
     deletion::{
-        CompleteDeletionSnapshot, DeletionConfirmation, DeletionContext, DeletionOutcome,
-        NoDeletionFaults, ProposalInvalidation,
+        AdditionalDeletionCandidate, CompleteRuleDeletionSnapshot, DeletionCandidate,
+        DeletionOutcome, DeletionProposal, NoDeletionFaults, ProposalInvalidation,
+        RuleDeletionConfirmation, RuleDeletionContext, RuleSessionDeletionCandidate, TrashAdapter,
     },
     destination::{
         AdditionalFilePlan, DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition,
@@ -28,11 +29,10 @@ use backup_core::{
     },
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
-    ledger::{Ledger, VerifiedRecording},
+    ledger::VerifiedRecording,
     recording::{AdditionalFileObservation, ParsedRecordingName, RecordingObservation},
     rule::{BackupRule, compile_rule},
     rule_scanner::{RuleScanResult, SelectedFileKind, scan_rule_once, scan_rule_stable},
-    scanner::{ScanResult, scan_stable},
     source::{MountedSourceAuthority, SourceId},
     state::{BackupPhase, CurrentStage, DeletionPhase, Transmitter},
 };
@@ -42,7 +42,7 @@ use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
-    app_state::{AppState, OperationGuard, publish_locked, update_transmitter},
+    app_state::{AppState, OperationGuard, RuleDeletionState, publish_locked, update_transmitter},
     artifact_pipeline::{
         finalize_prepared_m4a, order_conversion_cohort, prepare_m4a, verify_published_artifact,
     },
@@ -68,6 +68,21 @@ pub struct SourceRunOutcome {
     pub phase: BackupPhase,
     pub verified_files: u64,
     pub deletion_ready: bool,
+    pub error: Option<PublicError>,
+    pub deletion_evidence: Option<CompletedRuleDeletionEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CompletedRuleDeletionEvidence {
+    pub authority: MountedSourceAuthority,
+    pub rule: BackupRule,
+    pub snapshot: CompleteRuleDeletionSnapshot,
+}
+
+#[derive(Debug)]
+pub struct SourceDeletionOutcome {
+    pub source_id: SourceId,
+    pub report: Option<backup_core::deletion::DeletionReport>,
     pub error: Option<PublicError>,
 }
 
@@ -123,6 +138,13 @@ pub fn run_matched_sources_with_adapters(
     cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<Vec<SourceRunOutcome>, CoreError> {
     let (destination, destination_generation) = state.backup_destination_snapshot();
+    {
+        let mut runtime = state.runtime.lock();
+        for source in matched_sources {
+            runtime.rule_deletions.remove(&source.authority.source.id);
+        }
+        runtime.awaiting_rule_deletion = None;
+    }
     std::fs::create_dir_all(&destination).map_err(CoreError::CopyFailed)?;
     cleanup_owned_partials(&destination)?;
     let preferences = state.frozen_preferences();
@@ -205,7 +227,39 @@ pub fn run_matched_sources_with_adapters(
         )?);
     }
     outcomes.sort_by(|left, right| left.source_id.cmp(&right.source_id));
+    install_rule_deletion_evidence(state, &outcomes, destination_generation);
     Ok(outcomes)
+}
+
+fn install_rule_deletion_evidence(
+    state: &AppState,
+    outcomes: &[SourceRunOutcome],
+    destination_generation: u64,
+) {
+    let mut runtime = state.runtime.lock();
+    for outcome in outcomes {
+        let Some(evidence) = &outcome.deletion_evidence else {
+            continue;
+        };
+        let scan_generation = {
+            let generation = runtime
+                .rule_scan_generations
+                .entry(outcome.source_id.clone())
+                .or_default();
+            *generation = generation.saturating_add(1);
+            *generation
+        };
+        runtime.rule_deletions.insert(
+            outcome.source_id.clone(),
+            RuleDeletionState {
+                authority: evidence.authority.clone(),
+                rule: evidence.rule.clone(),
+                snapshot: evidence.snapshot.clone(),
+                destination_generation,
+                scan_generation,
+            },
+        );
+    }
 }
 
 fn prepare_matched_source(
@@ -677,6 +731,19 @@ fn process_prepared_source(
         return finish_source_failure(state, source, run_id, error);
     }
 
+    let deletion_candidate_ready = preferences.m4a_conversion
+        && !source.scan.files.is_empty()
+        && source.scan.unsafe_session_count == 0
+        && source.copy_barrier.verified_count() == source.scan.files.len();
+    let deletion_evidence = if deletion_candidate_ready {
+        match build_rule_deletion_evidence(state, &source, destination, &run_id) {
+            Ok(evidence) => evidence,
+            Err(error) => return finish_source_failure(state, source, run_id, error),
+        }
+    } else {
+        None
+    };
+    let deletion_ready = deletion_evidence.is_some();
     let finished_at = now_string();
     state.ledger.lock().finish_backup_run(
         &run_id,
@@ -690,10 +757,6 @@ fn process_prepared_source(
     )?;
     let verified_files = u64::try_from(source.copy_barrier.verified_count())
         .map_err(|_| CoreError::InvalidRequest)?;
-    let deletion_ready = preferences.m4a_conversion
-        && !source.scan.files.is_empty()
-        && source.scan.unsafe_session_count == 0
-        && source.copy_barrier.verified_count() == source.scan.files.len();
     Ok(SourceRunOutcome {
         source_id: source.source_id,
         batch_run_id: run_id,
@@ -705,6 +768,7 @@ fn process_prepared_source(
         verified_files,
         deletion_ready,
         error: None,
+        deletion_evidence,
     })
 }
 
@@ -732,6 +796,7 @@ fn finish_source_failure(
             .map_err(|_| CoreError::InvalidRequest)?,
         deletion_ready: false,
         error: Some(public),
+        deletion_evidence: None,
     })
 }
 
@@ -743,7 +808,127 @@ fn failed_without_run(source_id: SourceId, error: CoreError) -> SourceRunOutcome
         verified_files: 0,
         deletion_ready: false,
         error: Some(error.public(None)),
+        deletion_evidence: None,
     }
+}
+
+fn build_rule_deletion_evidence(
+    state: &AppState,
+    source: &PreparedSource,
+    destination_root: &std::path::Path,
+    backup_run_id: &str,
+) -> Result<Option<CompletedRuleDeletionEvidence>, CoreError> {
+    let (recordings, additional_files, current_rule) = {
+        let ledger = state.ledger.lock();
+        (
+            ledger.verified_recordings_for_backup_run(&source.source_id, backup_run_id)?,
+            ledger.verified_additional_files_for_backup_run(&source.source_id, backup_run_id)?,
+            ledger
+                .backup_rule(&source.rule.id)?
+                .ok_or(CoreError::LedgerCorrupt)?,
+        )
+    };
+    if current_rule.id != source.rule.id || current_rule.updated_at != source.rule.updated_at {
+        return Ok(None);
+    }
+    let mut recordings = recordings
+        .into_iter()
+        .map(|recording| {
+            (
+                recording.source_relative_path.clone(),
+                DeletionCandidate {
+                    recording_id: recording.id,
+                    source_relative_path: recording.source_relative_path,
+                    source_size: recording.source_size,
+                    source_mtime_ns: recording.source_mtime_ns,
+                    source_sha256: recording.source_sha256,
+                    destination_relative_path: recording.artifact.relative_path,
+                    destination_size: recording.artifact.byte_count,
+                    destination_sha256: recording.artifact.sha256,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut additional_files = additional_files
+        .into_iter()
+        .map(|file| {
+            (
+                file.source_relative_path.clone(),
+                AdditionalDeletionCandidate {
+                    additional_file_id: file.id,
+                    source_relative_path: file.source_relative_path,
+                    source_size: file.source_size,
+                    source_mtime_ns: file.source_mtime_ns,
+                    source_sha256: file.source_sha256,
+                    destination_relative_path: file.artifact_relative_path,
+                    destination_size: file.artifact_size,
+                    destination_sha256: file.artifact_sha256,
+                },
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut files = Vec::new();
+    let mut loose_additional = Vec::new();
+    let mut sessions: BTreeMap<
+        std::path::PathBuf,
+        (Vec<DeletionCandidate>, Vec<AdditionalDeletionCandidate>),
+    > = BTreeMap::new();
+    for observation in &source.scan.files {
+        match observation.kind {
+            SelectedFileKind::RecordingWav => {
+                let candidate = recordings
+                    .remove(&observation.relative_path)
+                    .ok_or(CoreError::LedgerCorrupt)?;
+                if let Some(session) = &observation.session_relative_path {
+                    sessions
+                        .entry(session.clone())
+                        .or_default()
+                        .0
+                        .push(candidate);
+                } else {
+                    files.push(candidate);
+                }
+            }
+            SelectedFileKind::Companion => {
+                let candidate = additional_files
+                    .remove(&observation.relative_path)
+                    .ok_or(CoreError::LedgerCorrupt)?;
+                if let Some(session) = &observation.session_relative_path {
+                    sessions
+                        .entry(session.clone())
+                        .or_default()
+                        .1
+                        .push(candidate);
+                } else {
+                    loose_additional.push(candidate);
+                }
+            }
+        }
+    }
+    if !recordings.is_empty() || !additional_files.is_empty() {
+        return Err(CoreError::LedgerCorrupt);
+    }
+    let sessions = sessions
+        .into_iter()
+        .map(
+            |(relative_directory, (files, additional_files))| RuleSessionDeletionCandidate {
+                relative_directory,
+                files,
+                additional_files,
+            },
+        )
+        .collect();
+    Ok(Some(CompletedRuleDeletionEvidence {
+        authority: source.authority.clone(),
+        rule: current_rule,
+        snapshot: CompleteRuleDeletionSnapshot {
+            files,
+            additional_files: loose_additional,
+            sessions,
+            destination_root: destination_root.to_path_buf(),
+            m4a_barrier_run_id: backup_run_id.to_owned(),
+        },
+    }))
 }
 
 fn revalidate_run_context(
@@ -962,6 +1147,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     }
     {
         let mut runtime = state.runtime.lock();
+        for source in &matched {
+            runtime.rule_deletions.remove(&source.authority.source.id);
+        }
+        runtime.awaiting_rule_deletion = None;
         runtime.snapshot.phase = BackupPhase::Scanning;
         runtime.snapshot.message_code = "scanning".to_owned();
         runtime.snapshot.error = None;
@@ -977,14 +1166,41 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         &SystemClock,
         &guard.cancellation,
     )?;
-    let phase = overall_backup_phase(&outcomes);
+    let automatic_retirements = retire_ready_rule_sources_with_adapter(
+        state,
+        &outcomes,
+        OffsetDateTime::now_utc(),
+        &MacTrash,
+    )?;
+    let automatic_retirement_failed = automatic_retirements.iter().any(|retirement| {
+        retirement.error.is_some()
+            || retirement.report.as_ref().is_some_and(|report| {
+                matches!(
+                    report.outcome,
+                    DeletionOutcome::Refused | DeletionOutcome::PartiallyDeleted
+                )
+            })
+    });
+    let phase = if automatic_retirement_failed {
+        BackupPhase::PartialFailure
+    } else {
+        overall_backup_phase(&outcomes)
+    };
     let finished_at = now_string();
     let total_files = outcomes.iter().try_fold(0_u64, |total, outcome| {
         total
             .checked_add(outcome.verified_files)
             .ok_or(CoreError::InvalidRequest)
     })?;
-    let last_error = outcomes.iter().find_map(|outcome| outcome.error.clone());
+    let last_error = outcomes
+        .iter()
+        .find_map(|outcome| outcome.error.clone())
+        .or_else(|| {
+            automatic_retirements
+                .iter()
+                .find_map(|retirement| retirement.error.clone())
+        })
+        .or_else(|| automatic_retirement_failed.then(|| CoreError::TrashFailed.public(None)));
     {
         let mut runtime = state.runtime.lock();
         runtime.snapshot.phase = phase;
@@ -1010,10 +1226,40 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 .find(|outcome| outcome.source_id == matched_source.authority.source.id)
                 .map(|outcome| outcome.phase)
                 .unwrap_or(BackupPhase::PartialFailure);
+            let deletion_ready = outcomes
+                .iter()
+                .find(|outcome| outcome.source_id == matched_source.authority.source.id)
+                .is_some_and(|outcome| outcome.deletion_ready)
+                && !automatic_retirements
+                    .iter()
+                    .any(|retirement| retirement.source_id == matched_source.authority.source.id);
+            let retirement = automatic_retirements
+                .iter()
+                .find(|retirement| retirement.source_id == matched_source.authority.source.id);
             update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.phase = source_phase;
-                snapshot.deletion_ready = false;
-                snapshot.deletion_phase = DeletionPhase::Inactive;
+                snapshot.phase = if retirement.is_some_and(|retirement| {
+                    retirement.error.is_some()
+                        || retirement
+                            .report
+                            .as_ref()
+                            .is_some_and(|report| report.outcome != DeletionOutcome::Deleted)
+                }) {
+                    BackupPhase::Error
+                } else {
+                    source_phase
+                };
+                snapshot.deletion_ready = deletion_ready;
+                snapshot.deletion_phase = retirement
+                    .map(|retirement| {
+                        match retirement.report.as_ref().map(|report| report.outcome) {
+                            Some(DeletionOutcome::Deleted) => DeletionPhase::Deleted,
+                            Some(DeletionOutcome::PartiallyDeleted) => {
+                                DeletionPhase::PartiallyDeleted
+                            }
+                            Some(DeletionOutcome::Refused) | None => DeletionPhase::Refused,
+                        }
+                    })
+                    .unwrap_or(DeletionPhase::Inactive);
             });
         }
         publish_locked(app, &mut runtime);
@@ -1041,6 +1287,55 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             },
         ) {
             state.report_failure("backup_run", "activity_persistence", &error, None, None);
+        }
+    }
+    for retirement in &automatic_retirements {
+        let (code, severity, count, bytes) = match &retirement.report {
+            Some(report) if report.outcome == DeletionOutcome::Deleted => (
+                "trash_complete",
+                ActivitySeverity::Success,
+                Some(report.deleted_files),
+                Some(report.deleted_bytes),
+            ),
+            Some(report) if report.outcome == DeletionOutcome::PartiallyDeleted => (
+                "partial_trash",
+                ActivitySeverity::Error,
+                Some(report.deleted_files),
+                Some(report.deleted_bytes),
+            ),
+            Some(report) => (
+                "trash_refused",
+                ActivitySeverity::Warning,
+                Some(report.deleted_files),
+                Some(report.deleted_bytes),
+            ),
+            None => ("trash_refused", ActivitySeverity::Warning, None, None),
+        };
+        if let Some(error) = retirement
+            .error
+            .clone()
+            .or_else(|| (code != "trash_complete").then(|| CoreError::TrashFailed.public(None)))
+        {
+            state.report_public_failure("automatic_trash", "source_revalidation", &error, None);
+        }
+        if let Err(error) = state.record_activity(
+            app,
+            ActivityEntry {
+                occurred_at: finished_at.clone(),
+                code: code.to_owned(),
+                source_id: Some(retirement.source_id.clone()),
+                count_value: count,
+                byte_value: bytes,
+                severity,
+            },
+        ) {
+            state.report_failure(
+                "automatic_trash",
+                "activity_persistence",
+                &error,
+                None,
+                None,
+            );
         }
     }
     let fields = [
@@ -1102,58 +1397,23 @@ pub fn prepare_trash(
         runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         publish_locked(app, &mut runtime);
     }
-    let (mounted, destination, destination_generation, verified, additional_files, barrier_run) = {
+    let (source_id, destination_summary) = {
         let runtime = state.runtime.lock();
+        let (source_id, evidence) = runtime
+            .rule_deletions
+            .iter()
+            .find(|(source_id, _)| {
+                runtime
+                    .matched
+                    .get(*source_id)
+                    .and_then(matched_legacy_transmitter)
+                    == Some(transmitter)
+            })
+            .ok_or(CoreError::DeletionPreflightRefused)?;
         (
-            runtime
-                .mounted
-                .get(&transmitter)
-                .cloned()
-                .ok_or(CoreError::DeviceRemoved)?,
-            runtime.destination.clone(),
-            runtime.destination_generation,
-            runtime
-                .verified
-                .get(&transmitter)
-                .cloned()
-                .ok_or(CoreError::DeletionPreflightRefused)?,
-            runtime
-                .verified_additional
-                .get(&transmitter)
-                .cloned()
-                .unwrap_or_default(),
-            runtime
-                .m4a_barrier_runs
-                .get(&transmitter)
-                .cloned()
-                .ok_or(CoreError::DeletionPreflightRefused)?,
+            source_id.clone(),
+            format!("{} 백업 폴더", evidence.rule.archive_directory_name),
         )
-    };
-    let scan = scan_stable(
-        &mounted.descriptor.mount_root,
-        transmitter,
-        UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC),
-        &backup_core::clock::SystemClock,
-    )?;
-    state
-        .proposals
-        .lock()
-        .invalidate(ProposalInvalidation::NewScanResults);
-    let scan_generation = {
-        let mut runtime = state.runtime.lock();
-        let generation = runtime.scan_generations.entry(transmitter).or_default();
-        *generation = generation.saturating_add(1);
-        *generation
-    };
-    let context = DeletionContext {
-        source_id: legacy_source_id_for_transmitter(&state.ledger.lock(), transmitter)?,
-        transmitter,
-        paired_volume_uuid: mounted.descriptor.volume_uuid,
-        mount_generation: mounted.descriptor.mount_generation,
-        scan_generation,
-        destination_generation,
-        source_root: mounted.descriptor.mount_root,
-        destination_root: destination,
     };
     let fields = [("mode", AuditValue::Text("manual"))];
     state.append_audit(
@@ -1166,24 +1426,11 @@ pub fn prepare_trash(
         },
         AuditDurability::SyncData,
     )?;
-    let summary = state.proposals.lock().prepare(
-        CompleteDeletionSnapshot {
-            context,
-            candidates: verified,
-            additional_files,
-            current_source_paths: source_paths_for_scan(&scan),
-            m4a_barrier_run_id: barrier_run,
-        },
-        state.elapsed(),
-        !state.ledger.lock().deletion_disabled(),
-        &NoDeletionFaults,
-    )?;
-    let expires_at = (OffsetDateTime::now_utc()
-        + time::Duration::seconds(
-            i64::try_from(summary.expires_in_seconds).map_err(|_| CoreError::InvalidRequest)?,
-        ))
-    .format(&Rfc3339)
-    .map_err(|_| CoreError::InvalidRequest)?;
+    let proposal = prepare_rule_trash(state, &source_id, OffsetDateTime::now_utc())?;
+    let expires_at = proposal
+        .expires_at
+        .format(&Rfc3339)
+        .map_err(|_| CoreError::InvalidRequest)?;
     {
         let mut runtime = state.runtime.lock();
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
@@ -1192,14 +1439,191 @@ pub fn prepare_trash(
         publish_locked(app, &mut runtime);
     }
     Ok(TrashProposalSummaryDto {
-        proposal_id: summary.proposal_id,
-        transmitter: summary.transmitter,
-        session_count: summary.session_count,
-        file_count: summary.file_count,
-        byte_count: summary.byte_count,
-        destination_summary: "DJI-Mic-Mini-2S 백업 폴더".to_owned(),
+        proposal_id: proposal.proposal_id,
+        transmitter,
+        session_count: proposal.session_count,
+        file_count: proposal.file_count,
+        byte_count: proposal.byte_count,
+        destination_summary,
         expires_at,
     })
+}
+
+pub fn prepare_rule_trash(
+    state: &AppState,
+    source_id: &SourceId,
+    now: OffsetDateTime,
+) -> Result<DeletionProposal, CoreError> {
+    let (evidence, current_authority, destination_generation, scan_generation) = {
+        let runtime = state.runtime.lock();
+        let evidence = runtime
+            .rule_deletions
+            .get(source_id)
+            .cloned()
+            .ok_or(CoreError::DeletionPreflightRefused)?;
+        let current_authority = runtime
+            .matched
+            .get(source_id)
+            .map(|matched| matched.authority.clone())
+            .ok_or(CoreError::DeviceRemoved)?;
+        (
+            evidence,
+            current_authority,
+            runtime.destination_generation,
+            *runtime.rule_scan_generations.get(source_id).unwrap_or(&0),
+        )
+    };
+    if current_authority != evidence.authority
+        || destination_generation != evidence.destination_generation
+        || scan_generation != evidence.scan_generation
+    {
+        return Err(CoreError::ProposalInvalidated);
+    }
+    let current_rule = state
+        .ledger
+        .lock()
+        .backup_rule(&evidence.rule.id)?
+        .ok_or(CoreError::DeletionPreflightRefused)?;
+    if current_rule != evidence.rule {
+        return Err(CoreError::ProposalInvalidated);
+    }
+    let context = RuleDeletionContext {
+        source_id,
+        rule_id: &current_rule.id,
+        rule_updated_at: &current_rule.updated_at,
+        authority: &current_authority,
+        destination_generation,
+        scan_generation,
+    };
+    let deletion_allowed = !state.ledger.lock().deletion_disabled();
+    let proposal = {
+        let ledger = state.ledger.lock();
+        state.proposals.lock().prepare_rule(
+            context,
+            &current_rule,
+            evidence.snapshot,
+            now,
+            deletion_allowed,
+            &ledger,
+            &NoDeletionFaults,
+        )?
+    };
+    state.runtime.lock().awaiting_rule_deletion = Some(source_id.clone());
+    Ok(proposal)
+}
+
+pub fn confirm_rule_trash_with_adapter(
+    state: &AppState,
+    source_id: &SourceId,
+    proposal_id: &str,
+    now: OffsetDateTime,
+    trash: &dyn TrashAdapter,
+    observer: &mut dyn FnMut(),
+) -> Result<backup_core::deletion::DeletionReport, CoreError> {
+    let (current_authority, destination_generation, scan_generation) = {
+        let runtime = state.runtime.lock();
+        if runtime.awaiting_rule_deletion.as_ref() != Some(source_id) {
+            return Err(CoreError::ProposalInvalidated);
+        }
+        (
+            runtime
+                .matched
+                .get(source_id)
+                .map(|matched| matched.authority.clone())
+                .ok_or(CoreError::DeviceRemoved)?,
+            runtime.destination_generation,
+            *runtime.rule_scan_generations.get(source_id).unwrap_or(&0),
+        )
+    };
+    let current_rule = state
+        .ledger
+        .lock()
+        .backup_rule(&current_authority.source.rule_id)?
+        .ok_or(CoreError::DeletionPreflightRefused)?;
+    let context = RuleDeletionContext {
+        source_id,
+        rule_id: &current_rule.id,
+        rule_updated_at: &current_rule.updated_at,
+        authority: &current_authority,
+        destination_generation,
+        scan_generation,
+    };
+    let started_at = now_string();
+    let finished_at = now_string();
+    let result = {
+        let mut ledger = state.ledger.lock();
+        state.proposals.lock().confirm_rule_observed(
+            proposal_id,
+            RuleDeletionConfirmation {
+                current_context: context,
+                current_rule: &current_rule,
+                now,
+                started_at: &started_at,
+                finished_at: &finished_at,
+            },
+            &mut ledger,
+            trash,
+            &NoDeletionFaults,
+            observer,
+        )
+    };
+    let mut runtime = state.runtime.lock();
+    runtime.awaiting_rule_deletion = None;
+    runtime.rule_deletions.remove(source_id);
+    result
+}
+
+pub fn retire_ready_rule_sources_with_adapter(
+    state: &AppState,
+    outcomes: &[SourceRunOutcome],
+    now: OffsetDateTime,
+    trash: &dyn TrashAdapter,
+) -> Result<Vec<SourceDeletionOutcome>, CoreError> {
+    let mut retirements = Vec::new();
+    for outcome in outcomes.iter().filter(|outcome| outcome.deletion_ready) {
+        let automatic_trash = state
+            .ledger
+            .lock()
+            .batch_run_evidence(&outcome.batch_run_id)?
+            .is_some_and(|run| run.frozen_preferences.automatic_trash);
+        if !automatic_trash {
+            continue;
+        }
+        let source_id = outcome.source_id.clone();
+        let proposal = match prepare_rule_trash(state, &source_id, now) {
+            Ok(proposal) => proposal,
+            Err(error) => {
+                state.runtime.lock().rule_deletions.remove(&source_id);
+                retirements.push(SourceDeletionOutcome {
+                    source_id,
+                    report: None,
+                    error: Some(error.public(None)),
+                });
+                continue;
+            }
+        };
+        let result = confirm_rule_trash_with_adapter(
+            state,
+            &source_id,
+            &proposal.proposal_id,
+            now + time::Duration::seconds(1),
+            trash,
+            &mut || {},
+        );
+        match result {
+            Ok(report) => retirements.push(SourceDeletionOutcome {
+                source_id,
+                report: Some(report),
+                error: None,
+            }),
+            Err(error) => retirements.push(SourceDeletionOutcome {
+                source_id,
+                report: None,
+                error: Some(error.public(None)),
+            }),
+        }
+    }
+    Ok(retirements)
 }
 
 pub fn confirm_trash(
@@ -1208,40 +1632,26 @@ pub fn confirm_trash(
     proposal_id: &str,
 ) -> Result<(), CoreError> {
     let _guard = state.begin_operation()?;
-    let context = {
+    let (source_id, transmitter) = {
         let mut runtime = state.runtime.lock();
+        let source_id = runtime
+            .awaiting_rule_deletion
+            .clone()
+            .ok_or(CoreError::ProposalInvalidated)?;
         let transmitter = runtime
-            .snapshot
-            .transmitters
-            .iter()
-            .find(|snapshot| snapshot.deletion_phase == DeletionPhase::AwaitingConfirmation)
-            .map(|snapshot| snapshot.transmitter)
+            .matched
+            .get(&source_id)
+            .and_then(matched_legacy_transmitter)
             .ok_or(CoreError::ProposalInvalidated)?;
         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
             snapshot.deletion_phase = DeletionPhase::Revalidating;
         });
         runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
-        let mounted = runtime
-            .mounted
-            .get(&transmitter)
-            .cloned()
-            .ok_or(CoreError::DeviceRemoved)?;
-        let context = DeletionContext {
-            source_id: legacy_source_id_for_transmitter(&state.ledger.lock(), transmitter)?,
-            transmitter,
-            paired_volume_uuid: mounted.descriptor.volume_uuid,
-            mount_generation: mounted.descriptor.mount_generation,
-            scan_generation: *runtime.scan_generations.get(&transmitter).unwrap_or(&0),
-            destination_generation: runtime.destination_generation,
-            source_root: mounted.descriptor.mount_root,
-            destination_root: runtime.destination.clone(),
-        };
         publish_locked(app, &mut runtime);
-        context
+        (source_id, transmitter)
     };
     let app_for_deletion = app.clone();
     let state_for_deletion = state.clone();
-    let transmitter = context.transmitter;
     let mut observer = move || {
         let mut runtime = state_for_deletion.runtime.lock();
         runtime.snapshot.current_stage = Some(CurrentStage::Trash);
@@ -1261,21 +1671,16 @@ pub fn confirm_trash(
         },
         AuditDurability::SyncData,
     )?;
-    let report = state.proposals.lock().confirm_observed(
+    let report = confirm_rule_trash_with_adapter(
+        state,
+        &source_id,
         proposal_id,
-        DeletionConfirmation {
-            current_context: &context,
-            now: state.elapsed(),
-            started_at: &now_string(),
-            finished_at: &now_string(),
-        },
-        &mut state.ledger.lock(),
+        OffsetDateTime::now_utc(),
         &MacTrash,
-        &NoDeletionFaults,
         &mut observer,
     )?;
     let mut runtime = state.runtime.lock();
-    update_transmitter(&mut runtime.snapshot, context.transmitter, |snapshot| {
+    update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
         snapshot.deletion_phase = match report.outcome {
             DeletionOutcome::Deleted => DeletionPhase::Deleted,
             DeletionOutcome::Refused => DeletionPhase::Refused,
@@ -1286,10 +1691,6 @@ pub fn confirm_trash(
             snapshot.phase = BackupPhase::Error;
         }
     });
-    runtime.verified.remove(&context.transmitter);
-    runtime.verified_additional.remove(&context.transmitter);
-    runtime.m4a_barrier_runs.remove(&context.transmitter);
-    runtime.current_source_paths.remove(&context.transmitter);
     if report.outcome == DeletionOutcome::PartiallyDeleted {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = "partial_trash".to_owned();
@@ -1307,7 +1708,7 @@ pub fn confirm_trash(
                 DeletionOutcome::PartiallyDeleted => "partial_trash",
             }
             .to_owned(),
-            source_id: Some(context.source_id.clone()),
+            source_id: Some(source_id.clone()),
             count_value: Some(report.deleted_files),
             byte_value: Some(report.deleted_bytes),
             severity: match report.outcome {
@@ -1321,7 +1722,7 @@ pub fn confirm_trash(
             "confirm_trash",
             "activity_persistence",
             &error,
-            Some(context.transmitter),
+            Some(transmitter),
             None,
         );
     }
@@ -1346,7 +1747,7 @@ pub fn confirm_trash(
                 DeletionOutcome::PartiallyDeleted => AuditLevel::Error,
             },
             code: "retirement.complete",
-            transmitter: Some(context.transmitter),
+            transmitter: Some(transmitter),
             fields: &fields,
         },
         AuditDurability::SyncData,
@@ -1367,18 +1768,6 @@ pub fn confirm_trash(
     Ok(())
 }
 
-fn source_paths_for_scan(scan: &ScanResult) -> BTreeSet<std::path::PathBuf> {
-    scan.recordings
-        .iter()
-        .map(|recording| recording.relative_path.clone())
-        .chain(
-            scan.additional_files
-                .iter()
-                .map(|file| file.relative_path.clone()),
-        )
-        .collect()
-}
-
 fn resolve_live_source(
     root: &std::path::Path,
     relative: &std::path::Path,
@@ -1394,22 +1783,6 @@ fn resolve_live_source(
         return Err(CoreError::SourceChanged);
     }
     Ok(canonical)
-}
-
-fn legacy_source_id_for_transmitter(
-    ledger: &Ledger,
-    transmitter: Transmitter,
-) -> Result<SourceId, CoreError> {
-    let slot = match transmitter {
-        Transmitter::Tx01 => "TX01",
-        Transmitter::Tx02 => "TX02",
-    };
-    ledger
-        .sources_for_rule(&ledger.dji_rule()?.id)?
-        .into_iter()
-        .find(|source| source.legacy_slot.as_deref() == Some(slot))
-        .map(|source| source.id)
-        .ok_or(CoreError::IdentityMismatch)
 }
 
 fn matched_legacy_transmitter(matched: &MatchedSource) -> Option<Transmitter> {
