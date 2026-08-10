@@ -6,6 +6,7 @@ rust-version = "1.97"
 
 [dependencies]
 fs2 = "=0.4.3"
+globset = "=0.4.19"
 parking_lot = "=0.12.5"
 regex = "=1.13.1"
 rusqlite = { version = "=0.40.2", features = ["bundled"] }

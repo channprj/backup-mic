@@ -25,6 +25,7 @@ pub enum PublicErrorCode {
     #[serde(rename = "partial_trash")]
     PartialDeletion,
     Busy,
+    InvalidRule,
     InvalidRequest,
     Cancelled,
     Internal,
@@ -80,6 +81,8 @@ pub enum CoreError {
     DeletionPreflightRefused,
     #[error("another operation is active")]
     Busy,
+    #[error("invalid backup rule")]
+    InvalidRule,
     #[error("invalid request")]
     InvalidRequest,
     #[error("operation was cancelled")]
@@ -108,6 +111,7 @@ impl CoreError {
             Self::ProposalInvalidated => "proposal_invalidated",
             Self::DeletionPreflightRefused => "deletion_preflight_refused",
             Self::Busy => "operation_busy",
+            Self::InvalidRule => "invalid_rule",
             Self::InvalidRequest => "invalid_request",
             Self::Cancelled => "operation_cancelled",
         }
@@ -182,6 +186,7 @@ impl CoreError {
                 true,
             ),
             Self::Busy => (PublicErrorCode::Busy, "operation_busy", true),
+            Self::InvalidRule => (PublicErrorCode::InvalidRule, "invalid_rule", false),
             Self::InvalidRequest => (PublicErrorCode::InvalidRequest, "invalid_request", false),
             Self::Cancelled => (PublicErrorCode::Cancelled, "operation_cancelled", true),
         };

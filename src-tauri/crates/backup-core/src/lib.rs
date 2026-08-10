@@ -18,6 +18,7 @@ pub mod ledger;
 pub mod preferences;
 pub mod recording;
 pub mod recovery;
+pub mod rule;
 pub mod scanner;
 pub mod state;
 
