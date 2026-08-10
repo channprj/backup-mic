@@ -123,6 +123,8 @@ fn app_state_reports_adapter_failures_with_the_public_support_code() {
         message_code: "autostart_failed".to_owned(),
         retryable: true,
         transmitter: None,
+        source_id: None,
+        source_label: None,
     };
 
     let outcome = state.report_public_failure("set_autostart", "adapter", &error, None);

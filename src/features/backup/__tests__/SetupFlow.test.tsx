@@ -1,65 +1,36 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import completeFixture from "../../../../contracts/fixtures/backup-complete.json";
 import { SetupFlow } from "../SetupFlow";
 import { appSnapshotSchema } from "../contracts";
 
-const candidates = [
-  {
-    candidate_id: "11111111-1111-4111-8111-111111111111",
-    display_name: "DJI 저장 장치 A",
-    capacity_bytes: 15_636_365_312,
-  },
-  {
-    candidate_id: "22222222-2222-4222-8222-222222222222",
-    display_name: "DJI 저장 장치 B",
-    capacity_bytes: 15_636_365_312,
-  },
-] as const;
-
-function pairingSnapshot(candidateCount = 2) {
-  return appSnapshotSchema.parse({
-    ...completeFixture,
-    phase: "idle",
-    setup_state: "needs_pairing",
-    pairing_candidates: candidates.slice(0, candidateCount),
-  });
-}
+const complete = appSnapshotSchema.parse(completeFixture);
 
 describe("SetupFlow", () => {
-  it("waits until both transmitter volumes are visible", () => {
+  it("requires only a destination and explains the built-in DJI rule", () => {
+    const onChooseDestination = vi.fn().mockResolvedValue(undefined);
     render(
       <SetupFlow
-        snapshot={pairingSnapshot(1)}
+        snapshot={{ ...complete, setup_state: "needs_destination" }}
         busy={false}
-        onChooseDestination={vi.fn()}
-        onPair={vi.fn()}
+        onChooseDestination={onChooseDestination}
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("두 번째 송신기");
-    expect(screen.getByRole("button", { name: "이 송신기로 연결" })).toBeDisabled();
+    expect(screen.getByText(/DJI Mic Mini 2S 기본 규칙/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "백업 폴더 선택" }));
+    expect(onChooseDestination).toHaveBeenCalledOnce();
+    expect(screen.queryByText(/TX01|TX02/)).not.toBeInTheDocument();
   });
 
-  it("swaps labels and submits two unique opaque assignments", async () => {
-    const onPair = vi.fn().mockResolvedValue(undefined);
+  it("describes where additional recorder rules are configured", () => {
     render(
       <SetupFlow
-        snapshot={pairingSnapshot()}
+        snapshot={complete}
         busy={false}
         onChooseDestination={vi.fn()}
-        onPair={onPair}
       />,
     );
-
-    fireEvent.click(screen.getAllByRole("radio", { name: "TX01로 지정" })[1]);
-    fireEvent.click(screen.getByRole("button", { name: "이 송신기로 연결" }));
-
-    await waitFor(() => {
-      expect(onPair).toHaveBeenCalledWith([
-        { candidate_id: candidates[0].candidate_id, transmitter: "TX02" },
-        { candidate_id: candidates[1].candidate_id, transmitter: "TX01" },
-      ]);
-    });
+    expect(screen.getByText(/다른 녹음기는 Settings에서 추가/)).toBeInTheDocument();
   });
 });

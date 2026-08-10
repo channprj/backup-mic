@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -18,7 +18,11 @@ use backup_core::{
     events::{ActivityEntry, ActivitySeverity},
     ledger::Ledger,
     preferences::{BackupPreferences, PreferenceKey},
-    rule::{BackupRule, BackupRuleDraft},
+    rule::{
+        BackupRule, BackupRuleDraft, DeviceConstraintProfile, FilenameProfile, compile_rule,
+        validate_rule,
+    },
+    rule_scanner::scan_rule_once,
     source::{
         LEGACY_TX01_SOURCE_ID, LEGACY_TX02_SOURCE_ID, MountedSourceAuthority, SourceId,
         SourceRecord,
@@ -30,8 +34,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::{
     dto::{
-        AppSnapshotDto, ArtifactFormatDto, BackupSettingsDto, NotificationStatusDto, ProgressDto,
-        RetirementModeDto, SetupStateDto, TransmitterSnapshotDto,
+        AppSnapshotDto, ArtifactFormatDto, BackupRuleDto, BackupSettingsDto, NotificationStatusDto,
+        ProgressDto, RetirementModeDto, RuleTestResultDto, SetupStateDto, SourceSnapshotDto,
+        TransmitterSnapshotDto,
     },
     failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome},
     pairing::{PairingAssignment, PairingManager},
@@ -105,6 +110,19 @@ impl AppState {
     ) -> Result<Self, CoreError> {
         let paired = ledger.paired_devices()?;
         let preferences = ledger.read_preferences()?;
+        let rules = ledger.backup_rules(true)?;
+        let mut sources = Vec::new();
+        for rule in &rules {
+            for source in ledger.sources_for_rule(&rule.id)? {
+                sources.push(SourceSnapshotDto::idle(
+                    source.id.as_str().to_owned(),
+                    rule.name.clone(),
+                    source.display_name,
+                    source.legacy_slot,
+                ));
+            }
+        }
+        let backup_rules = rules.iter().map(BackupRuleDto::from).collect();
         let setup_state = if destination_configured {
             SetupStateDto::Ready
         } else {
@@ -117,6 +135,8 @@ impl AppState {
                     phase: BackupPhase::Idle,
                     message_code: "idle".to_owned(),
                     overall_progress: ProgressDto::from(&Progress::default()),
+                    sources,
+                    backup_rules,
                     transmitters: vec![
                         transmitter_snapshot(Transmitter::Tx01),
                         transmitter_snapshot(Transmitter::Tx02),
@@ -432,14 +452,135 @@ impl AppState {
         self.proposals
             .lock()
             .invalidate(ProposalInvalidation::NewScanResults);
+        let (rules, source_rule_names) = public_rule_catalog(&self.ledger.lock())?;
         let mut runtime = self.runtime.lock();
         runtime
             .rule_deletions
             .retain(|_, evidence| evidence.rule.id != rule.id);
         runtime.awaiting_rule_deletion = None;
+        refresh_rule_catalog(&mut runtime.snapshot, rules, &source_rule_names);
         runtime.snapshot.setting_applies_next_run = self.operation_is_active();
         runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
         Ok(rule)
+    }
+
+    pub fn archive_backup_rule_for_state(
+        &self,
+        rule_id: &str,
+        archived_at: &str,
+    ) -> Result<(), CoreError> {
+        let rule_id = backup_core::rule::RuleId::parse(rule_id)?;
+        {
+            let mut ledger = self.ledger.lock();
+            ledger.archive_backup_rule(&rule_id, archived_at)?;
+        }
+        self.proposals
+            .lock()
+            .invalidate(ProposalInvalidation::NewScanResults);
+        let (rules, source_rule_names) = public_rule_catalog(&self.ledger.lock())?;
+        let mut runtime = self.runtime.lock();
+        runtime
+            .rule_deletions
+            .retain(|_, evidence| evidence.rule.id != rule_id);
+        runtime.awaiting_rule_deletion = None;
+        refresh_rule_catalog(&mut runtime.snapshot, rules, &source_rule_names);
+        runtime.snapshot.setting_applies_next_run = self.operation_is_active();
+        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn restore_dji_rule_for_state(&self, updated_at: &str) -> Result<BackupRule, CoreError> {
+        let rule = self.ledger.lock().restore_dji_preset(updated_at)?;
+        self.proposals
+            .lock()
+            .invalidate(ProposalInvalidation::NewScanResults);
+        let (rules, source_rule_names) = public_rule_catalog(&self.ledger.lock())?;
+        let mut runtime = self.runtime.lock();
+        runtime
+            .rule_deletions
+            .retain(|_, evidence| evidence.rule.id != rule.id);
+        runtime.awaiting_rule_deletion = None;
+        refresh_rule_catalog(&mut runtime.snapshot, rules, &source_rule_names);
+        runtime.snapshot.setting_applies_next_run = self.operation_is_active();
+        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
+        Ok(rule)
+    }
+
+    pub fn test_backup_rule_for_state(
+        &self,
+        draft: BackupRuleDraft,
+    ) -> Result<RuleTestResultDto, CoreError> {
+        let draft = validate_rule(draft)?;
+        let test_rule = BackupRule {
+            id: draft.id.clone().unwrap_or_default(),
+            name: draft.name,
+            archive_directory_name: draft.archive_directory_name,
+            enabled: draft.enabled,
+            volume_name_glob: draft.volume_name_glob,
+            required_path_globs: draft.required_path_globs,
+            backup_file_globs: draft.backup_file_globs,
+            session_directory_globs: draft.session_directory_globs,
+            filename_prefix: draft.filename_prefix,
+            filename_suffix: draft.filename_suffix,
+            filename_profile: FilenameProfile::Preserve,
+            device_constraint_profile: DeviceConstraintProfile::GenericExternal,
+            preset_kind: None,
+            preset_revision: None,
+            archive_directory_locked: false,
+            archived_at: None,
+            created_at: "rule-test".to_owned(),
+            updated_at: "rule-test".to_owned(),
+        };
+        let compiled_test = compile_rule(test_rule.clone())?;
+        let existing_rules = self.ledger.lock().backup_rules(false)?;
+        let observed = self
+            .runtime
+            .lock()
+            .observed
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+        let mut matched_volumes = Vec::new();
+        let mut matched_file_count = 0_u64;
+        let mut conflicts = BTreeSet::new();
+        for mounted in observed {
+            let display_name = safe_volume_label(&mounted.display_name);
+            if !shared_external_policy(&mounted)
+                || !compiled_test.matches_volume_name(&display_name)
+            {
+                continue;
+            }
+            let scan =
+                scan_rule_once(&mounted.descriptor.mount_root, &compiled_test, local_offset)?;
+            if scan.files.is_empty() {
+                continue;
+            }
+            matched_volumes.push(display_name.clone());
+            matched_file_count = matched_file_count
+                .checked_add(u64::try_from(scan.files.len()).map_err(|_| CoreError::InvalidRule)?)
+                .ok_or(CoreError::InvalidRule)?;
+            for rule in existing_rules.iter().filter(|rule| {
+                rule.enabled && rule.archived_at.is_none() && rule.id != test_rule.id
+            }) {
+                let compiled = compile_rule(rule.clone())?;
+                if compiled.matches_volume_name(&display_name)
+                    && rule_constraint_matches(&mounted, rule.device_constraint_profile)
+                    && !scan_rule_once(&mounted.descriptor.mount_root, &compiled, local_offset)?
+                        .files
+                        .is_empty()
+                {
+                    conflicts.insert(rule.name.clone());
+                }
+            }
+        }
+        matched_volumes.sort();
+        matched_volumes.dedup();
+        Ok(RuleTestResultDto {
+            matched_volumes,
+            matched_file_count,
+            conflict_rule_names: conflicts.into_iter().collect(),
+        })
     }
 
     pub fn upsert_source_for_state(
@@ -447,7 +588,23 @@ impl AppState {
         source: &SourceRecord,
         seen_at: &str,
     ) -> Result<(), CoreError> {
-        self.ledger.lock().upsert_source(source, seen_at)
+        let rule = {
+            let mut ledger = self.ledger.lock();
+            ledger.upsert_source(source, seen_at)?;
+            ledger
+                .backup_rule(&source.rule_id)?
+                .ok_or(CoreError::LedgerCorrupt)?
+        };
+        let mut runtime = self.runtime.lock();
+        upsert_source_snapshot(
+            &mut runtime.snapshot,
+            source,
+            &rule,
+            false,
+            BackupPhase::Idle,
+        );
+        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
+        Ok(())
     }
 
     pub fn install_matched_source_for_state(&self, matched: MatchedSource) {
@@ -528,6 +685,12 @@ impl AppState {
                     if runtime.awaiting_rule_deletion.as_ref() == Some(source_id) {
                         runtime.awaiting_rule_deletion = None;
                     }
+                    update_source(&mut runtime.snapshot, source_id, |snapshot| {
+                        snapshot.mounted = false;
+                        snapshot.phase = BackupPhase::Idle;
+                        snapshot.deletion_ready = false;
+                        snapshot.retirement_outcome = DeletionPhase::Inactive;
+                    });
                     if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
                         runtime.mounted.remove(&transmitter);
                         update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
@@ -613,6 +776,13 @@ impl AppState {
             Ok(RuleVolumeMatch::Matched(matched)) => {
                 let matched = *matched;
                 let source_id = matched.authority.source.id.clone();
+                upsert_source_snapshot(
+                    &mut runtime.snapshot,
+                    &matched.authority.source,
+                    &matched.rule,
+                    true,
+                    BackupPhase::Detecting,
+                );
                 if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
                     runtime.mounted.insert(transmitter, mounted);
                     update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
@@ -759,6 +929,10 @@ impl AppState {
             snapshot.deletion_ready = false;
             snapshot.deletion_phase = DeletionPhase::Inactive;
         }
+        for source in &mut runtime.snapshot.sources {
+            source.deletion_ready = false;
+            source.retirement_outcome = DeletionPhase::Inactive;
+        }
         runtime.snapshot.setup_state = SetupStateDto::Ready;
         publish_locked(app, &mut runtime);
     }
@@ -770,7 +944,11 @@ impl AppState {
             ledger.recent_activity(8)?
         };
         let mut runtime = self.runtime.lock();
-        runtime.snapshot.recent_activity = recent_activity;
+        runtime.snapshot.recent_activity = runtime
+            .snapshot
+            .clone()
+            .with_activity(recent_activity)
+            .recent_activity;
         publish_locked(app, &mut runtime);
         Ok(())
     }
@@ -809,6 +987,45 @@ impl AppState {
         publish_locked(app, &mut runtime);
     }
 
+    pub fn set_source_deletion_error(
+        &self,
+        app: &AppHandle,
+        error: &CoreError,
+        source_id: &SourceId,
+    ) {
+        let public = self.public_error_for_source(error.public(None), source_id);
+        let mut runtime = self.runtime.lock();
+        runtime.snapshot.phase = BackupPhase::Error;
+        runtime.snapshot.message_code = public.message_code.clone();
+        runtime.snapshot.error = Some(public);
+        runtime.snapshot.failure_stage = runtime.snapshot.current_stage;
+        runtime.snapshot.current_stage = None;
+        runtime.snapshot.setting_applies_next_run = false;
+        update_source(&mut runtime.snapshot, source_id, |snapshot| {
+            snapshot.phase = BackupPhase::Error;
+            snapshot.retirement_outcome = DeletionPhase::Refused;
+            snapshot.deletion_ready = false;
+        });
+        publish_locked(app, &mut runtime);
+    }
+
+    pub fn public_error_for_source(&self, error: PublicError, source_id: &SourceId) -> PublicError {
+        let label = self
+            .runtime
+            .lock()
+            .snapshot
+            .sources
+            .iter()
+            .find(|source| source.source_id == source_id.as_str())
+            .map(|source| source.volume_name.clone())
+            .unwrap_or_else(|| "External Recorder".to_owned());
+        error.with_source(source_id.clone(), label)
+    }
+
+    pub fn awaiting_deletion_source(&self) -> Option<SourceId> {
+        self.runtime.lock().awaiting_rule_deletion.clone()
+    }
+
     pub fn awaiting_deletion_transmitter(&self) -> Option<Transmitter> {
         self.runtime
             .lock()
@@ -834,9 +1051,9 @@ impl AppState {
     pub fn should_keep_window_open(&self) -> bool {
         let runtime = self.runtime.lock();
         runtime.snapshot.setup_state != SetupStateDto::Ready
-            || runtime.snapshot.transmitters.iter().any(|snapshot| {
+            || runtime.snapshot.sources.iter().any(|snapshot| {
                 matches!(
-                    snapshot.deletion_phase,
+                    snapshot.retirement_outcome,
                     DeletionPhase::Preparing
                         | DeletionPhase::AwaitingConfirmation
                         | DeletionPhase::Revalidating
@@ -919,6 +1136,76 @@ pub(crate) fn update_transmitter(
     }
 }
 
+pub(crate) fn update_source(
+    snapshot: &mut AppSnapshotDto,
+    source_id: &SourceId,
+    update: impl FnOnce(&mut SourceSnapshotDto),
+) {
+    if let Some(source) = snapshot
+        .sources
+        .iter_mut()
+        .find(|source| source.source_id == source_id.as_str())
+    {
+        update(source);
+    }
+}
+
+fn upsert_source_snapshot(
+    snapshot: &mut AppSnapshotDto,
+    source: &SourceRecord,
+    rule: &BackupRule,
+    mounted: bool,
+    phase: BackupPhase,
+) {
+    if let Some(existing) = snapshot
+        .sources
+        .iter_mut()
+        .find(|existing| existing.source_id == source.id.as_str())
+    {
+        existing.rule_name = rule.name.clone();
+        existing.volume_name = crate::dto::safe_label(&source.display_name);
+        existing.legacy_slot = source.legacy_slot.clone();
+        existing.mounted = mounted;
+        existing.phase = phase;
+        return;
+    }
+    let mut item = SourceSnapshotDto::idle(
+        source.id.as_str().to_owned(),
+        rule.name.clone(),
+        source.display_name.clone(),
+        source.legacy_slot.clone(),
+    );
+    item.mounted = mounted;
+    item.phase = phase;
+    snapshot.sources.push(item);
+}
+
+fn public_rule_catalog(
+    ledger: &Ledger,
+) -> Result<(Vec<BackupRule>, HashMap<String, String>), CoreError> {
+    let rules = ledger.backup_rules(true)?;
+    let mut source_rule_names = HashMap::new();
+    for rule in &rules {
+        for source in ledger.sources_for_rule(&rule.id)? {
+            source_rule_names.insert(source.id.as_str().to_owned(), rule.name.clone());
+        }
+    }
+    Ok((rules, source_rule_names))
+}
+
+fn refresh_rule_catalog(
+    snapshot: &mut AppSnapshotDto,
+    rules: Vec<BackupRule>,
+    source_rule_names: &HashMap<String, String>,
+) {
+    snapshot.backup_rules = rules.iter().map(BackupRuleDto::from).collect();
+    for source in &mut snapshot.sources {
+        if let Some(rule_name) = source_rule_names.get(&source.source_id) {
+            source.rule_name.clone_from(rule_name);
+        }
+    }
+}
+
 fn sync_pairing_snapshot(runtime: &mut RuntimeState) {
     runtime.snapshot.pairing_candidates = runtime.pairing.summaries();
     runtime.snapshot.setup_state = if !runtime.destination_configured {
@@ -950,6 +1237,7 @@ fn activity_entry(code: &str, source_id: SourceId, severity: ActivitySeverity) -
             .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
         code: code.to_owned(),
         source_id: Some(source_id),
+        source_label: None,
         count_value: None,
         byte_value: None,
         severity,
@@ -1001,6 +1289,38 @@ fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
         .filter(|item_name: &String| !item_name.is_empty())
 }
 
+fn safe_volume_label(value: &str) -> String {
+    let value = value
+        .chars()
+        .filter(|character| !character.is_control() && !matches!(character, '/' | '\\'))
+        .take(128)
+        .collect::<String>();
+    if value.trim().is_empty() {
+        "External Recorder".to_owned()
+    } else {
+        value
+    }
+}
+
+fn shared_external_policy(mounted: &MountedVolume) -> bool {
+    mounted.descriptor.protocol.eq_ignore_ascii_case("USB")
+        && !mounted.descriptor.is_internal
+        && mounted.descriptor.is_removable
+        && mounted.descriptor.is_writable
+}
+
+fn rule_constraint_matches(mounted: &MountedVolume, profile: DeviceConstraintProfile) -> bool {
+    match profile {
+        DeviceConstraintProfile::GenericExternal => true,
+        DeviceConstraintProfile::DjiMicMini2s => {
+            matches!(
+                mounted.descriptor.media_name.to_ascii_lowercase().as_str(),
+                "mic tx" | "wireless mic tx media"
+            ) && (12_000_000_000..=20_000_000_000).contains(&mounted.descriptor.nominal_capacity)
+        }
+    }
+}
+
 fn clear_retirement_authority(runtime: &mut RuntimeState) {
     runtime.rule_deletions.clear();
     runtime.rule_scan_generations.clear();
@@ -1008,6 +1328,10 @@ fn clear_retirement_authority(runtime: &mut RuntimeState) {
     for transmitter in &mut runtime.snapshot.transmitters {
         transmitter.deletion_ready = false;
         transmitter.deletion_phase = DeletionPhase::Inactive;
+    }
+    for source in &mut runtime.snapshot.sources {
+        source.deletion_ready = false;
+        source.retirement_outcome = DeletionPhase::Inactive;
     }
 }
 

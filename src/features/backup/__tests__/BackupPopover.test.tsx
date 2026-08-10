@@ -14,10 +14,18 @@ function renderPopover(snapshot = complete) {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
     chooseDestination: vi.fn().mockResolvedValue(snapshot),
-    pairDevices: vi.fn().mockResolvedValue(snapshot),
+    saveBackupRule: vi.fn().mockResolvedValue(snapshot),
+    archiveBackupRule: vi.fn().mockResolvedValue(snapshot),
+    restoreDjiRule: vi.fn().mockResolvedValue(snapshot),
+    testBackupRule: vi.fn().mockResolvedValue({
+      matched_volumes: [],
+      matched_file_count: 0,
+      conflict_rule_names: [],
+    }),
     prepareTrash: vi.fn().mockResolvedValue({
       proposal_id: "550e8400-e29b-41d4-a716-446655440000",
-      transmitter: "TX01",
+      source_id: "11111111-1111-4111-8111-111111111111",
+      source_label: "MIC_TX",
       session_count: 1,
       file_count: 9,
       byte_count: 99_000_000,
@@ -39,7 +47,7 @@ function renderPopover(snapshot = complete) {
 }
 
 describe("BackupPopover", () => {
-  it("shows accessible overall and per-transmitter copy progress", () => {
+  it("shows accessible overall and per-recorder copy progress", () => {
     renderPopover(copying);
     expect(screen.getByText("WAV 파일을 복사하는 중")).toBeInTheDocument();
     expect(
@@ -50,8 +58,8 @@ describe("BackupPopover", () => {
       "aria-valuenow",
       "42",
     );
-    expect(screen.getByText("TX01")).toBeInTheDocument();
-    expect(screen.getByText("TX02")).toBeInTheDocument();
+    expect(screen.getByText("MIC_TX")).toBeInTheDocument();
+    expect(screen.getByRole("status", { name: "1개 녹음기 연결됨" })).toBeInTheDocument();
     expect(screen.getByLabelText("백업 단계")).toHaveTextContent(
       "전체 WAV 복사WAV 검증128kbps M4A 변환전체 M4A 검증원본 재검증휴지통 이동",
     );
@@ -94,7 +102,8 @@ describe("BackupPopover", () => {
         code: "session_contains_unverified_file",
         message_code: "session_contains_unverified_file",
         retryable: true,
-        transmitter: "TX01",
+        source_id: "11111111-1111-4111-8111-111111111111",
+        source_label: "MIC_TX",
       },
     });
     const alert = screen.getByRole("alert");
@@ -116,7 +125,7 @@ describe("BackupPopover", () => {
     renderPopover(complete);
     expect(screen.getByText("백업 검증 완료")).toBeInTheDocument();
     expect(screen.getByText("11개")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "TX01 휴지통으로 이동" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "MIC_TX 휴지통으로 이동" })).toBeEnabled();
   });
 
   it("never offers source retirement for an error or partial result", () => {
@@ -127,8 +136,8 @@ describe("BackupPopover", () => {
 
   it("confirms Trash movement with the opaque proposal ID only", async () => {
     const { actions } = renderPopover(complete);
-    fireEvent.click(screen.getByRole("button", { name: "TX01 휴지통으로 이동" }));
-    expect(await screen.findByText("TX01 원본을 휴지통으로 이동할까요?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "MIC_TX 휴지통으로 이동" }));
+    expect(await screen.findByText("MIC_TX 원본을 휴지통으로 이동할까요?")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "검증 후 휴지통으로 이동" }));
     await waitFor(() => {
       expect(actions.confirmTrash).toHaveBeenCalledWith(
@@ -145,7 +154,7 @@ describe("BackupPopover", () => {
     const { actions } = renderPopover(complete);
     actions.confirmTrash.mockReturnValue(deferred);
 
-    fireEvent.click(screen.getByRole("button", { name: "TX01 휴지통으로 이동" }));
+    fireEvent.click(screen.getByRole("button", { name: "MIC_TX 휴지통으로 이동" }));
     const confirm = await screen.findByRole("button", { name: "검증 후 휴지통으로 이동" });
     fireEvent.click(confirm);
     fireEvent.click(confirm);
@@ -154,30 +163,30 @@ describe("BackupPopover", () => {
     finish(complete);
     await waitFor(() => {
       expect(
-        screen.queryByText("TX01 원본을 휴지통으로 이동할까요?"),
+        screen.queryByText("MIC_TX 원본을 휴지통으로 이동할까요?"),
       ).not.toBeInTheDocument();
     });
   });
 
   it("dismisses a proposal when Rust revokes deletion readiness", async () => {
     const { actions, rerender } = renderPopover(complete);
-    fireEvent.click(screen.getByRole("button", { name: "TX01 휴지통으로 이동" }));
-    expect(await screen.findByText("TX01 원본을 휴지통으로 이동할까요?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "MIC_TX 휴지통으로 이동" }));
+    expect(await screen.findByText("MIC_TX 원본을 휴지통으로 이동할까요?")).toBeInTheDocument();
 
     const revoked = {
       ...complete,
       revision: complete.revision + 1,
-      transmitters: complete.transmitters.map((transmitter) =>
-        transmitter.transmitter === "TX01"
-          ? { ...transmitter, deletion_ready: false, retirement_outcome: "refused" as const }
-          : transmitter,
+      sources: complete.sources.map((source) =>
+        source.source_id === "11111111-1111-4111-8111-111111111111"
+          ? { ...source, deletion_ready: false, retirement_outcome: "refused" as const }
+          : source,
       ),
     };
     rerender(<BackupPopover snapshot={revoked} actions={actions} />);
 
     await waitFor(() => {
       expect(
-        screen.queryByText("TX01 원본을 휴지통으로 이동할까요?"),
+        screen.queryByText("MIC_TX 원본을 휴지통으로 이동할까요?"),
       ).not.toBeInTheDocument();
     });
   });

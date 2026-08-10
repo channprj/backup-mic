@@ -38,10 +38,10 @@ export function TrashDialog({
             이동 직전 다시 검증합니다
           </div>
           <AlertDialogTitle>
-            {proposal?.transmitter} 원본을 휴지통으로 이동할까요?
+            {proposal?.source_label} 원본을 휴지통으로 이동할까요?
           </AlertDialogTitle>
           <AlertDialogDescription>
-            송신기와 백업 결과 전체가 그대로인지 다시 검사합니다. 하나라도 달라지면 이동하지
+            녹음기와 백업 결과 전체가 그대로인지 다시 검사합니다. 하나라도 달라지면 이동하지
             않으며, 휴지통이 비워지기 전에는 복구할 수 있습니다.
           </AlertDialogDescription>
         </AlertDialogHeader>

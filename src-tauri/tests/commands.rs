@@ -8,7 +8,10 @@ fn command_surface_is_exact_and_has_no_arbitrary_settings_or_path_ipc() {
             "get_app_snapshot",
             "backup_now",
             "choose_destination",
-            "pair_devices",
+            "save_backup_rule",
+            "archive_backup_rule",
+            "restore_dji_rule",
+            "test_backup_rule",
             "prepare_trash",
             "confirm_trash",
             "set_autostart",
@@ -31,5 +34,8 @@ fn command_surface_is_exact_and_has_no_arbitrary_settings_or_path_ipc() {
         "process_command",
     ] {
         assert!(!source.contains(forbidden));
+    }
+    for forbidden_command in ["pair_devices", "set_setting", "scan_path", "open_path"] {
+        assert!(!REGISTERED_COMMANDS.contains(&forbidden_command));
     }
 }

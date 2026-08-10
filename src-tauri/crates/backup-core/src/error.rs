@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::state::Transmitter;
+use crate::{source::SourceId, state::Transmitter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -33,11 +33,23 @@ pub enum PublicErrorCode {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PublicError {
     pub code: PublicErrorCode,
     pub message_code: String,
     pub retryable: bool,
+    #[serde(skip, default)]
     pub transmitter: Option<Transmitter>,
+    pub source_id: Option<SourceId>,
+    pub source_label: Option<String>,
+}
+
+impl PublicError {
+    pub fn with_source(mut self, source_id: SourceId, source_label: String) -> Self {
+        self.source_id = Some(source_id);
+        self.source_label = Some(source_label);
+        self
+    }
 }
 
 #[derive(Debug, Error)]
@@ -208,6 +220,11 @@ impl CoreError {
             message_code: message_code.to_owned(),
             retryable,
             transmitter,
+            source_id: None,
+            source_label: transmitter.map(|transmitter| match transmitter {
+                Transmitter::Tx01 => "TX01".to_owned(),
+                Transmitter::Tx02 => "TX02".to_owned(),
+            }),
         }
     }
 }

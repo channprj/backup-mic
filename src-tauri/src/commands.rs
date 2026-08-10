@@ -5,6 +5,8 @@ use backup_core::{
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     preferences::PreferenceKey,
+    rule::BackupRuleDraft,
+    source::SourceId,
     state::Transmitter,
 };
 use tauri::{AppHandle, Manager as _, State};
@@ -14,17 +16,19 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use crate::{
     app_state::AppState,
-    dto::{AppSnapshotDto, TrashProposalSummaryDto},
+    dto::{AppSnapshotDto, RuleTestResultDto, TrashProposalSummaryDto},
     lifecycle::AppLifecycle,
     orchestrator,
-    pairing::PairingAssignment,
 };
 
-pub const REGISTERED_COMMANDS: [&str; 14] = [
+pub const REGISTERED_COMMANDS: [&str; 17] = [
     "get_app_snapshot",
     "backup_now",
     "choose_destination",
-    "pair_devices",
+    "save_backup_rule",
+    "archive_backup_rule",
+    "restore_dji_rule",
+    "test_backup_rule",
     "prepare_trash",
     "confirm_trash",
     "set_autostart",
@@ -170,61 +174,90 @@ pub(crate) async fn choose_destination_for_state(
 }
 
 #[tauri::command]
-pub fn pair_devices(
-    app: AppHandle,
+pub fn save_backup_rule(
     state: State<'_, AppState>,
-    assignments: Vec<PairingAssignment>,
+    draft: BackupRuleDraft,
 ) -> Result<AppSnapshotDto, PublicError> {
-    let guard = state.begin_operation().map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "pair_devices",
-            "operation_start",
-            error,
-            None,
-        )
-    })?;
-    let mounted = state
-        .pair_devices(&app, &assignments, &orchestrator::now_string())
+    state
+        .save_backup_rule_for_state(draft, &orchestrator::now_string())
         .map_err(|error| {
             reported_core_error(
                 state.inner(),
-                "pair_devices",
-                "pairing_persistence",
+                "save_backup_rule",
+                "rule_persistence",
                 error,
                 None,
             )
         })?;
-    if let Err(error) = state.record_activity(
-        &app,
-        activity(
-            "devices_paired",
-            None,
-            u64::try_from(assignments.len()).ok(),
-            ActivitySeverity::Success,
-        ),
-    ) {
-        state.report_failure("pair_devices", "activity_persistence", &error, None, None);
-    }
-    drop(guard);
-    if state.automatic_backup_enabled() && !mounted.is_empty() {
-        match orchestrator::start_backup(app, state.inner().clone()) {
-            Ok(())
-            | Err(backup_core::error::CoreError::Busy)
-            | Err(backup_core::error::CoreError::InvalidRequest) => {}
-            Err(error) => {
-                return Err(reported_core_error(
-                    state.inner(),
-                    "pair_devices",
-                    "backup_start",
-                    error,
-                    None,
-                ));
-            }
-        }
-    }
     state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(state.inner(), "pair_devices", "ledger_read", error, None)
+        reported_core_error(
+            state.inner(),
+            "save_backup_rule",
+            "ledger_read",
+            error,
+            None,
+        )
+    })
+}
+
+#[tauri::command]
+pub fn archive_backup_rule(
+    state: State<'_, AppState>,
+    rule_id: String,
+) -> Result<AppSnapshotDto, PublicError> {
+    state
+        .archive_backup_rule_for_state(&rule_id, &orchestrator::now_string())
+        .map_err(|error| {
+            reported_core_error(
+                state.inner(),
+                "archive_backup_rule",
+                "rule_persistence",
+                error,
+                None,
+            )
+        })?;
+    state.snapshot_with_activity().map_err(|error| {
+        reported_core_error(
+            state.inner(),
+            "archive_backup_rule",
+            "ledger_read",
+            error,
+            None,
+        )
+    })
+}
+
+#[tauri::command]
+pub fn restore_dji_rule(state: State<'_, AppState>) -> Result<AppSnapshotDto, PublicError> {
+    state
+        .restore_dji_rule_for_state(&orchestrator::now_string())
+        .map_err(|error| {
+            reported_core_error(
+                state.inner(),
+                "restore_dji_rule",
+                "rule_persistence",
+                error,
+                None,
+            )
+        })?;
+    state.snapshot_with_activity().map_err(|error| {
+        reported_core_error(
+            state.inner(),
+            "restore_dji_rule",
+            "ledger_read",
+            error,
+            None,
+        )
+    })
+}
+
+#[tauri::command]
+pub fn test_backup_rule(
+    state: State<'_, AppState>,
+    draft: BackupRuleDraft,
+) -> Result<RuleTestResultDto, PublicError> {
+    state.test_backup_rule_for_state(draft).map_err(|error| {
+        reported_core_error(state.inner(), "test_backup_rule", "rule_test", error, None)
     })
 }
 
@@ -232,23 +265,26 @@ pub fn pair_devices(
 pub async fn prepare_trash(
     app: AppHandle,
     state: State<'_, AppState>,
-    transmitter: Transmitter,
+    source_id: String,
 ) -> Result<TrashProposalSummaryDto, PublicError> {
+    let source_id = SourceId::parse(&source_id).map_err(|error| {
+        reported_core_error(
+            state.inner(),
+            "prepare_trash",
+            "request_validation",
+            error,
+            None,
+        )
+    })?;
     let state = state.inner().clone();
     let join_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
-        match orchestrator::prepare_trash(&app, &state, transmitter) {
+        match orchestrator::prepare_trash_for_source(&app, &state, &source_id) {
             Ok(summary) => Ok(summary),
             Err(error) => {
-                state.report_failure(
-                    "prepare_trash",
-                    "source_revalidation",
-                    &error,
-                    Some(transmitter),
-                    None,
-                );
-                state.set_deletion_error(&app, &error, transmitter);
-                Err(error.public(Some(transmitter)))
+                state.report_failure("prepare_trash", "source_revalidation", &error, None, None);
+                state.set_source_deletion_error(&app, &error, &source_id);
+                Err(state.public_error_for_source(error.public(None), &source_id))
             }
         }
     })
@@ -280,14 +316,15 @@ pub async fn confirm_trash(
     }
     let state = state.inner().clone();
     let join_state = state.clone();
-    let transmitter = state.awaiting_deletion_transmitter();
+    let source_id = state.awaiting_deletion_source();
+    let error_source_id = source_id.clone();
     tauri::async_runtime::spawn_blocking(move || {
         match orchestrator::confirm_trash(&app, &state, &proposal_id) {
             Ok(()) => state.snapshot_with_activity(),
             Err(error) => {
-                state.report_failure("confirm_trash", "trash", &error, transmitter, None);
-                if let Some(transmitter) = transmitter {
-                    state.set_deletion_error(&app, &error, transmitter);
+                state.report_failure("confirm_trash", "trash", &error, None, None);
+                if let Some(source_id) = &source_id {
+                    state.set_source_deletion_error(&app, &error, source_id);
                 }
                 Err(error)
             }
@@ -302,7 +339,12 @@ pub async fn confirm_trash(
             adapter_error("operation_failed", true),
         )
     })?
-    .map_err(|error| error.public(transmitter))
+    .map_err(|error| {
+        error_source_id.as_ref().map_or_else(
+            || error.public(None),
+            |source_id| join_state.public_error_for_source(error.public(None), source_id),
+        )
+    })
 }
 
 #[tauri::command]
@@ -606,6 +648,8 @@ fn adapter_error(message_code: &str, retryable: bool) -> PublicError {
         message_code: message_code.to_owned(),
         retryable,
         transmitter: None,
+        source_id: None,
+        source_label: None,
     }
 }
 
@@ -645,6 +689,7 @@ fn activity(
         occurred_at: orchestrator::now_string(),
         code: code.to_owned(),
         source_id,
+        source_label: None,
         count_value,
         byte_value: None,
         severity,
@@ -656,8 +701,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_exactly_the_fourteen_approved_commands() {
-        assert_eq!(REGISTERED_COMMANDS.len(), 14);
+    fn exposes_exactly_the_seventeen_approved_commands() {
+        assert_eq!(REGISTERED_COMMANDS.len(), 17);
         let serialized = serde_json::to_string(&REGISTERED_COMMANDS).unwrap();
         for forbidden in [
             "read_file",

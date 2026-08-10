@@ -42,11 +42,14 @@ use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
-    app_state::{AppState, OperationGuard, RuleDeletionState, publish_locked, update_transmitter},
+    app_state::{
+        AppState, OperationGuard, RuleDeletionState, publish_locked, update_source,
+        update_transmitter,
+    },
     artifact_pipeline::{
         finalize_prepared_m4a, order_conversion_cohort, prepare_m4a, verify_published_artifact,
     },
-    dto::TrashProposalSummaryDto,
+    dto::{ProgressDto, TrashProposalSummaryDto},
     platform::{
         device_registry::DeviceRegistry,
         macos::{
@@ -1156,6 +1159,17 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         runtime.snapshot.error = None;
         runtime.snapshot.failure_stage = None;
         runtime.snapshot.setting_applies_next_run = true;
+        for source in &matched {
+            update_source(
+                &mut runtime.snapshot,
+                &source.authority.source.id,
+                |snapshot| {
+                    snapshot.phase = BackupPhase::Scanning;
+                    snapshot.deletion_ready = false;
+                    snapshot.retirement_outcome = DeletionPhase::Inactive;
+                },
+            );
+        }
         publish_locked(app, &mut runtime);
     }
     let outcomes = run_matched_sources_with_adapters(
@@ -1194,11 +1208,19 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     })?;
     let last_error = outcomes
         .iter()
-        .find_map(|outcome| outcome.error.clone())
+        .find_map(|outcome| {
+            outcome
+                .error
+                .clone()
+                .map(|error| state.public_error_for_source(error, &outcome.source_id))
+        })
         .or_else(|| {
-            automatic_retirements
-                .iter()
-                .find_map(|retirement| retirement.error.clone())
+            automatic_retirements.iter().find_map(|retirement| {
+                retirement
+                    .error
+                    .clone()
+                    .map(|error| state.public_error_for_source(error, &retirement.source_id))
+            })
         })
         .or_else(|| automatic_retirement_failed.then(|| CoreError::TrashFailed.public(None)));
     {
@@ -1218,9 +1240,6 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         runtime.snapshot.last_success_at =
             (phase != BackupPhase::PartialFailure).then_some(finished_at.clone());
         for matched_source in &matched {
-            let Some(transmitter) = matched_legacy_transmitter(matched_source) else {
-                continue;
-            };
             let source_phase = outcomes
                 .iter()
                 .find(|outcome| outcome.source_id == matched_source.authority.source.id)
@@ -1236,31 +1255,60 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             let retirement = automatic_retirements
                 .iter()
                 .find(|retirement| retirement.source_id == matched_source.authority.source.id);
-            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.phase = if retirement.is_some_and(|retirement| {
-                    retirement.error.is_some()
-                        || retirement
-                            .report
-                            .as_ref()
-                            .is_some_and(|report| report.outcome != DeletionOutcome::Deleted)
-                }) {
-                    BackupPhase::Error
-                } else {
-                    source_phase
-                };
-                snapshot.deletion_ready = deletion_ready;
-                snapshot.deletion_phase = retirement
-                    .map(|retirement| {
-                        match retirement.report.as_ref().map(|report| report.outcome) {
-                            Some(DeletionOutcome::Deleted) => DeletionPhase::Deleted,
-                            Some(DeletionOutcome::PartiallyDeleted) => {
-                                DeletionPhase::PartiallyDeleted
-                            }
-                            Some(DeletionOutcome::Refused) | None => DeletionPhase::Refused,
-                        }
-                    })
-                    .unwrap_or(DeletionPhase::Inactive);
-            });
+            let effective_phase = if retirement.is_some_and(|retirement| {
+                retirement.error.is_some()
+                    || retirement
+                        .report
+                        .as_ref()
+                        .is_some_and(|report| report.outcome != DeletionOutcome::Deleted)
+            }) {
+                BackupPhase::Error
+            } else {
+                source_phase
+            };
+            let deletion_phase = retirement
+                .map(
+                    |retirement| match retirement.report.as_ref().map(|report| report.outcome) {
+                        Some(DeletionOutcome::Deleted) => DeletionPhase::Deleted,
+                        Some(DeletionOutcome::PartiallyDeleted) => DeletionPhase::PartiallyDeleted,
+                        Some(DeletionOutcome::Refused) | None => DeletionPhase::Refused,
+                    },
+                )
+                .unwrap_or(DeletionPhase::Inactive);
+            let verified_files = outcomes
+                .iter()
+                .find(|outcome| outcome.source_id == matched_source.authority.source.id)
+                .map_or(0, |outcome| outcome.verified_files);
+            update_source(
+                &mut runtime.snapshot,
+                &matched_source.authority.source.id,
+                |snapshot| {
+                    snapshot.phase = effective_phase;
+                    snapshot.progress = ProgressDto {
+                        percent: if matches!(
+                            effective_phase,
+                            BackupPhase::CompletedDeletionPending | BackupPhase::NothingNew
+                        ) {
+                            100
+                        } else {
+                            0
+                        },
+                        copied_bytes: 0,
+                        bytes_requiring_copy: 0,
+                        verified_files,
+                        total_files: verified_files,
+                    };
+                    snapshot.deletion_ready = deletion_ready;
+                    snapshot.retirement_outcome = deletion_phase;
+                },
+            );
+            if let Some(transmitter) = matched_legacy_transmitter(matched_source) {
+                update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                    snapshot.phase = effective_phase;
+                    snapshot.deletion_ready = deletion_ready;
+                    snapshot.deletion_phase = deletion_phase;
+                });
+            }
         }
         publish_locked(app, &mut runtime);
     }
@@ -1281,6 +1329,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 occurred_at: finished_at.clone(),
                 code: code.to_owned(),
                 source_id: Some(outcome.source_id.clone()),
+                source_label: source_label(state, &outcome.source_id),
                 count_value: Some(outcome.verified_files),
                 byte_value: None,
                 severity,
@@ -1324,6 +1373,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 occurred_at: finished_at.clone(),
                 code: code.to_owned(),
                 source_id: Some(retirement.source_id.clone()),
+                source_label: source_label(state, &retirement.source_id),
                 count_value: count,
                 byte_value: bytes,
                 severity,
@@ -1388,18 +1438,9 @@ pub fn prepare_trash(
     state: &AppState,
     transmitter: Transmitter,
 ) -> Result<TrashProposalSummaryDto, CoreError> {
-    let _guard = state.begin_operation()?;
-    {
-        let mut runtime = state.runtime.lock();
-        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-            snapshot.deletion_phase = DeletionPhase::Preparing;
-        });
-        runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
-        publish_locked(app, &mut runtime);
-    }
-    let (source_id, destination_summary) = {
+    let source_id = {
         let runtime = state.runtime.lock();
-        let (source_id, evidence) = runtime
+        runtime
             .rule_deletions
             .iter()
             .find(|(source_id, _)| {
@@ -1409,11 +1450,43 @@ pub fn prepare_trash(
                     .and_then(matched_legacy_transmitter)
                     == Some(transmitter)
             })
+            .map(|(source_id, _)| source_id.clone())
+            .ok_or(CoreError::DeletionPreflightRefused)?
+    };
+    prepare_trash_for_source(app, state, &source_id)
+}
+
+pub fn prepare_trash_for_source(
+    app: &AppHandle,
+    state: &AppState,
+    source_id: &SourceId,
+) -> Result<TrashProposalSummaryDto, CoreError> {
+    let _guard = state.begin_operation()?;
+    let (source_label, destination_summary, transmitter) = {
+        let mut runtime = state.runtime.lock();
+        let matched = runtime
+            .matched
+            .get(source_id)
+            .cloned()
+            .ok_or(CoreError::DeviceRemoved)?;
+        let evidence = runtime
+            .rule_deletions
+            .get(source_id)
             .ok_or(CoreError::DeletionPreflightRefused)?;
-        (
-            source_id.clone(),
-            format!("{} 백업 폴더", evidence.rule.archive_directory_name),
-        )
+        let source_label = crate::dto::safe_label(&matched.authority.source.display_name);
+        let destination_summary = format!("{} 백업 폴더", evidence.rule.archive_directory_name);
+        let transmitter = matched_legacy_transmitter(&matched);
+        update_source(&mut runtime.snapshot, source_id, |snapshot| {
+            snapshot.retirement_outcome = DeletionPhase::Preparing;
+        });
+        if let Some(transmitter) = transmitter {
+            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                snapshot.deletion_phase = DeletionPhase::Preparing;
+            });
+        }
+        runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
+        publish_locked(app, &mut runtime);
+        (source_label, destination_summary, transmitter)
     };
     let fields = [("mode", AuditValue::Text("manual"))];
     state.append_audit(
@@ -1421,26 +1494,32 @@ pub fn prepare_trash(
             occurred_at: audit_now(),
             level: AuditLevel::Info,
             code: "retirement.preflight",
-            transmitter: Some(transmitter),
+            transmitter,
             fields: &fields,
         },
         AuditDurability::SyncData,
     )?;
-    let proposal = prepare_rule_trash(state, &source_id, OffsetDateTime::now_utc())?;
+    let proposal = prepare_rule_trash(state, source_id, OffsetDateTime::now_utc())?;
     let expires_at = proposal
         .expires_at
         .format(&Rfc3339)
         .map_err(|_| CoreError::InvalidRequest)?;
     {
         let mut runtime = state.runtime.lock();
-        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-            snapshot.deletion_phase = DeletionPhase::AwaitingConfirmation;
+        update_source(&mut runtime.snapshot, source_id, |snapshot| {
+            snapshot.retirement_outcome = DeletionPhase::AwaitingConfirmation;
         });
+        if let Some(transmitter) = transmitter {
+            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                snapshot.deletion_phase = DeletionPhase::AwaitingConfirmation;
+            });
+        }
         publish_locked(app, &mut runtime);
     }
     Ok(TrashProposalSummaryDto {
         proposal_id: proposal.proposal_id,
-        transmitter,
+        source_id: source_id.as_str().to_owned(),
+        source_label,
         session_count: proposal.session_count,
         file_count: proposal.file_count,
         byte_count: proposal.byte_count,
@@ -1641,23 +1720,33 @@ pub fn confirm_trash(
         let transmitter = runtime
             .matched
             .get(&source_id)
-            .and_then(matched_legacy_transmitter)
-            .ok_or(CoreError::ProposalInvalidated)?;
-        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-            snapshot.deletion_phase = DeletionPhase::Revalidating;
+            .and_then(matched_legacy_transmitter);
+        update_source(&mut runtime.snapshot, &source_id, |snapshot| {
+            snapshot.retirement_outcome = DeletionPhase::Revalidating;
         });
+        if let Some(transmitter) = transmitter {
+            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                snapshot.deletion_phase = DeletionPhase::Revalidating;
+            });
+        }
         runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         publish_locked(app, &mut runtime);
         (source_id, transmitter)
     };
     let app_for_deletion = app.clone();
     let state_for_deletion = state.clone();
+    let source_for_deletion = source_id.clone();
     let mut observer = move || {
         let mut runtime = state_for_deletion.runtime.lock();
         runtime.snapshot.current_stage = Some(CurrentStage::Trash);
-        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-            snapshot.deletion_phase = DeletionPhase::Deleting;
+        update_source(&mut runtime.snapshot, &source_for_deletion, |snapshot| {
+            snapshot.retirement_outcome = DeletionPhase::Deleting;
         });
+        if let Some(transmitter) = transmitter {
+            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+                snapshot.deletion_phase = DeletionPhase::Deleting;
+            });
+        }
         publish_locked(&app_for_deletion, &mut runtime);
     };
     let fields = [("mode", AuditValue::Text("manual"))];
@@ -1666,7 +1755,7 @@ pub fn confirm_trash(
             occurred_at: audit_now(),
             level: AuditLevel::Info,
             code: "retirement.authorized",
-            transmitter: Some(transmitter),
+            transmitter,
             fields: &fields,
         },
         AuditDurability::SyncData,
@@ -1680,8 +1769,8 @@ pub fn confirm_trash(
         &mut observer,
     )?;
     let mut runtime = state.runtime.lock();
-    update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-        snapshot.deletion_phase = match report.outcome {
+    update_source(&mut runtime.snapshot, &source_id, |snapshot| {
+        snapshot.retirement_outcome = match report.outcome {
             DeletionOutcome::Deleted => DeletionPhase::Deleted,
             DeletionOutcome::Refused => DeletionPhase::Refused,
             DeletionOutcome::PartiallyDeleted => DeletionPhase::PartiallyDeleted,
@@ -1691,6 +1780,19 @@ pub fn confirm_trash(
             snapshot.phase = BackupPhase::Error;
         }
     });
+    if let Some(transmitter) = transmitter {
+        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
+            snapshot.deletion_phase = match report.outcome {
+                DeletionOutcome::Deleted => DeletionPhase::Deleted,
+                DeletionOutcome::Refused => DeletionPhase::Refused,
+                DeletionOutcome::PartiallyDeleted => DeletionPhase::PartiallyDeleted,
+            };
+            snapshot.deletion_ready = false;
+            if report.outcome != DeletionOutcome::Deleted {
+                snapshot.phase = BackupPhase::Error;
+            }
+        });
+    }
     if report.outcome == DeletionOutcome::PartiallyDeleted {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = "partial_trash".to_owned();
@@ -1709,6 +1811,7 @@ pub fn confirm_trash(
             }
             .to_owned(),
             source_id: Some(source_id.clone()),
+            source_label: source_label(state, &source_id),
             count_value: Some(report.deleted_files),
             byte_value: Some(report.deleted_bytes),
             severity: match report.outcome {
@@ -1722,7 +1825,7 @@ pub fn confirm_trash(
             "confirm_trash",
             "activity_persistence",
             &error,
-            Some(transmitter),
+            transmitter,
             None,
         );
     }
@@ -1747,7 +1850,7 @@ pub fn confirm_trash(
                 DeletionOutcome::PartiallyDeleted => AuditLevel::Error,
             },
             code: "retirement.complete",
-            transmitter: Some(transmitter),
+            transmitter,
             fields: &fields,
         },
         AuditDurability::SyncData,
@@ -1810,5 +1913,16 @@ fn adapter_public_error(message_code: &str, retryable: bool) -> PublicError {
         message_code: message_code.to_owned(),
         retryable,
         transmitter: None,
+        source_id: None,
+        source_label: None,
     }
+}
+
+fn source_label(state: &AppState, source_id: &SourceId) -> Option<String> {
+    state
+        .runtime
+        .lock()
+        .matched
+        .get(source_id)
+        .map(|matched| matched.authority.source.display_name.clone())
 }

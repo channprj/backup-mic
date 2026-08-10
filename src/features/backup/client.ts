@@ -3,16 +3,16 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { z } from "zod";
 import {
   appSnapshotSchema,
+  backupRuleDraftSchema,
+  ruleTestResultSchema,
   trashProposalSummarySchema,
-  pairingAssignmentsSchema,
-  transmitterSchema,
   type AppSnapshot,
+  type BackupRuleDraft,
+  type RuleTestResult,
   type TrashProposalSummary,
-  type PairingAssignment,
-  type Transmitter,
 } from "./contracts";
 
-const proposalIdSchema = z.string().uuid();
+const opaqueIdSchema = z.string().uuid();
 const snapshotEvent = "app-snapshot-changed";
 
 async function invokeSnapshot(command: string, args?: Record<string, unknown>) {
@@ -31,21 +31,31 @@ export function chooseDestination(): Promise<AppSnapshot> {
   return invokeSnapshot("choose_destination");
 }
 
-export async function pairDevices(assignments: PairingAssignment[]): Promise<AppSnapshot> {
-  const safeAssignments = pairingAssignmentsSchema.parse(assignments);
-  return await invokeSnapshot("pair_devices", { assignments: safeAssignments });
+export function saveBackupRule(draft: BackupRuleDraft): Promise<AppSnapshot> {
+  return invokeSnapshot("save_backup_rule", { draft: backupRuleDraftSchema.parse(draft) });
 }
 
-export async function prepareTrash(transmitter: Transmitter): Promise<TrashProposalSummary> {
-  const safeTransmitter = transmitterSchema.parse(transmitter);
-  return trashProposalSummarySchema.parse(
-    await invoke("prepare_trash", { transmitter: safeTransmitter }),
-  );
+export function archiveBackupRule(ruleId: string): Promise<AppSnapshot> {
+  return invokeSnapshot("archive_backup_rule", { ruleId: opaqueIdSchema.parse(ruleId) });
+}
+
+export function restoreDjiRule(): Promise<AppSnapshot> {
+  return invokeSnapshot("restore_dji_rule");
+}
+
+export async function testBackupRule(draft: BackupRuleDraft): Promise<RuleTestResult> {
+  const result = await invoke("test_backup_rule", { draft: backupRuleDraftSchema.parse(draft) });
+  return ruleTestResultSchema.parse(result);
+}
+
+export async function prepareTrash(sourceId: string): Promise<TrashProposalSummary> {
+  const safeSourceId = opaqueIdSchema.parse(sourceId);
+  return trashProposalSummarySchema.parse(await invoke("prepare_trash", { sourceId: safeSourceId }));
 }
 
 export function confirmTrash(proposalId: string): Promise<AppSnapshot> {
   return invokeSnapshot("confirm_trash", {
-    proposalId: proposalIdSchema.parse(proposalId),
+    proposalId: opaqueIdSchema.parse(proposalId),
   });
 }
 
@@ -98,7 +108,10 @@ export function listenForSnapshots(
 export const backupClient = {
   backupNow,
   chooseDestination,
-  pairDevices,
+  saveBackupRule,
+  archiveBackupRule,
+  restoreDjiRule,
+  testBackupRule,
   prepareTrash,
   confirmTrash,
   setAutostart,

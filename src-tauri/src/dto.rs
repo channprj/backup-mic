@@ -1,6 +1,7 @@
 use backup_core::{
     error::PublicError,
     events::ActivityEntry,
+    rule::BackupRule,
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
 };
 use serde::{Deserialize, Serialize};
@@ -14,6 +15,100 @@ pub struct ProgressDto {
     pub bytes_requiring_copy: u64,
     pub verified_files: u64,
     pub total_files: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BackupRuleDto {
+    pub id: String,
+    pub name: String,
+    pub archive_directory_name: String,
+    pub archive_directory_locked: bool,
+    pub enabled: bool,
+    pub volume_name_glob: String,
+    pub required_path_globs: Vec<String>,
+    pub backup_file_globs: Vec<String>,
+    pub session_directory_globs: Vec<String>,
+    pub filename_prefix: String,
+    pub filename_suffix: String,
+    pub is_dji_preset: bool,
+    pub archived: bool,
+}
+
+impl From<&BackupRule> for BackupRuleDto {
+    fn from(rule: &BackupRule) -> Self {
+        Self {
+            id: rule.id.as_str().to_owned(),
+            name: rule.name.clone(),
+            archive_directory_name: rule.archive_directory_name.clone(),
+            archive_directory_locked: rule.archive_directory_locked,
+            enabled: rule.enabled,
+            volume_name_glob: rule.volume_name_glob.clone(),
+            required_path_globs: rule.required_path_globs.clone(),
+            backup_file_globs: rule.backup_file_globs.clone(),
+            session_directory_globs: rule.session_directory_globs.clone(),
+            filename_prefix: rule.filename_prefix.clone(),
+            filename_suffix: rule.filename_suffix.clone(),
+            is_dji_preset: rule.preset_kind.is_some(),
+            archived: rule.archived_at.is_some(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SourceSnapshotDto {
+    pub source_id: String,
+    pub rule_name: String,
+    pub volume_name: String,
+    pub legacy_slot: Option<String>,
+    pub mounted: bool,
+    pub phase: BackupPhase,
+    pub progress: ProgressDto,
+    pub retirement_outcome: DeletionPhase,
+    pub deletion_ready: bool,
+}
+
+impl SourceSnapshotDto {
+    pub fn idle(
+        source_id: String,
+        rule_name: String,
+        volume_name: String,
+        legacy_slot: Option<String>,
+    ) -> Self {
+        Self {
+            source_id,
+            rule_name,
+            volume_name: safe_label(&volume_name),
+            legacy_slot,
+            mounted: false,
+            phase: BackupPhase::Idle,
+            progress: ProgressDto::from(&Progress::default()),
+            retirement_outcome: DeletionPhase::Inactive,
+            deletion_ready: false,
+        }
+    }
+}
+
+pub(crate) fn safe_label(value: &str) -> String {
+    let value = value
+        .chars()
+        .filter(|character| !character.is_control() && !matches!(character, '/' | '\\'))
+        .take(128)
+        .collect::<String>();
+    if value.trim().is_empty() {
+        "External Recorder".to_owned()
+    } else {
+        value
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RuleTestResultDto {
+    pub matched_volumes: Vec<String>,
+    pub matched_file_count: u64,
+    pub conflict_rule_names: Vec<String>,
 }
 
 impl From<&Progress> for ProgressDto {
@@ -51,7 +146,6 @@ pub enum NotificationStatusDto {
 #[serde(rename_all = "snake_case")]
 pub enum SetupStateDto {
     NeedsDestination,
-    NeedsPairing,
     Ready,
 }
 
@@ -89,11 +183,15 @@ pub enum RetirementModeDto {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AppSnapshotDto {
     pub revision: u64,
     pub phase: BackupPhase,
     pub message_code: String,
     pub overall_progress: ProgressDto,
+    pub sources: Vec<SourceSnapshotDto>,
+    pub backup_rules: Vec<BackupRuleDto>,
+    #[serde(skip, default)]
     pub transmitters: Vec<TransmitterSnapshotDto>,
     pub current_stage: Option<CurrentStage>,
     pub failure_stage: Option<CurrentStage>,
@@ -107,6 +205,7 @@ pub struct AppSnapshotDto {
     pub settings: BackupSettingsDto,
     pub notification_status: NotificationStatusDto,
     pub setup_state: SetupStateDto,
+    #[serde(skip, default)]
     pub pairing_candidates: Vec<PairingCandidateSummary>,
     pub recent_activity: Vec<ActivityEntry>,
     pub error: Option<PublicError>,
@@ -114,15 +213,32 @@ pub struct AppSnapshotDto {
 
 impl AppSnapshotDto {
     pub fn with_activity(mut self, recent_activity: Vec<ActivityEntry>) -> Self {
-        self.recent_activity = recent_activity.into_iter().rev().take(8).collect();
+        self.recent_activity = recent_activity
+            .into_iter()
+            .rev()
+            .take(8)
+            .map(|mut activity| {
+                if let Some(source_id) = &activity.source_id
+                    && let Some(source) = self
+                        .sources
+                        .iter()
+                        .find(|source| source.source_id == source_id.as_str())
+                {
+                    activity.source_label = Some(source.volume_name.clone());
+                }
+                activity
+            })
+            .collect();
         self
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TrashProposalSummaryDto {
     pub proposal_id: String,
-    pub transmitter: Transmitter,
+    pub source_id: String,
+    pub source_label: String,
     pub session_count: u64,
     pub file_count: u64,
     pub byte_count: u64,
@@ -144,6 +260,7 @@ mod tests {
                 backup_core::source::SourceId::parse(backup_core::source::LEGACY_TX01_SOURCE_ID)
                     .unwrap(),
             ),
+            source_label: Some("MIC_TX".to_owned()),
             count_value: None,
             byte_value: None,
             severity: ActivitySeverity::Info,
@@ -156,6 +273,8 @@ mod tests {
             phase: BackupPhase::Idle,
             message_code: "idle".to_owned(),
             overall_progress: ProgressDto::from(&Progress::default()),
+            sources: Vec::new(),
+            backup_rules: Vec::new(),
             transmitters: Vec::new(),
             current_stage: None,
             failure_stage: None,
@@ -205,7 +324,7 @@ mod tests {
             "path",
             "uuid",
             "hash",
-            "filename",
+            "source_filename",
             "ledger_id",
             "recording_id",
         ] {

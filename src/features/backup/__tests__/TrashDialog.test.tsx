@@ -5,7 +5,8 @@ import type { TrashProposalSummary } from "../contracts";
 
 const proposal = {
   proposal_id: "550e8400-e29b-41d4-a716-446655440000",
-  transmitter: "TX01",
+  source_id: "11111111-1111-4111-8111-111111111111",
+  source_label: "MIC_TX",
   session_count: 2,
   file_count: 9,
   byte_count: 99_000_000,

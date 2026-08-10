@@ -1,9 +1,10 @@
 {
   "proposal_id": "811a282b-cb58-4b8b-97ae-32fd0fcc1e01",
-  "transmitter": "TX01",
+  "source_id": "11111111-1111-4111-8111-111111111111",
+  "source_label": "MIC_TX",
   "session_count": 1,
   "file_count": 9,
   "byte_count": 100663296,
-  "destination_summary": "DJI-Mic-Mini-2S 백업 폴더",
+  "destination_summary": "DJI Mic Mini 2S 백업 폴더",
   "expires_at": "2026-08-09T02:23:02Z"
 }

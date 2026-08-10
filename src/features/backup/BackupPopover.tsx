@@ -27,12 +27,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import type { BackupActions } from "./client";
-import type {
-  AppSnapshot,
-  PairingAssignment,
-  TrashProposalSummary,
-  Transmitter,
-} from "./contracts";
+import type { AppSnapshot, TrashProposalSummary } from "./contracts";
 import { TrashDialog } from "./TrashDialog";
 import {
   activeTitle,
@@ -81,14 +76,12 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const pendingRef = useRef<string | null>(null);
   const active = activePhases.has(snapshot.phase) || snapshot.current_stage !== null;
   const failed = snapshot.phase === "error" || snapshot.phase === "partial_failure";
-  const mountedCount = snapshot.transmitters.filter(({ mounted }) => mounted).length;
+  const mountedCount = snapshot.sources.filter(({ mounted }) => mounted).length;
 
   useEffect(() => {
     if (!proposal || pending === "confirm-trash") return;
-    const transmitter = snapshot.transmitters.find(
-      ({ transmitter }) => transmitter === proposal.transmitter,
-    );
-    if (!transmitter?.deletion_ready) {
+    const source = snapshot.sources.find(({ source_id }) => source_id === proposal.source_id);
+    if (!source?.deletion_ready) {
       setProposal(null);
     }
   }, [pending, proposal, snapshot]);
@@ -120,18 +113,10 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
     }
   }
 
-  async function pair(assignments: PairingAssignment[]) {
+  async function prepare(sourceId: string) {
     try {
-      await run("pair", () => actions.pairDevices(assignments));
-    } catch {
-      // The inline error already describes the retry path.
-    }
-  }
-
-  async function prepare(transmitter: Transmitter) {
-    try {
-      await run(`prepare-${transmitter}`, async () => {
-        setProposal(await actions.prepareTrash(transmitter));
+      await run(`prepare-${sourceId}`, async () => {
+        setProposal(await actions.prepareTrash(sourceId));
       });
     } catch {
       // The inline error already describes the retry path.
@@ -164,10 +149,10 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
           <div
             className="connection-summary"
             role="status"
-            aria-label={`${mountedCount}개 송신기 연결됨`}
+            aria-label={`${mountedCount}개 녹음기 연결됨`}
           >
             <span className={mountedCount > 0 ? "status-dot is-connected" : "status-dot"} />
-            {mountedCount}/2
+            {mountedCount}개
           </div>
           <Button
             variant="ghost"
@@ -195,7 +180,6 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
                 // The inline error already describes the retry path.
               }
             }}
-            onPair={pair}
           />
         </section>
       ) : (
@@ -223,9 +207,9 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
             ) : null}
           </section>
 
-          <section className="channel-section" aria-label="송신기 상태">
-            {snapshot.transmitters.map((transmitter) => (
-              <ChannelRow key={transmitter.transmitter} snapshot={transmitter} active={active} />
+          <section className="channel-section" aria-label="녹음기 상태">
+            {snapshot.sources.map((source) => (
+              <ChannelRow key={source.source_id} snapshot={source} active={active} />
             ))}
           </section>
 
@@ -241,7 +225,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
                     <li key={`${activity.occurred_at}-${activity.code}-${index}`}>
                       <span className={`activity-node is-${activity.severity}`} aria-hidden="true" />
                       <div>
-                        <p>{activityLabel(activity.code, activity.transmitter)}</p>
+                        <p>{activityLabel(activity.code, activity.source_label)}</p>
                         <span>
                           {formatTime(activity.occurred_at)}
                           {activity.count_value !== null ? ` · ${activity.count_value}개` : ""}
@@ -413,7 +397,7 @@ function SettledStatus({
   pending,
 }: {
   snapshot: AppSnapshot;
-  onPrepare: (transmitter: Transmitter) => Promise<void>;
+  onPrepare: (sourceId: string) => Promise<void>;
   pending: string | null;
 }) {
   const complete = snapshot.phase === "completed_deletion_pending";
@@ -458,23 +442,23 @@ function SettledStatus({
       </CardContent>
       {deletable ? (
         <CardFooter className="trash-actions">
-          {snapshot.transmitters
+          {snapshot.sources
             .filter(({ deletion_ready }) => deletion_ready)
-            .map(({ transmitter }) => (
+            .map(({ source_id, volume_name }) => (
               <Button
-                key={transmitter}
+                key={source_id}
                 variant="outline"
                 size="sm"
-                aria-label={`${transmitter} 휴지통으로 이동`}
+                aria-label={`${volume_name} 휴지통으로 이동`}
                 disabled={pending !== null}
-                onClick={() => void onPrepare(transmitter)}
+                onClick={() => void onPrepare(source_id)}
               >
-                {pending === `prepare-${transmitter}` ? (
+                {pending === `prepare-${source_id}` ? (
                   <Spinner data-icon="inline-start" />
                 ) : (
                   <Trash2Icon data-icon="inline-start" />
                 )}
-                {transmitter} 이동
+                {volume_name} 이동
               </Button>
             ))}
         </CardFooter>
@@ -542,7 +526,7 @@ function ChannelRow({
   snapshot,
   active,
 }: {
-  snapshot: AppSnapshot["transmitters"][number];
+  snapshot: AppSnapshot["sources"][number];
   active: boolean;
 }) {
   const retirement = retirementOutcomeLabel(snapshot.retirement_outcome);
@@ -560,12 +544,12 @@ function ChannelRow({
   return (
     <div className="channel-row">
       <div className="channel-label">
-        <Badge variant={snapshot.mounted ? "secondary" : "outline"}>{snapshot.transmitter}</Badge>
-        <span>{state}</span>
+        <Badge variant={snapshot.mounted ? "secondary" : "outline"}>{snapshot.volume_name}</Badge>
+        <span>{snapshot.rule_name} · {state}</span>
       </div>
       <Progress
         value={snapshot.progress.percent}
-        aria-label={`${snapshot.transmitter} 백업 진행률`}
+        aria-label={`${snapshot.volume_name} 백업 진행률`}
         aria-valuenow={snapshot.progress.percent}
       />
       <span className="channel-count">

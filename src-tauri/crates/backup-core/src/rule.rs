@@ -84,6 +84,7 @@ impl DeviceConstraintProfile {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct BackupRuleDraft {
     pub id: Option<RuleId>,
     pub name: String,

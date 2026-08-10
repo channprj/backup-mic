@@ -1,4 +1,4 @@
-import type { AppSnapshot, Transmitter } from "./contracts";
+import type { AppSnapshot } from "./contracts";
 
 export function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
@@ -101,12 +101,12 @@ const activityMessages: Record<string, string> = {
   capacity_check_failed: "백업 공간이 부족합니다",
 };
 
-export function activityLabel(code: string, transmitter: Transmitter | null) {
+export function activityLabel(code: string, sourceLabel: string | null) {
   const message = activityMessages[code] ?? "상태가 변경됐습니다";
-  return transmitter ? `${transmitter} · ${message}` : message;
+  return sourceLabel ? `${sourceLabel} · ${message}` : message;
 }
 
-export function retirementOutcomeLabel(outcome: AppSnapshot["transmitters"][number]["retirement_outcome"]) {
+export function retirementOutcomeLabel(outcome: AppSnapshot["sources"][number]["retirement_outcome"]) {
   const labels = {
     inactive: null,
     preparing: "이동 준비 중",

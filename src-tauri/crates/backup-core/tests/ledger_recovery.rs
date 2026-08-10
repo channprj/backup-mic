@@ -44,6 +44,7 @@ fn activity(index: usize, source_id: &SourceId) -> ActivityEntry {
         occurred_at: format!("2026-08-09T00:00:{:02}Z", index % 60),
         code: format!("event_{index}"),
         source_id: Some(source_id.clone()),
+        source_label: None,
         count_value: Some(index as u64),
         byte_value: None,
         severity: ActivitySeverity::Info,

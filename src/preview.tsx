@@ -12,25 +12,13 @@ import { appSnapshotSchema, type AppSnapshot } from "./features/backup/contracts
 const complete = appSnapshotSchema.parse(completeFixture);
 const copying = appSnapshotSchema.parse(copyingFixture);
 const failure = appSnapshotSchema.parse(errorFixture);
-const pairing = appSnapshotSchema.parse({
+const setup = appSnapshotSchema.parse({
   ...completeFixture,
   phase: "idle",
-  setup_state: "needs_pairing",
-  pairing_candidates: [
-    {
-      candidate_id: "11111111-1111-4111-8111-111111111111",
-      display_name: "DJI 저장 장치 A",
-      capacity_bytes: 15_636_365_312,
-    },
-    {
-      candidate_id: "22222222-2222-4222-8222-222222222222",
-      display_name: "DJI 저장 장치 B",
-      capacity_bytes: 15_636_365_312,
-    },
-  ],
+  setup_state: "needs_destination",
 });
 
-const previews: Record<string, AppSnapshot> = { complete, copying, error: failure, pairing };
+const previews: Record<string, AppSnapshot> = { complete, copying, error: failure, setup };
 
 function Preview() {
   const initial = new URLSearchParams(window.location.search).get("state") ?? "complete";
@@ -61,13 +49,20 @@ function Preview() {
       return {
       backupNow: async () => setSnapshot(copying),
       chooseDestination: async () => snapshot,
-      pairDevices: async () => {
-        setSnapshot(complete);
-        return complete;
-      },
-      prepareTrash: async (transmitter) => ({
+      saveBackupRule: async () => snapshot,
+      archiveBackupRule: async () => snapshot,
+      restoreDjiRule: async () => snapshot,
+      testBackupRule: async () => ({
+        matched_volumes: [],
+        matched_file_count: 0,
+        conflict_rule_names: [],
+      }),
+      prepareTrash: async (sourceId) => ({
         proposal_id: "550e8400-e29b-41d4-a716-446655440000",
-        transmitter,
+        source_id: sourceId,
+        source_label:
+          snapshot.sources.find(({ source_id }) => source_id === sourceId)?.volume_name ??
+          "External Recorder",
         session_count: 1,
         file_count: 9,
         byte_count: 99_000_000,

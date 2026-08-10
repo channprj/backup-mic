@@ -154,7 +154,7 @@ export function SettingsView({
     }
   }
 
-  const refusal = viewSnapshot.transmitters
+  const refusal = viewSnapshot.sources
     .map(({ retirement_outcome }) => retirementOutcomeLabel(retirement_outcome))
     .find((outcome) => outcome === "이동 중단됨" || outcome === "일부만 이동됨");
 

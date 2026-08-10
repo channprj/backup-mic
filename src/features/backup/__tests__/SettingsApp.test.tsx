@@ -10,7 +10,14 @@ function renderSettings() {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
     chooseDestination: vi.fn().mockResolvedValue(complete),
-    pairDevices: vi.fn().mockResolvedValue(complete),
+    saveBackupRule: vi.fn().mockResolvedValue(complete),
+    archiveBackupRule: vi.fn().mockResolvedValue(complete),
+    restoreDjiRule: vi.fn().mockResolvedValue(complete),
+    testBackupRule: vi.fn().mockResolvedValue({
+      matched_volumes: [],
+      matched_file_count: 0,
+      conflict_rule_names: [],
+    }),
     prepareTrash: vi.fn(),
     confirmTrash: vi.fn(),
     setAutostart: vi.fn().mockResolvedValue(complete),

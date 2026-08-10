@@ -2,41 +2,35 @@
   "revision": 35,
   "phase": "error",
   "message_code": "partial_trash",
-  "overall_progress": {
-    "percent": 100,
-    "copied_bytes": 115343360,
-    "bytes_requiring_copy": 115343360,
-    "verified_files": 11,
-    "total_files": 11
-  },
-  "transmitters": [
+  "overall_progress": { "percent": 100, "copied_bytes": 115343360, "bytes_requiring_copy": 115343360, "verified_files": 11, "total_files": 11 },
+  "sources": [
     {
-      "transmitter": "TX01",
+      "source_id": "11111111-1111-4111-8111-111111111111",
+      "rule_name": "DJI Mic Mini 2S",
+      "volume_name": "MIC_TX",
+      "legacy_slot": "TX01",
       "mounted": true,
       "phase": "error",
-      "progress": {
-        "percent": 100,
-        "copied_bytes": 100663296,
-        "bytes_requiring_copy": 100663296,
-        "verified_files": 9,
-        "total_files": 9
-      },
+      "progress": { "percent": 100, "copied_bytes": 115343360, "bytes_requiring_copy": 115343360, "verified_files": 11, "total_files": 11 },
       "retirement_outcome": "partially_moved_to_trash",
       "deletion_ready": false
-    },
+    }
+  ],
+  "backup_rules": [
     {
-      "transmitter": "TX02",
-      "mounted": true,
-      "phase": "completed_deletion_pending",
-      "progress": {
-        "percent": 100,
-        "copied_bytes": 14680064,
-        "bytes_requiring_copy": 14680064,
-        "verified_files": 2,
-        "total_files": 2
-      },
-      "retirement_outcome": "inactive",
-      "deletion_ready": false
+      "id": "6d784c99-8b0e-4a32-a0a2-d7730f68cf28",
+      "name": "DJI Mic Mini 2S",
+      "archive_directory_name": "DJI Mic Mini 2S",
+      "archive_directory_locked": true,
+      "enabled": true,
+      "volume_name_glob": "*",
+      "required_path_globs": [],
+      "backup_file_globs": ["*.WAV", "TX_MIC*/*.WAV"],
+      "session_directory_globs": ["TX_MIC*"],
+      "filename_prefix": "",
+      "filename_suffix": "",
+      "is_dji_preset": true,
+      "archived": false
     }
   ],
   "current_stage": null,
@@ -47,29 +41,11 @@
   "artifact_format": "m4a",
   "retirement_mode": "manual",
   "current_log_available": true,
-  "settings": {
-    "automatic_backup": true,
-    "m4a_conversion": true,
-    "automatic_trash": false,
-    "autostart": true
-  },
+  "settings": { "automatic_backup": true, "m4a_conversion": true, "automatic_trash": false, "autostart": true },
   "notification_status": "granted",
   "setup_state": "ready",
-  "pairing_candidates": [],
   "recent_activity": [
-    {
-      "occurred_at": "2026-08-09T02:20:41Z",
-      "code": "partial_trash",
-      "transmitter": "TX01",
-      "count_value": 1,
-      "byte_value": null,
-      "severity": "error"
-    }
+    { "occurred_at": "2026-08-09T02:20:41Z", "code": "partial_trash", "source_id": "11111111-1111-4111-8111-111111111111", "source_label": "MIC_TX", "count_value": 1, "byte_value": null, "severity": "error" }
   ],
-  "error": {
-    "code": "partial_trash",
-    "message_code": "partial_trash",
-    "retryable": false,
-    "transmitter": "TX01"
-  }
+  "error": { "code": "partial_trash", "message_code": "partial_trash", "retryable": false, "source_id": "11111111-1111-4111-8111-111111111111", "source_label": "MIC_TX" }
 }

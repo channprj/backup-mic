@@ -2,41 +2,23 @@
   "revision": 22,
   "phase": "error",
   "message_code": "insufficient_capacity",
-  "overall_progress": {
-    "percent": 0,
-    "copied_bytes": 0,
-    "bytes_requiring_copy": 115343360,
-    "verified_files": 0,
-    "total_files": 11
-  },
-  "transmitters": [
+  "overall_progress": { "percent": 0, "copied_bytes": 0, "bytes_requiring_copy": 115343360, "verified_files": 0, "total_files": 11 },
+  "sources": [],
+  "backup_rules": [
     {
-      "transmitter": "TX01",
-      "mounted": true,
-      "phase": "error",
-      "progress": {
-        "percent": 0,
-        "copied_bytes": 0,
-        "bytes_requiring_copy": 100663296,
-        "verified_files": 0,
-        "total_files": 9
-      },
-      "retirement_outcome": "inactive",
-      "deletion_ready": false
-    },
-    {
-      "transmitter": "TX02",
-      "mounted": true,
-      "phase": "error",
-      "progress": {
-        "percent": 0,
-        "copied_bytes": 0,
-        "bytes_requiring_copy": 14680064,
-        "verified_files": 0,
-        "total_files": 2
-      },
-      "retirement_outcome": "inactive",
-      "deletion_ready": false
+      "id": "6d784c99-8b0e-4a32-a0a2-d7730f68cf28",
+      "name": "DJI Mic Mini 2S",
+      "archive_directory_name": "DJI Mic Mini 2S",
+      "archive_directory_locked": true,
+      "enabled": true,
+      "volume_name_glob": "*",
+      "required_path_globs": [],
+      "backup_file_globs": ["*.WAV", "TX_MIC*/*.WAV"],
+      "session_directory_globs": ["TX_MIC*"],
+      "filename_prefix": "",
+      "filename_suffix": "",
+      "is_dji_preset": true,
+      "archived": false
     }
   ],
   "current_stage": null,
@@ -47,29 +29,11 @@
   "artifact_format": "m4a",
   "retirement_mode": "manual",
   "current_log_available": true,
-  "settings": {
-    "automatic_backup": true,
-    "m4a_conversion": true,
-    "automatic_trash": false,
-    "autostart": true
-  },
+  "settings": { "automatic_backup": true, "m4a_conversion": true, "automatic_trash": false, "autostart": true },
   "notification_status": "denied",
   "setup_state": "ready",
-  "pairing_candidates": [],
   "recent_activity": [
-    {
-      "occurred_at": "2026-08-09T02:18:10Z",
-      "code": "capacity_check_failed",
-      "transmitter": null,
-      "count_value": 11,
-      "byte_value": 115343360,
-      "severity": "error"
-    }
+    { "occurred_at": "2026-08-09T02:18:10Z", "code": "capacity_check_failed", "source_id": null, "source_label": null, "count_value": 11, "byte_value": 115343360, "severity": "error" }
   ],
-  "error": {
-    "code": "insufficient_capacity",
-    "message_code": "insufficient_capacity",
-    "retryable": true,
-    "transmitter": null
-  }
+  "error": { "code": "insufficient_capacity", "message_code": "insufficient_capacity", "retryable": true, "source_id": null, "source_label": null }
 }

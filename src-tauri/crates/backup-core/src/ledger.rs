@@ -728,6 +728,7 @@ impl Ledger {
                 occurred_at,
                 code,
                 source_id: source_id.map(|value| SourceId::parse(&value)).transpose()?,
+                source_label: None,
                 count_value: optional_u64(count_value)?,
                 byte_value: optional_u64(byte_value)?,
                 severity: parse_severity(&severity)?,

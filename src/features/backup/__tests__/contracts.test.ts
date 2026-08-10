@@ -4,7 +4,12 @@ import backupCopying from "../../../../contracts/fixtures/backup-copying.json";
 import trashProposal from "../../../../contracts/fixtures/trash-proposal.json";
 import destinationFull from "../../../../contracts/fixtures/error-destination-full.json";
 import partialTrash from "../../../../contracts/fixtures/partial-trash.json";
-import { appSnapshotSchema, trashProposalSummarySchema } from "../contracts";
+import {
+  appSnapshotSchema,
+  backupRuleDraftSchema,
+  ruleTestResultSchema,
+  trashProposalSummarySchema,
+} from "../contracts";
 
 const baseSnapshot = {
   revision: 1,
@@ -17,20 +22,8 @@ const baseSnapshot = {
     verified_files: 0,
     total_files: 0,
   },
-  transmitters: (["TX01", "TX02"] as const).map((transmitter) => ({
-    transmitter,
-    mounted: false,
-    phase: "idle" as const,
-    progress: {
-      percent: 0,
-      copied_bytes: 0,
-      bytes_requiring_copy: 0,
-      verified_files: 0,
-      total_files: 0,
-    },
-    retirement_outcome: "inactive" as const,
-    deletion_ready: false,
-  })),
+  sources: [],
+  backup_rules: backupComplete.backup_rules,
   current_stage: null,
   failure_stage: null,
   setting_applies_next_run: false,
@@ -47,7 +40,6 @@ const baseSnapshot = {
   },
   notification_status: "unknown",
   setup_state: "needs_destination",
-  pairing_candidates: [],
   recent_activity: [],
   error: null,
 } as const;
@@ -84,14 +76,15 @@ describe("app snapshot contract", () => {
     expect(parsed.failure_stage).toBeNull();
     expect(parsed.setting_applies_next_run).toBe(false);
     expect(parsed.settings.automatic_trash).toBe(false);
-    expect(parsed.transmitters[0].retirement_outcome).toBe("inactive");
+    expect(parsed.backup_rules[0].is_dji_preset).toBe(true);
   });
 
   test("rejects more activity entries than the popover contract allows", () => {
     const activity = {
       occurred_at: "2026-08-09T00:00:00Z",
       code: "device_detected",
-      transmitter: "TX01",
+      source_id: "11111111-1111-4111-8111-111111111111",
+      source_label: "MIC_TX",
       count_value: null,
       byte_value: null,
       severity: "info",
@@ -109,6 +102,47 @@ describe("app snapshot contract", () => {
       source_path: "/Volumes/example/recording.wav",
     });
     expect(result.success).toBe(false);
+  });
+
+  test("bounds and validates editable rule drafts", () => {
+    const draft = {
+      id: null,
+      name: "Zoom H1n",
+      archive_directory_name: "Zoom H1n",
+      enabled: true,
+      volume_name_glob: "ZOOM_*",
+      required_path_globs: ["RECORD/**"],
+      backup_file_globs: ["RECORD/**/*.WAV"],
+      session_directory_globs: ["RECORD/*"],
+      filename_prefix: "zoom-",
+      filename_suffix: "-field",
+    };
+    expect(backupRuleDraftSchema.parse(draft)).toEqual(draft);
+    expect(backupRuleDraftSchema.safeParse({ ...draft, filename_suffix: "/private" }).success).toBe(
+      false,
+    );
+    expect(backupRuleDraftSchema.safeParse({ ...draft, backup_file_globs: [] }).success).toBe(false);
+    expect(
+      backupRuleDraftSchema.safeParse({ ...draft, arbitrary_pattern: "**/*" }).success,
+    ).toBe(false);
+  });
+
+  test("keeps rule test results display-only", () => {
+    expect(
+      ruleTestResultSchema.safeParse({
+        matched_volumes: ["ZOOM_TEST"],
+        matched_file_count: 3,
+        conflict_rule_names: [],
+      }).success,
+    ).toBe(true);
+    expect(
+      ruleTestResultSchema.safeParse({
+        matched_volumes: ["ZOOM_TEST"],
+        matched_file_count: 3,
+        conflict_rule_names: [],
+        volume_uuid: "private",
+      }).success,
+    ).toBe(false);
   });
 
   test("keeps fixtures free from sensitive diagnostics and deletion authority", () => {
