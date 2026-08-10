@@ -20,6 +20,7 @@ use backup_core::{
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
+    source::{SourceId, SourceRecord},
     state::Transmitter,
 };
 use tempfile::{TempDir, tempdir};
@@ -37,9 +38,20 @@ fn fixture() -> Fixture {
     let destination = tempdir().unwrap();
     let state = tempdir().unwrap();
     let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+    let source_record = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "session-retirement-tx01".to_owned(),
+        legacy_slot: Some("TX01".to_owned()),
+        display_name: "Session Retirement TX01".to_owned(),
+    };
+    ledger
+        .upsert_source(&source_record, "2026-08-09T00:00:00Z")
+        .unwrap();
     ledger
         .begin_batch_run(
             "backup-run",
+            &source_record.id,
             "2026-08-09T00:00:00Z",
             0,
             FrozenPreferences {
@@ -76,7 +88,7 @@ fn fixture() -> Fixture {
         ledger
             .commit_verified_recording(&VerifiedRecording {
                 id: recording_id.clone(),
-                transmitter: Transmitter::Tx01,
+                source_id: source_record.id.clone(),
                 source_relative_path: source_relative.clone(),
                 source_size: digest.size,
                 source_mtime_ns: modified_nanos(&source_metadata).unwrap(),
@@ -135,6 +147,7 @@ fn fixture() -> Fixture {
         .collect::<BTreeSet<_>>();
     let snapshot = CompleteDeletionSnapshot {
         context: DeletionContext {
+            source_id: source_record.id,
             transmitter: Transmitter::Tx01,
             paired_volume_uuid: "fixture-volume".to_owned(),
             mount_generation: 1,
@@ -366,7 +379,7 @@ fn an_empty_legacy_session_moves_only_with_exact_ledger_evidence() {
         .ledger
         .commit_verified_recording(&VerifiedRecording {
             id: "legacy-recording".to_owned(),
-            transmitter: Transmitter::Tx01,
+            source_id: fixture.snapshot.context.source_id.clone(),
             source_relative_path: session.join("TX01_MIC009_20260809_235959.wav"),
             source_size: 4,
             source_mtime_ns: 1,

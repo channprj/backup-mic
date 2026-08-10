@@ -22,6 +22,7 @@ use crate::{
         BackupRule, BackupRuleDraft, DeviceConstraintProfile, FilenameProfile, RuleId,
         normalized_rule_name, validate_rule,
     },
+    source::{SourceId, SourceRecord, validate_source},
     state::Transmitter,
 };
 
@@ -30,7 +31,7 @@ pub const MAX_ACTIVITY_ENTRIES: usize = 50;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedRecording {
     pub id: String,
-    pub transmitter: Transmitter,
+    pub source_id: SourceId,
     pub source_relative_path: PathBuf,
     pub source_size: u64,
     pub source_mtime_ns: i128,
@@ -47,7 +48,7 @@ pub struct VerifiedRecording {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SupersededWavEvidence {
     pub recording_id: String,
-    pub transmitter: Transmitter,
+    pub source_id: SourceId,
     pub relative_path: PathBuf,
     pub byte_count: u64,
     pub sha256: String,
@@ -269,16 +270,23 @@ impl Ledger {
                 r#"SELECT preset_kind IS NOT NULL,
                           EXISTS(
                             SELECT 1 FROM rule_device_bindings WHERE rule_id = backup_rules.id
-                          )
+                          ),
+                          EXISTS(SELECT 1 FROM sources WHERE rule_id = backup_rules.id)
                    FROM backup_rules WHERE id = ?1"#,
                 [id.as_str()],
-                |row| Ok((row.get::<_, bool>(0)?, row.get::<_, bool>(1)?)),
+                |row| {
+                    Ok((
+                        row.get::<_, bool>(0)?,
+                        row.get::<_, bool>(1)?,
+                        row.get::<_, bool>(2)?,
+                    ))
+                },
             )
             .optional()
             .map_err(CoreError::Ledger)?
             .ok_or(CoreError::InvalidRule)?;
 
-        let changed = if reference_state.0 || reference_state.1 {
+        let changed = if reference_state.0 || reference_state.1 || reference_state.2 {
             self.connection
                 .execute(
                     r#"UPDATE backup_rules
@@ -357,6 +365,104 @@ impl Ledger {
             .map_err(CoreError::Ledger)?
             .ok_or(CoreError::LedgerCorrupt)?;
         hydrate_rule(&self.connection, stored)
+    }
+
+    pub fn upsert_source(&mut self, source: &SourceRecord, seen_at: &str) -> Result<(), CoreError> {
+        validate_source(source)?;
+        if seen_at.trim().is_empty() {
+            return Err(CoreError::InvalidRequest);
+        }
+        let rule_exists = self
+            .connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM backup_rules WHERE id = ?1)",
+                [source.rule_id.as_str()],
+                |row| row.get::<_, bool>(0),
+            )
+            .map_err(CoreError::Ledger)?;
+        if !rule_exists {
+            return Err(CoreError::InvalidRequest);
+        }
+        let normalized_uuid = source.volume_uuid.to_ascii_lowercase();
+        if let Some(existing) = self.source_by_id(&source.id)? {
+            if existing.rule_id != source.rule_id
+                || !existing
+                    .volume_uuid
+                    .eq_ignore_ascii_case(&source.volume_uuid)
+                || existing.legacy_slot != source.legacy_slot
+            {
+                return Err(CoreError::InvalidRequest);
+            }
+            let changed = self
+                .connection
+                .execute(
+                    r#"UPDATE sources
+                       SET volume_uuid = ?1, display_name = ?2, last_seen_at = ?3
+                       WHERE id = ?4 AND rule_id = ?5 AND volume_uuid_normalized = ?6"#,
+                    params![
+                        source.volume_uuid,
+                        source.display_name,
+                        seen_at,
+                        source.id.as_str(),
+                        source.rule_id.as_str(),
+                        normalized_uuid,
+                    ],
+                )
+                .map_err(source_write_error)?;
+            if changed != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
+            return Ok(());
+        }
+
+        self.connection
+            .execute(
+                r#"INSERT INTO sources(
+                     id, rule_id, volume_uuid, volume_uuid_normalized, legacy_slot,
+                     display_name, created_at, last_seen_at
+                   ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)"#,
+                params![
+                    source.id.as_str(),
+                    source.rule_id.as_str(),
+                    source.volume_uuid,
+                    normalized_uuid,
+                    source.legacy_slot,
+                    source.display_name,
+                    seen_at,
+                ],
+            )
+            .map_err(source_write_error)?;
+        Ok(())
+    }
+
+    pub fn source(&self, id: &SourceId) -> Result<SourceRecord, CoreError> {
+        self.source_by_id(id)?.ok_or(CoreError::InvalidRequest)
+    }
+
+    pub fn sources_for_rule(&self, rule: &RuleId) -> Result<Vec<SourceRecord>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, rule_id, volume_uuid, legacy_slot, display_name
+                   FROM sources WHERE rule_id = ?1 ORDER BY legacy_slot, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([rule.as_str()], row_to_source_record)
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| row.map_err(CoreError::Ledger)).collect()
+    }
+
+    fn source_by_id(&self, id: &SourceId) -> Result<Option<SourceRecord>, CoreError> {
+        self.connection
+            .query_row(
+                r#"SELECT id, rule_id, volume_uuid, legacy_slot, display_name
+                   FROM sources WHERE id = ?1"#,
+                [id.as_str()],
+                row_to_source_record,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)
     }
 
     fn backup_rule_by_id(&self, id: &RuleId) -> Result<Option<BackupRule>, CoreError> {
@@ -545,12 +651,12 @@ impl Ledger {
         transaction
             .execute(
                 r#"INSERT INTO activity(
-                     occurred_at, code, transmitter, count_value, byte_value, severity
+                     occurred_at, code, source_id, count_value, byte_value, severity
                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)"#,
                 params![
                     entry.occurred_at,
                     entry.code,
-                    entry.transmitter.map(transmitter_name),
+                    entry.source_id.as_ref().map(SourceId::as_str),
                     optional_i64(entry.count_value)?,
                     optional_i64(entry.byte_value)?,
                     severity_name(entry.severity),
@@ -573,7 +679,7 @@ impl Ledger {
         let mut statement = self
             .connection
             .prepare(
-                r#"SELECT occurred_at, code, transmitter, count_value, byte_value, severity
+                r#"SELECT occurred_at, code, source_id, count_value, byte_value, severity
                    FROM activity ORDER BY id DESC LIMIT ?1"#,
             )
             .map_err(CoreError::Ledger)?;
@@ -593,14 +699,12 @@ impl Ledger {
             )
             .map_err(CoreError::Ledger)?;
         rows.map(|row| {
-            let (occurred_at, code, transmitter, count_value, byte_value, severity) =
+            let (occurred_at, code, source_id, count_value, byte_value, severity) =
                 row.map_err(CoreError::Ledger)?;
             Ok(ActivityEntry {
                 occurred_at,
                 code,
-                transmitter: transmitter
-                    .map(|value| parse_transmitter(&value))
-                    .transpose()?,
+                source_id: source_id.map(|value| SourceId::parse(&value)).transpose()?,
                 count_value: optional_u64(count_value)?,
                 byte_value: optional_u64(byte_value)?,
                 severity: parse_severity(&severity)?,
@@ -612,15 +716,21 @@ impl Ledger {
     pub fn begin_backup_run(
         &mut self,
         id: &str,
+        source_id: &SourceId,
         started_at: &str,
         required_copy_bytes: u64,
     ) -> Result<(), CoreError> {
         self.connection
             .execute(
                 r#"INSERT INTO backup_runs(
-                     id, started_at, outcome, required_copy_bytes
-                   ) VALUES (?1, ?2, 'running', ?3)"#,
-                params![id, started_at, to_i64(required_copy_bytes)?],
+                     id, source_id, started_at, outcome, required_copy_bytes
+                   ) VALUES (?1, ?2, ?3, 'running', ?4)"#,
+                params![
+                    id,
+                    source_id.as_str(),
+                    started_at,
+                    to_i64(required_copy_bytes)?
+                ],
             )
             .map_err(CoreError::Ledger)?;
         Ok(())
@@ -629,6 +739,7 @@ impl Ledger {
     pub fn begin_batch_run(
         &mut self,
         id: &str,
+        source_id: &SourceId,
         started_at: &str,
         required_copy_bytes: u64,
         preferences: FrozenPreferences,
@@ -636,11 +747,12 @@ impl Ledger {
         self.connection
             .execute(
                 r#"INSERT INTO backup_runs(
-                     id, started_at, outcome, required_copy_bytes, batch_phase,
+                     id, source_id, started_at, outcome, required_copy_bytes, batch_phase,
                      frozen_automatic_backup, frozen_m4a_conversion, frozen_automatic_trash
-                   ) VALUES (?1, ?2, 'running', ?3, 'inventory', ?4, ?5, ?6)"#,
+                   ) VALUES (?1, ?2, ?3, 'running', ?4, 'inventory', ?5, ?6, ?7)"#,
                 params![
                     id,
+                    source_id.as_str(),
                     started_at,
                     to_i64(required_copy_bytes)?,
                     preferences.automatic_backup,
@@ -672,25 +784,38 @@ impl Ledger {
         let row = self
             .connection
             .query_row(
-                r#"SELECT batch_phase, frozen_automatic_backup, frozen_m4a_conversion,
+                r#"SELECT source_id, batch_phase, frozen_automatic_backup, frozen_m4a_conversion,
                           frozen_automatic_trash, m4a_profile_id
                    FROM backup_runs WHERE id = ?1"#,
                 [id],
                 |row| {
                     Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, bool>(1)?,
+                        row.get::<_, Option<String>>(0)?,
+                        row.get::<_, String>(1)?,
                         row.get::<_, bool>(2)?,
                         row.get::<_, bool>(3)?,
-                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, bool>(4)?,
+                        row.get::<_, Option<String>>(5)?,
                     ))
                 },
             )
             .optional()
             .map_err(CoreError::Ledger)?;
         row.map(
-            |(phase, automatic_backup, m4a_conversion, automatic_trash, m4a_profile_id)| {
+            |(
+                source_id,
+                phase,
+                automatic_backup,
+                m4a_conversion,
+                automatic_trash,
+                m4a_profile_id,
+            )| {
                 Ok(BatchRunEvidence {
+                    source_id: source_id
+                        .map(|source_id| {
+                            SourceId::parse(&source_id).map_err(|_| CoreError::LedgerCorrupt)
+                        })
+                        .transpose()?,
                     phase: BatchPhase::parse(&phase)?,
                     frozen_preferences: FrozenPreferences {
                         automatic_backup,
@@ -734,14 +859,22 @@ impl Ledger {
             return Err(CoreError::InvalidRequest);
         }
         for recording_id in recording_ids {
-            transaction
+            let inserted = transaction
                 .execute(
                     r#"INSERT INTO conversion_cohort_items(
-                         backup_run_id, recording_id, profile_id, status
-                       ) VALUES (?1, ?2, ?3, 'pending')"#,
+                         backup_run_id, recording_id, source_id, profile_id, status
+                       )
+                       SELECT ?1, id, source_id, ?3, 'pending'
+                       FROM recordings
+                       WHERE id = ?2 AND source_id = (
+                         SELECT source_id FROM backup_runs WHERE id = ?1
+                       )"#,
                     params![backup_run_id, recording_id, profile_id],
                 )
                 .map_err(CoreError::Ledger)?;
+            if inserted != 1 {
+                return Err(CoreError::InvalidRequest);
+            }
         }
         transaction.commit().map_err(CoreError::Ledger)
     }
@@ -848,10 +981,10 @@ impl Ledger {
                           conversion_error_code, retirement_status,
                           retired_session_relative_path
                    FROM recordings
-                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                   WHERE source_id = ?1 AND source_relative_path = ?2
                      AND source_size = ?3 AND source_mtime_ns = ?4 AND source_sha256 = ?5"#,
                 params![
-                    transmitter_name(recording.transmitter),
+                    recording.source_id.as_str(),
                     source_relative_path,
                     to_i64(recording.source_size)?,
                     recording.source_mtime_ns.to_string(),
@@ -924,7 +1057,7 @@ impl Ledger {
             transaction
                 .execute(
                     r#"INSERT INTO recordings(
-                         id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                         id, source_id, source_relative_path, source_size, source_mtime_ns,
                          source_sha256, destination_relative_path, destination_size,
                          destination_sha256, verified_at, backup_run_id, artifact_format,
                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
@@ -936,7 +1069,7 @@ impl Ledger {
                        )"#,
                     params![
                         recording.id,
-                        transmitter_name(recording.transmitter),
+                        recording.source_id.as_str(),
                         source_relative_path,
                         to_i64(recording.source_size)?,
                         recording.source_mtime_ns.to_string(),
@@ -968,7 +1101,7 @@ impl Ledger {
     pub fn verified_recording(&self, id: &str) -> Result<Option<VerifiedRecording>, CoreError> {
         self.connection
             .query_row(
-                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
                           source_sha256, destination_relative_path, destination_size,
                           destination_sha256, verified_at, backup_run_id, artifact_format,
                           artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
@@ -987,7 +1120,7 @@ impl Ledger {
         let mut statement = self
             .connection
             .prepare(
-                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
                           source_sha256, destination_relative_path, destination_size,
                           destination_sha256, verified_at, backup_run_id, artifact_format,
                           artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
@@ -1051,7 +1184,7 @@ impl Ledger {
 
     pub fn verified_recording_for_source(
         &self,
-        transmitter: Transmitter,
+        source_id: &SourceId,
         source_relative_path: &Path,
         source_size: u64,
         source_mtime_ns: i128,
@@ -1062,7 +1195,7 @@ impl Ledger {
         }
         self.connection
             .query_row(
-                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
                           source_sha256, destination_relative_path, destination_size,
                           destination_sha256, verified_at, backup_run_id, artifact_format,
                           artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
@@ -1070,11 +1203,11 @@ impl Ledger {
                           conversion_error_code, retirement_status,
                           retired_session_relative_path
                    FROM recordings
-                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                   WHERE source_id = ?1 AND source_relative_path = ?2
                      AND source_size = ?3 AND source_mtime_ns = ?4
                      AND source_sha256 = ?5"#,
                 params![
-                    transmitter_name(transmitter),
+                    source_id.as_str(),
                     path_text(source_relative_path)?,
                     to_i64(source_size)?,
                     source_mtime_ns.to_string(),
@@ -1114,11 +1247,11 @@ impl Ledger {
         let id = transaction
             .query_row(
                 r#"SELECT id FROM recordings
-                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                   WHERE source_id = ?1 AND source_relative_path = ?2
                      AND source_size = ?3 AND source_mtime_ns = ?4
                      AND source_sha256 = ?5"#,
                 params![
-                    transmitter_name(recording.transmitter),
+                    recording.source_id.as_str(),
                     source_relative_path,
                     to_i64(recording.source_size)?,
                     recording.source_mtime_ns.to_string(),
@@ -1141,7 +1274,7 @@ impl Ledger {
                        retirement_status = 'present', retired_session_relative_path = NULL,
                        superseded_wav_relative_path = NULL, superseded_wav_size = NULL,
                        superseded_wav_sha256 = NULL, superseded_wav_retirement_status = 'none'
-                   WHERE id = ?6 AND transmitter = ?7 AND source_relative_path = ?8
+                   WHERE id = ?6 AND source_id = ?7 AND source_relative_path = ?8
                      AND source_size = ?9 AND source_mtime_ns = ?10
                      AND source_sha256 = ?11"#,
                 params![
@@ -1151,7 +1284,7 @@ impl Ledger {
                     recording.verified_at,
                     recording.backup_run_id,
                     id,
-                    transmitter_name(recording.transmitter),
+                    recording.source_id.as_str(),
                     source_relative_path,
                     to_i64(recording.source_size)?,
                     recording.source_mtime_ns.to_string(),
@@ -1221,7 +1354,7 @@ impl Ledger {
                            WHEN ?14 IS NOT NULL THEN 'pending'
                            ELSE superseded_wav_retirement_status
                        END
-                   WHERE id = ?17 AND transmitter = ?18 AND source_relative_path = ?19
+                   WHERE id = ?17 AND source_id = ?18 AND source_relative_path = ?19
                      AND source_size = ?20 AND source_mtime_ns = ?21
                      AND source_sha256 = ?22"#,
                 params![
@@ -1242,7 +1375,7 @@ impl Ledger {
                     superseded_size,
                     superseded_sha256,
                     recording.id,
-                    transmitter_name(recording.transmitter),
+                    recording.source_id.as_str(),
                     path_text(&recording.source_relative_path)?,
                     to_i64(recording.source_size)?,
                     recording.source_mtime_ns.to_string(),
@@ -1295,7 +1428,7 @@ impl Ledger {
         let mut statement = self
             .connection
             .prepare(
-                r#"SELECT id, transmitter, superseded_wav_relative_path,
+                r#"SELECT id, source_id, superseded_wav_relative_path,
                           superseded_wav_size, superseded_wav_sha256
                    FROM recordings
                    WHERE superseded_wav_retirement_status = 'pending'
@@ -1314,7 +1447,7 @@ impl Ledger {
             })
             .map_err(CoreError::Ledger)?;
         rows.map(|row| {
-            let (recording_id, transmitter, path, size, sha256) = row.map_err(CoreError::Ledger)?;
+            let (recording_id, source_id, path, size, sha256) = row.map_err(CoreError::Ledger)?;
             let (Some(path), Some(size), Some(sha256)) = (path, size, sha256) else {
                 return Err(CoreError::LedgerCorrupt);
             };
@@ -1328,7 +1461,7 @@ impl Ledger {
             }
             Ok(SupersededWavEvidence {
                 recording_id,
-                transmitter: parse_transmitter(&transmitter)?,
+                source_id: SourceId::parse(&source_id).map_err(|_| CoreError::LedgerCorrupt)?,
                 relative_path,
                 byte_count,
                 sha256,
@@ -1395,7 +1528,7 @@ impl Ledger {
             return Err(CoreError::LedgerCorrupt);
         }
         if let Some(existing) = self.verified_additional_file_for_source(
-            file.transmitter,
+            &file.source_id,
             &file.source_relative_path,
             file.source_size,
             file.source_mtime_ns,
@@ -1415,13 +1548,13 @@ impl Ledger {
         self.connection
             .execute(
                 r#"INSERT INTO additional_files(
-                     id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                     id, source_id, source_relative_path, source_size, source_mtime_ns,
                      source_sha256, artifact_relative_path, artifact_size, artifact_sha256,
                      classification, backup_run_id
                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
                 params![
                     file.id,
-                    transmitter_name(file.transmitter),
+                    file.source_id.as_str(),
                     path_text(&file.source_relative_path)?,
                     to_i64(file.source_size)?,
                     file.source_mtime_ns.to_string(),
@@ -1444,7 +1577,7 @@ impl Ledger {
         let row = self
             .connection
             .query_row(
-                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
                           source_sha256, artifact_relative_path, artifact_size,
                           artifact_sha256, classification, backup_run_id
                    FROM additional_files WHERE id = ?1"#,
@@ -1461,7 +1594,7 @@ impl Ledger {
 
     pub fn verified_additional_file_for_source(
         &self,
-        transmitter: Transmitter,
+        source_id: &SourceId,
         source_relative_path: &Path,
         source_size: u64,
         source_mtime_ns: i128,
@@ -1473,14 +1606,14 @@ impl Ledger {
         let row = self
             .connection
             .query_row(
-                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
                           source_sha256, artifact_relative_path, artifact_size,
                           artifact_sha256, classification, backup_run_id
                    FROM additional_files
-                   WHERE transmitter = ?1 AND source_relative_path = ?2
+                   WHERE source_id = ?1 AND source_relative_path = ?2
                      AND source_size = ?3 AND source_mtime_ns = ?4 AND source_sha256 = ?5"#,
                 params![
-                    transmitter_name(transmitter),
+                    source_id.as_str(),
                     path_text(source_relative_path)?,
                     to_i64(source_size)?,
                     source_mtime_ns.to_string(),
@@ -1500,7 +1633,7 @@ impl Ledger {
         let mut statement = self
             .connection
             .prepare(
-                r#"SELECT id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
                           source_sha256, destination_relative_path, destination_size,
                           destination_sha256, verified_at, backup_run_id, artifact_format,
                           artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
@@ -1520,19 +1653,19 @@ impl Ledger {
 
     pub fn legacy_retired_recordings(
         &self,
-        transmitter: Transmitter,
+        source_id: &SourceId,
     ) -> Result<Vec<LegacyRetiredRecording>, CoreError> {
         let mut statement = self
             .connection
             .prepare(
                 r#"SELECT id, source_relative_path
                    FROM recordings
-                   WHERE transmitter = ?1 AND retirement_status = 'legacy_deleted'
+                   WHERE source_id = ?1 AND retirement_status = 'legacy_deleted'
                    ORDER BY source_relative_path"#,
             )
             .map_err(CoreError::Ledger)?;
         let rows = statement
-            .query_map([transmitter_name(transmitter)], |row| {
+            .query_map([source_id.as_str()], |row| {
                 Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
             })
             .map_err(CoreError::Ledger)?;
@@ -1607,17 +1740,17 @@ impl Ledger {
     pub fn begin_deletion_run(
         &mut self,
         id: &str,
-        transmitter: Transmitter,
+        source_id: &SourceId,
         started_at: &str,
         items: &[PendingDeletionItem],
     ) -> Result<(), CoreError> {
-        self.begin_deletion_run_with_additional(id, transmitter, started_at, items, &[])
+        self.begin_deletion_run_with_additional(id, source_id, started_at, items, &[])
     }
 
     pub fn begin_deletion_run_with_additional(
         &mut self,
         id: &str,
-        transmitter: Transmitter,
+        source_id: &SourceId,
         started_at: &str,
         items: &[PendingDeletionItem],
         additional_items: &[PendingAdditionalDeletionItem],
@@ -1642,11 +1775,11 @@ impl Ledger {
         transaction
             .execute(
                 r#"INSERT INTO deletion_runs(
-                     id, transmitter, started_at, outcome, proposed_file_count, proposed_bytes
+                     id, source_id, started_at, outcome, proposed_file_count, proposed_bytes
                    ) VALUES (?1, ?2, ?3, 'running', ?4, ?5)"#,
                 params![
                     id,
-                    transmitter_name(transmitter),
+                    source_id.as_str(),
                     started_at,
                     to_i64(u64::try_from(proposed_count).map_err(|_| CoreError::InvalidRequest)?)?,
                     to_i64(proposed_bytes)?,
@@ -1654,13 +1787,19 @@ impl Ledger {
             )
             .map_err(CoreError::Ledger)?;
         for item in items {
-            transaction
+            let inserted = transaction
                 .execute(
-                    r#"INSERT INTO deletion_items(deletion_run_id, recording_id, outcome)
-                       VALUES (?1, ?2, 'pending')"#,
-                    params![id, item.recording_id],
+                    r#"INSERT INTO deletion_items(
+                         deletion_run_id, recording_id, source_id, outcome
+                       )
+                       SELECT ?1, id, source_id, 'pending' FROM recordings
+                       WHERE id = ?2 AND source_id = ?3"#,
+                    params![id, item.recording_id, source_id.as_str()],
                 )
                 .map_err(CoreError::Ledger)?;
+            if inserted != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
             let changed = transaction
                 .execute(
                     r#"UPDATE recordings
@@ -1675,14 +1814,19 @@ impl Ledger {
             }
         }
         for item in additional_items {
-            transaction
+            let inserted = transaction
                 .execute(
                     r#"INSERT INTO additional_deletion_items(
-                         deletion_run_id, additional_file_id, outcome
-                       ) VALUES (?1, ?2, 'pending')"#,
-                    params![id, item.additional_file_id],
+                         deletion_run_id, additional_file_id, source_id, outcome
+                       )
+                       SELECT ?1, id, source_id, 'pending' FROM additional_files
+                       WHERE id = ?2 AND source_id = ?3"#,
+                    params![id, item.additional_file_id, source_id.as_str()],
                 )
                 .map_err(CoreError::Ledger)?;
+            if inserted != 1 {
+                return Err(CoreError::LedgerCorrupt);
+            }
         }
         transaction.commit().map_err(CoreError::Ledger)
     }
@@ -2057,6 +2201,41 @@ fn rule_write_error(error: rusqlite::Error) -> CoreError {
     }
 }
 
+fn row_to_source_record(row: &rusqlite::Row<'_>) -> rusqlite::Result<SourceRecord> {
+    let id = row.get::<_, String>(0)?;
+    let rule_id = row.get::<_, String>(1)?;
+    Ok(SourceRecord {
+        id: SourceId::parse(&id).map_err(|_| invalid_text_column(0, "invalid source id"))?,
+        rule_id: RuleId::parse(&rule_id)
+            .map_err(|_| invalid_text_column(1, "invalid source rule id"))?,
+        volume_uuid: row.get(2)?,
+        legacy_slot: row.get(3)?,
+        display_name: row.get(4)?,
+    })
+}
+
+fn source_write_error(error: rusqlite::Error) -> CoreError {
+    match &error {
+        rusqlite::Error::SqliteFailure(details, _)
+            if details.code == rusqlite::ErrorCode::ConstraintViolation =>
+        {
+            CoreError::InvalidRequest
+        }
+        _ => CoreError::Ledger(error),
+    }
+}
+
+fn invalid_text_column(column: usize, message: &'static str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        column,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            message,
+        )),
+    )
+}
+
 fn open_validated(path: &Path) -> Result<Connection, CoreError> {
     let connection = Connection::open(path).map_err(CoreError::Ledger)?;
     connection
@@ -2142,6 +2321,18 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
     if !version_five_applied {
         connection
             .execute_batch(include_str!("../migrations/0005_backup_rules.sql"))
+            .map_err(CoreError::Ledger)?;
+    }
+    let version_six_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 6)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_six_applied {
+        connection
+            .execute_batch(include_str!("../migrations/0006_dynamic_sources.sql"))
             .map_err(CoreError::Ledger)?;
     }
     Ok(())
@@ -2303,7 +2494,7 @@ fn additional_file_evidence_matches(
     existing: &VerifiedAdditionalFile,
     candidate: &VerifiedAdditionalFile,
 ) -> bool {
-    existing.transmitter == candidate.transmitter
+    existing.source_id == candidate.source_id
         && existing.source_relative_path == candidate.source_relative_path
         && existing.source_size == candidate.source_size
         && existing.source_mtime_ns == candidate.source_mtime_ns
@@ -2396,7 +2587,7 @@ fn row_to_verified_recording(row: &rusqlite::Row<'_>) -> rusqlite::Result<Verifi
     })?;
     Ok(VerifiedRecording {
         id: row.get(0)?,
-        transmitter: parse_transmitter_sql(&row.get::<_, String>(1)?, 1)?,
+        source_id: parse_source_id_sql(&row.get::<_, String>(1)?, 1)?,
         source_relative_path: PathBuf::from(row.get::<_, String>(2)?),
         source_size,
         source_mtime_ns,
@@ -2446,7 +2637,7 @@ fn row_to_verified_additional_file(
     })?;
     Ok(VerifiedAdditionalFile {
         id: row.get(0)?,
-        transmitter: parse_transmitter_sql(&row.get::<_, String>(1)?, 1)?,
+        source_id: parse_source_id_sql(&row.get::<_, String>(1)?, 1)?,
         source_relative_path: PathBuf::from(row.get::<_, String>(2)?),
         source_size,
         source_mtime_ns,
@@ -2459,14 +2650,14 @@ fn row_to_verified_additional_file(
     })
 }
 
-fn parse_transmitter_sql(value: &str, column: usize) -> rusqlite::Result<Transmitter> {
-    parse_transmitter(value).map_err(|_| {
+fn parse_source_id_sql(value: &str, column: usize) -> rusqlite::Result<SourceId> {
+    SourceId::parse(value).map_err(|_| {
         rusqlite::Error::FromSqlConversionFailure(
             column,
             rusqlite::types::Type::Text,
             Box::new(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
-                "invalid transmitter",
+                "invalid source id",
             )),
         )
     })

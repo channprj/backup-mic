@@ -11,7 +11,7 @@ use backup_core::{
     hash::hash_file,
     layout::flatten_verified_recording_layout,
     ledger::{Ledger, VerifiedRecording},
-    state::Transmitter,
+    source::{SourceId, SourceRecord},
 };
 use tempfile::tempdir;
 
@@ -41,9 +41,20 @@ fn verified_transmitter_artifact_moves_into_the_shared_date_folder() {
     let artifact_digest = hash_file(&old_path).unwrap();
 
     let mut ledger = Ledger::open(destination.path().join("ledger.sqlite3")).unwrap();
+    let source = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "layout-migration-tx02".to_owned(),
+        legacy_slot: Some("TX02".to_owned()),
+        display_name: "Layout Migration TX02".to_owned(),
+    };
+    ledger
+        .upsert_source(&source, "2026-08-10T00:00:00Z")
+        .unwrap();
     ledger
         .begin_batch_run(
             "run-1",
+            &source.id,
             "2026-08-10T00:00:00Z",
             0,
             FrozenPreferences {
@@ -56,7 +67,7 @@ fn verified_transmitter_artifact_moves_into_the_shared_date_folder() {
     ledger
         .commit_verified_recording(&VerifiedRecording {
             id: "recording-1".to_owned(),
-            transmitter: Transmitter::Tx02,
+            source_id: source.id,
             source_relative_path: "TX_MIC001_20260810_004713/TX02_MIC001_20260810_004713_edit.wav"
                 .into(),
             source_size: 67_940_296,

@@ -15,6 +15,7 @@ use backup_core::{
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
+    source::{SourceId, SourceRecord},
     state::Transmitter,
 };
 use tempfile::{TempDir, tempdir};
@@ -37,9 +38,20 @@ fn fixture() -> Fixture {
     let session = source.path().join(SESSION);
     fs::create_dir(&session).unwrap();
     let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+    let source_record = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "run-retirement-tx01".to_owned(),
+        legacy_slot: Some("TX01".to_owned()),
+        display_name: "Run Retirement TX01".to_owned(),
+    };
+    ledger
+        .upsert_source(&source_record, "2026-08-10T00:00:00Z")
+        .unwrap();
     ledger
         .begin_batch_run(
             RUN,
+            &source_record.id,
             "2026-08-10T00:00:00Z",
             0,
             FrozenPreferences {
@@ -84,7 +96,7 @@ fn fixture() -> Fixture {
         ledger
             .commit_verified_recording(&VerifiedRecording {
                 id: id.clone(),
-                transmitter: Transmitter::Tx01,
+                source_id: source_record.id.clone(),
                 source_relative_path: source_relative.clone(),
                 source_size: source_digest.size,
                 source_mtime_ns: modified_nanos(&fs::metadata(&source_path).unwrap()).unwrap(),
@@ -152,7 +164,7 @@ fn fixture() -> Fixture {
         ledger
             .commit_verified_additional_file(&VerifiedAdditionalFile {
                 id: id.clone(),
-                transmitter: Transmitter::Tx01,
+                source_id: source_record.id.clone(),
                 source_relative_path: source_relative.clone(),
                 source_size: digest.size,
                 source_mtime_ns: mtime,
@@ -200,6 +212,7 @@ fn fixture() -> Fixture {
         .collect::<BTreeSet<_>>();
     let snapshot = CompleteDeletionSnapshot {
         context: DeletionContext {
+            source_id: source_record.id,
             transmitter: Transmitter::Tx01,
             paired_volume_uuid: "fixture-volume".to_owned(),
             mount_generation: 1,
@@ -371,6 +384,7 @@ fn any_live_backup_or_barrier_mutation_refuses_before_trash() {
                     .ledger
                     .begin_batch_run(
                         run,
+                        &fixture.snapshot.context.source_id,
                         "2026-08-10T01:00:00Z",
                         0,
                         FrozenPreferences {

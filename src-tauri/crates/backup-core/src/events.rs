@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state::Transmitter;
+use crate::source::SourceId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -15,7 +15,7 @@ pub enum ActivitySeverity {
 pub struct ActivityEntry {
     pub occurred_at: String,
     pub code: String,
-    pub transmitter: Option<Transmitter>,
+    pub source_id: Option<SourceId>,
     pub count_value: Option<u64>,
     pub byte_value: Option<u64>,
     pub severity: ActivitySeverity,

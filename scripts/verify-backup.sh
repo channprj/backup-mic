@@ -108,15 +108,16 @@ run_sqlite() {
 }
 
 schema_version="$(run_sqlite "$query_ledger" 'SELECT COALESCE(MAX(version), 0) FROM schema_migrations;')"
-if [[ ! "$schema_version" =~ ^[0-9]+$ || "$schema_version" -lt 4 ]]; then
+if [[ ! "$schema_version" =~ ^[0-9]+$ || "$schema_version" -lt 6 ]]; then
   echo "Backup ledger is from an older app version; launch the updated app once first." >&2
   exit 1
 fi
 if ! run_sqlite "$query_ledger" \
-  "SELECT batch_phase, frozen_m4a_conversion, m4a_profile_id FROM backup_runs LIMIT 0;
-   SELECT classification, artifact_relative_path FROM additional_files LIMIT 0;
-   SELECT profile_id, status FROM conversion_cohort_items LIMIT 0;
-   SELECT superseded_wav_retirement_status FROM recordings LIMIT 0;" >/dev/null 2>&1; then
+  "SELECT id, rule_id, legacy_slot FROM sources LIMIT 0;
+   SELECT source_id, batch_phase, frozen_m4a_conversion, m4a_profile_id FROM backup_runs LIMIT 0;
+   SELECT source_id, classification, artifact_relative_path FROM additional_files LIMIT 0;
+   SELECT source_id, profile_id, status FROM conversion_cohort_items LIMIT 0;
+   SELECT source_id, superseded_wav_retirement_status FROM recordings LIMIT 0;" >/dev/null 2>&1; then
   echo "Backup ledger does not contain complete batch evidence." >&2
   exit 1
 fi
@@ -176,7 +177,7 @@ resolve_regular_artifact() {
 
 recording_evidence="$temporary/recording-evidence"
 run_sqlite -separator "$separator" "$query_ledger" \
-  "SELECT r.id, r.transmitter, r.source_relative_path, r.source_size, r.source_sha256,
+  "SELECT r.id, COALESCE(s.legacy_slot, ''), r.source_relative_path, r.source_size, r.source_sha256,
           r.destination_relative_path, r.destination_size, r.destination_sha256,
           r.artifact_format, COALESCE(r.artifact_codec, ''),
           COALESCE(r.artifact_sample_rate_hz, ''),
@@ -197,10 +198,23 @@ run_sqlite -separator "$separator" "$query_ledger" \
            WHERE c.backup_run_id = r.backup_run_id AND c.recording_id = r.id),
           (SELECT COUNT(*) FROM conversion_cohort_items c
            WHERE c.backup_run_id = r.backup_run_id
-             AND (c.status != 'verified_m4a' OR c.profile_id != b.m4a_profile_id))
+             AND (c.status != 'verified_m4a' OR c.profile_id != b.m4a_profile_id
+                  OR c.source_id != r.source_id)),
+          r.source_id,
+          CASE
+            WHEN b.source_id = r.source_id THEN 1
+            WHEN b.source_id IS NULL AND (
+              EXISTS(SELECT 1 FROM recordings other
+                     WHERE other.backup_run_id = b.id AND other.source_id != r.source_id)
+              OR EXISTS(SELECT 1 FROM additional_files other
+                        WHERE other.backup_run_id = b.id AND other.source_id != r.source_id)
+            ) THEN 1
+            ELSE 0
+          END
      FROM recordings r
      JOIN backup_runs b ON b.id = r.backup_run_id
-    ORDER BY r.transmitter, r.source_relative_path, r.id;" > "$recording_evidence"
+     JOIN sources s ON s.id = r.source_id
+    ORDER BY s.legacy_slot, r.source_relative_path, r.id;" > "$recording_evidence"
 
 verified_artifact_count=0
 m4a_count=0
@@ -212,10 +226,15 @@ while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded
   conversion_status superseded_wav_relative superseded_wav_size superseded_wav_hash \
   superseded_wav_status \
   backup_run_id run_outcome batch_phase frozen_m4a run_profile cohort_profile cohort_status \
-  cohort_count cohort_invalid_count; do
+  cohort_count cohort_invalid_count recorded_source_id source_run_consistent; do
   [[ -n "$recording_id" ]] || continue
   row_index=$((row_index + 1))
   case "$recorded_tx" in TX01|TX02) ;; *) echo "Recording evidence contains an invalid transmitter." >&2; exit 1 ;; esac
+  if [[ ! "$recorded_source_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+    || "$source_run_consistent" != "1" ]]; then
+    echo "Recording evidence contains an invalid source identity." >&2
+    exit 1
+  fi
   if ! is_safe_relative "$recorded_source" || ! resolve_regular_artifact "$artifact_relative"; then
     echo "Recording evidence contains an unsafe or unavailable artifact (1 invalid record)." >&2
     exit 1
@@ -295,27 +314,43 @@ while IFS="$separator" read -r recording_id recorded_tx recorded_source recorded
   esac
   verified_artifact_count=$((verified_artifact_count + 1))
   if [[ "$diagnostic" -eq 1 ]]; then
-    echo "verified source=$recorded_tx:$recorded_source source_sha256=$recorded_source_hash artifact=$artifact_relative artifact_sha256=$artifact_hash format=$artifact_format run=$backup_run_id"
+    echo "verified source_id=$recorded_source_id source=$recorded_tx:$recorded_source source_sha256=$recorded_source_hash artifact=$artifact_relative artifact_sha256=$artifact_hash format=$artifact_format run=$backup_run_id"
   fi
 done < "$recording_evidence"
 
 additional_evidence="$temporary/additional-evidence"
 run_sqlite -separator "$separator" "$query_ledger" \
-  "SELECT a.id, a.transmitter, a.source_relative_path, a.source_size, a.source_sha256,
+  "SELECT a.id, COALESCE(s.legacy_slot, ''), a.source_relative_path, a.source_size, a.source_sha256,
           a.artifact_relative_path, a.artifact_size, a.artifact_sha256, a.classification,
           a.backup_run_id, b.outcome, b.batch_phase, b.frozen_m4a_conversion,
-          COALESCE(b.m4a_profile_id, '')
+          COALESCE(b.m4a_profile_id, ''), a.source_id,
+          CASE
+            WHEN b.source_id = a.source_id THEN 1
+            WHEN b.source_id IS NULL AND (
+              EXISTS(SELECT 1 FROM recordings other
+                     WHERE other.backup_run_id = b.id AND other.source_id != a.source_id)
+              OR EXISTS(SELECT 1 FROM additional_files other
+                        WHERE other.backup_run_id = b.id AND other.source_id != a.source_id)
+            ) THEN 1
+            ELSE 0
+          END
      FROM additional_files a
      JOIN backup_runs b ON b.id = a.backup_run_id
-    ORDER BY a.transmitter, a.source_relative_path, a.id;" > "$additional_evidence"
+     JOIN sources s ON s.id = a.source_id
+    ORDER BY s.legacy_slot, a.source_relative_path, a.id;" > "$additional_evidence"
 
 verified_additional_count=0
 while IFS="$separator" read -r additional_id additional_tx additional_source additional_source_size \
   additional_source_hash additional_artifact additional_artifact_size additional_artifact_hash \
   additional_classification additional_run_id additional_run_outcome additional_batch_phase \
-  additional_frozen_m4a additional_run_profile; do
+  additional_frozen_m4a additional_run_profile additional_source_id source_run_consistent; do
   [[ -n "$additional_id" ]] || continue
   case "$additional_tx" in TX01|TX02) ;; *) echo "Additional-file evidence contains an invalid transmitter." >&2; exit 1 ;; esac
+  if [[ ! "$additional_source_id" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$ \
+    || "$source_run_consistent" != "1" ]]; then
+    echo "Additional-file evidence contains an invalid source identity." >&2
+    exit 1
+  fi
   case "$additional_classification" in m4a|apple_double|other) ;; *) echo "Additional-file classification verification failed (1 invalid record)." >&2; exit 1 ;; esac
   if ! is_safe_additional_relative "$additional_source" \
     || ! resolve_regular_artifact "$additional_artifact" \
@@ -352,7 +387,7 @@ while IFS="$separator" read -r additional_id additional_tx additional_source add
   fi
   verified_additional_count=$((verified_additional_count + 1))
   if [[ "$diagnostic" -eq 1 ]]; then
-    echo "verified additional=$additional_tx:$additional_source source_sha256=$additional_source_hash artifact=$additional_artifact artifact_sha256=$additional_artifact_hash classification=$additional_classification run=$additional_run_id"
+    echo "verified source_id=$additional_source_id additional=$additional_tx:$additional_source source_sha256=$additional_source_hash artifact=$additional_artifact artifact_sha256=$additional_artifact_hash classification=$additional_classification run=$additional_run_id"
   fi
 done < "$additional_evidence"
 

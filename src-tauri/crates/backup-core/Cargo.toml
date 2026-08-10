@@ -20,3 +20,4 @@ uuid = { version = "=1.24.0", features = ["serde", "v4"] }
 
 [dev-dependencies]
 proptest = "=1.11.0"
+serde_json = "=1.0.151"

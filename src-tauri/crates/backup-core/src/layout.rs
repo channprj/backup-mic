@@ -10,7 +10,6 @@ use crate::{
     error::CoreError,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
-    state::Transmitter,
 };
 use tempfile::NamedTempFile;
 
@@ -34,7 +33,10 @@ pub fn flatten_verified_recording_layout(
     for recording in recordings {
         cancellation.check()?;
         let old_relative = recording.artifact.relative_path.clone();
-        let Some(default_flat_relative) = legacy_flat_relative(&recording) else {
+        let source = ledger.source(&recording.source_id)?;
+        let Some(default_flat_relative) =
+            legacy_flat_relative(&recording, source.legacy_slot.as_deref())
+        else {
             continue;
         };
         let old_path = canonical_root.join(&old_relative);
@@ -74,7 +76,10 @@ pub fn flatten_verified_recording_layout(
     Ok(migrations)
 }
 
-fn legacy_flat_relative(recording: &VerifiedRecording) -> Option<PathBuf> {
+fn legacy_flat_relative(
+    recording: &VerifiedRecording,
+    legacy_slot: Option<&str>,
+) -> Option<PathBuf> {
     let mut components = recording.artifact.relative_path.components();
     let Component::Normal(year) = components.next()? else {
         return None;
@@ -101,18 +106,11 @@ fn legacy_flat_relative(recording: &VerifiedRecording) -> Option<PathBuf> {
                     .enumerate()
                     .all(|(index, byte)| index == 4 || index == 7 || byte.is_ascii_digit())
         })
-        || transmitter != transmitter_component(recording.transmitter)
+        || transmitter.to_str()? != legacy_slot?
     {
         return None;
     }
     Some(PathBuf::from(year).join(date).join(file_name))
-}
-
-fn transmitter_component(transmitter: Transmitter) -> &'static str {
-    match transmitter {
-        Transmitter::Tx01 => "TX01",
-        Transmitter::Tx02 => "TX02",
-    }
 }
 
 fn choose_flat_target(

@@ -21,6 +21,7 @@ use backup_core::{
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
     scanner::scan_once,
+    source::{SourceId, SourceRecord},
     state::Transmitter,
 };
 use tempfile::tempdir;
@@ -116,6 +117,16 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
 
     let state = tempdir().unwrap();
     let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+    let source_record = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: "isolated-fat32-fixture".to_owned(),
+        legacy_slot: Some("TX01".to_owned()),
+        display_name: "FAT32 Acceptance TX01".to_owned(),
+    };
+    ledger
+        .upsert_source(&source_record, "2026-08-09T00:00:00Z")
+        .unwrap();
     let required_bytes = expected_session_files
         .iter()
         .map(|(_, contents)| u64::try_from(contents.len()).unwrap())
@@ -123,6 +134,7 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
     ledger
         .begin_batch_run(
             RUN_ID,
+            &source_record.id,
             "2026-08-09T00:00:00Z",
             required_bytes,
             FrozenPreferences {
@@ -164,7 +176,7 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
         ledger
             .commit_verified_recording(&VerifiedRecording {
                 id: recording_id,
-                transmitter: Transmitter::Tx01,
+                source_id: source_record.id.clone(),
                 source_relative_path: source_relative.clone(),
                 source_size: source_digest.size,
                 source_mtime_ns: candidate.source_mtime_ns,
@@ -220,7 +232,7 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
         ledger
             .commit_verified_additional_file(&VerifiedAdditionalFile {
                 id: additional_id,
-                transmitter: Transmitter::Tx01,
+                source_id: source_record.id.clone(),
                 source_relative_path: source_relative.clone(),
                 source_size: source_digest.size,
                 source_mtime_ns: candidate.source_mtime_ns,
@@ -261,6 +273,7 @@ fn moves_a_whole_session_to_recoverable_trash_on_an_isolated_fat32_volume() {
         .collect::<Vec<_>>();
 
     let context = DeletionContext {
+        source_id: source_record.id,
         transmitter: Transmitter::Tx01,
         paired_volume_uuid: "isolated-fat32-fixture".to_owned(),
         mount_generation: 1,

@@ -21,6 +21,7 @@ pub mod recording;
 pub mod recovery;
 pub mod rule;
 pub mod scanner;
+pub mod source;
 pub mod state;
 
 #[cfg(test)]

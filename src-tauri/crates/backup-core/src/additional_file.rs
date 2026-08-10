@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::state::Transmitter;
+use crate::source::SourceId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AdditionalFileClass {
@@ -31,7 +31,7 @@ impl AdditionalFileClass {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct VerifiedAdditionalFile {
     pub id: String,
-    pub transmitter: Transmitter,
+    pub source_id: SourceId,
     pub source_relative_path: PathBuf,
     pub source_size: u64,
     pub source_mtime_ns: i128,

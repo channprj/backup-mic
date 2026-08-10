@@ -21,6 +21,7 @@ use crate::{
     hash::{FileDigest, HASH_BUFFER_BYTES, hash_reader_checked},
     ledger::{Ledger, VerifiedRecording},
     recording::AdditionalFileObservation,
+    source::SourceId,
     state::{Progress, Transmitter},
 };
 
@@ -71,6 +72,7 @@ impl CancellationToken {
 pub struct BackupItemContext<'a> {
     pub source_root: &'a Path,
     pub destination_root: &'a Path,
+    pub source_id: &'a SourceId,
     pub transmitter: Transmitter,
     pub backup_run_id: &'a str,
     pub verified_at: &'a str,
@@ -189,7 +191,7 @@ pub fn prepare_backup_item_observed(
     };
     Ok(VerifiedRecording {
         id: Uuid::new_v4().to_string(),
-        transmitter: context.transmitter,
+        source_id: context.source_id.clone(),
         source_relative_path: plan.source.relative_path.clone(),
         source_size: source_digest.size,
         source_mtime_ns: plan.source.modified_nanos,
@@ -318,7 +320,7 @@ pub fn execute_additional_file_copy(
         .map_err(CoreError::SyncFailed)?;
     Ok(VerifiedAdditionalFile {
         id: Uuid::new_v4().to_string(),
-        transmitter: context.transmitter,
+        source_id: context.source_id.clone(),
         source_relative_path: source.relative_path.clone(),
         source_size: expected.size,
         source_mtime_ns: source.modified_nanos,
@@ -764,13 +766,32 @@ mod tests {
         cancellation: &CancellationToken,
     ) -> Result<(VerifiedRecording, Ledger, Progress), CoreError> {
         let mut ledger = Ledger::open(state.join("ledger.sqlite3"))?;
+        let dji_rule = ledger.dji_rule()?;
+        let source_record = ledger
+            .sources_for_rule(&dji_rule.id)?
+            .into_iter()
+            .find(|source| source.legacy_slot.as_deref() == Some("TX01"))
+            .unwrap_or(crate::source::SourceRecord {
+                id: SourceId::new(),
+                rule_id: dji_rule.id,
+                volume_uuid: "backup-unit-tx01".to_owned(),
+                legacy_slot: Some("TX01".to_owned()),
+                display_name: "Backup Unit TX01".to_owned(),
+            });
+        ledger.upsert_source(&source_record, "2026-08-09T00:00:00Z")?;
         let run_id = Uuid::new_v4().to_string();
-        ledger.begin_backup_run(&run_id, "2026-08-09T00:00:00Z", plan.source.size)?;
+        ledger.begin_backup_run(
+            &run_id,
+            &source_record.id,
+            "2026-08-09T00:00:00Z",
+            plan.source.size,
+        )?;
         let mut progress = progress_for_plans(std::slice::from_ref(plan))?;
         let verified = execute_backup_item(
             &BackupItemContext {
                 source_root: source,
                 destination_root: destination,
+                source_id: &source_record.id,
                 transmitter: Transmitter::Tx01,
                 backup_run_id: &run_id,
                 verified_at: "2026-08-09T00:01:00Z",

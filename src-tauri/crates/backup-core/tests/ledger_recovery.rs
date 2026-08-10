@@ -9,6 +9,7 @@ use backup_core::{
     events::{ActivityEntry, ActivitySeverity},
     ledger::{Ledger, MAX_ACTIVITY_ENTRIES, VerifiedRecording},
     preferences::{BackupPreferences, PreferenceKey},
+    source::{SourceId, SourceRecord},
     state::Transmitter,
 };
 use rusqlite::Connection;
@@ -24,11 +25,25 @@ fn paired_device() -> PairedDevice {
     }
 }
 
-fn activity(index: usize) -> ActivityEntry {
+fn test_source(ledger: &mut Ledger, slot: &str) -> SourceId {
+    let source = SourceRecord {
+        id: SourceId::new(),
+        rule_id: ledger.dji_rule().unwrap().id,
+        volume_uuid: format!("test-{slot}-uuid"),
+        legacy_slot: Some(slot.to_owned()),
+        display_name: format!("Test {slot}"),
+    };
+    ledger
+        .upsert_source(&source, "2026-08-09T00:00:00Z")
+        .unwrap();
+    source.id
+}
+
+fn activity(index: usize, source_id: &SourceId) -> ActivityEntry {
     ActivityEntry {
         occurred_at: format!("2026-08-09T00:00:{:02}Z", index % 60),
         code: format!("event_{index}"),
-        transmitter: Some(Transmitter::Tx01),
+        source_id: Some(source_id.clone()),
         count_value: Some(index as u64),
         byte_value: None,
         severity: ActivitySeverity::Info,
@@ -55,8 +70,11 @@ fn new_ledger_migrates_and_persists_pairing() {
 fn activity_history_keeps_only_the_newest_fifty_entries() {
     let directory = tempdir().unwrap();
     let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    let source_id = test_source(&mut ledger, "TX01");
     for index in 0..55 {
-        ledger.append_activity(&activity(index)).unwrap();
+        ledger
+            .append_activity(&activity(index, &source_id))
+            .unwrap();
     }
     let entries = ledger.recent_activity(100).unwrap();
     assert_eq!(entries.len(), MAX_ACTIVITY_ENTRIES);
@@ -70,8 +88,9 @@ fn opening_marks_running_backup_runs_interrupted() {
     let path = directory.path().join("ledger.sqlite3");
     {
         let mut ledger = Ledger::open(&path).unwrap();
+        let source_id = test_source(&mut ledger, "TX01");
         ledger
-            .begin_backup_run("run-1", "2026-08-09T00:00:00Z", 42)
+            .begin_backup_run("run-1", &source_id, "2026-08-09T00:00:00Z", 42)
             .unwrap();
     }
     let mut ledger = Ledger::open(&path).unwrap();
@@ -313,6 +332,204 @@ fn upgrade_v4_adds_the_same_dji_preset_as_a_fresh_ledger() {
 }
 
 #[test]
+fn upgrade_v4_backfills_dynamic_sources_without_rewriting_evidence() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0002_artifacts_and_preferences.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0003_batch_manifests.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0004_durable_superseded_wav_evidence.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(
+            r#"
+            INSERT INTO paired_devices(
+                transmitter, volume_uuid, protocol, media_name, nominal_capacity, paired_at
+            ) VALUES
+                ('TX01', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'USB',
+                 'Wireless Mic Tx Media', 15636365312, '2026-08-09T00:00:00Z'),
+                ('TX02', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', 'USB',
+                 'Mic Tx', 15636365312, '2026-08-09T00:00:01Z');
+
+            INSERT INTO backup_runs(
+                id, started_at, finished_at, outcome, required_copy_bytes, batch_phase
+            ) VALUES (
+                'run-paired', '2026-08-09T01:00:00Z', '2026-08-09T02:01:00Z',
+                'complete', 9, 'completed'
+            );
+
+            INSERT INTO recordings(
+                id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                source_sha256, destination_relative_path, destination_size,
+                destination_sha256, verified_at, backup_run_id
+            ) VALUES
+                ('recording-tx01', 'TX01', 'TX01_MIC001_20260809_010000.wav', 4, '1',
+                 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 '2026/2026-08-09/TX01/one.wav', 4,
+                 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                 '2026-08-09T01:01:00Z', 'run-paired'),
+                ('recording-tx02', 'TX02', 'TX02_MIC001_20260809_020000.wav', 5, '2',
+                 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                 '2026/2026-08-09/TX02/two.wav', 5,
+                 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+                 '2026-08-09T02:01:00Z', 'run-paired');
+
+            INSERT INTO additional_files(
+                id, transmitter, source_relative_path, source_size, source_mtime_ns,
+                source_sha256, artifact_relative_path, artifact_size, artifact_sha256,
+                classification, backup_run_id
+            ) VALUES (
+                'additional-tx01', 'TX01', 'TX_MIC001/notes.txt', 3, '3',
+                'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                'source-extras/TX01/notes.txt', 3,
+                'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
+                'other', 'run-paired'
+            );
+
+            INSERT INTO activity(
+                occurred_at, code, transmitter, count_value, severity
+            ) VALUES ('2026-08-09T02:01:00Z', 'backup_completed', 'TX02', 1, 'success');
+
+            INSERT INTO deletion_runs(
+                id, transmitter, started_at, finished_at, outcome,
+                proposed_file_count, proposed_bytes
+            ) VALUES (
+                'deletion-tx01', 'TX01', '2026-08-09T03:00:00Z',
+                '2026-08-09T03:01:00Z', 'complete', 1, 4
+            );
+            INSERT INTO deletion_items(deletion_run_id, recording_id, outcome, removed_at)
+            VALUES ('deletion-tx01', 'recording-tx01', 'moved_to_trash',
+                    '2026-08-09T03:01:00Z');
+            "#,
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let dji = ledger.dji_rule().unwrap();
+    let sources = ledger.sources_for_rule(&dji.id).unwrap();
+    assert_eq!(sources.len(), 2);
+    let tx01 = sources
+        .iter()
+        .find(|source| source.legacy_slot.as_deref() == Some("TX01"))
+        .unwrap();
+    let tx02 = sources
+        .iter()
+        .find(|source| source.legacy_slot.as_deref() == Some("TX02"))
+        .unwrap();
+    assert_eq!(tx01.volume_uuid, "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+    assert_eq!(tx02.volume_uuid, "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+    assert_eq!(
+        ledger
+            .verified_recording("recording-tx01")
+            .unwrap()
+            .unwrap()
+            .source_id,
+        tx01.id
+    );
+    assert_eq!(
+        ledger
+            .verified_recording("recording-tx02")
+            .unwrap()
+            .unwrap()
+            .source_id,
+        tx02.id
+    );
+    assert_eq!(
+        ledger
+            .verified_additional_file("additional-tx01")
+            .unwrap()
+            .unwrap()
+            .source_id,
+        tx01.id
+    );
+    assert_eq!(
+        ledger.recent_activity(1).unwrap()[0].source_id,
+        Some(tx02.id.clone())
+    );
+    assert_eq!(
+        ledger
+            .batch_run_evidence("run-paired")
+            .unwrap()
+            .unwrap()
+            .source_id,
+        None
+    );
+    drop(ledger);
+
+    let connection = Connection::open(&path).unwrap();
+    for (table, expected) in [
+        ("recordings", 2_i64),
+        ("additional_files", 1),
+        ("backup_runs", 0),
+        ("activity", 1),
+        ("deletion_runs", 1),
+        ("deletion_items", 1),
+    ] {
+        let query = format!("SELECT COUNT(*) FROM {table} WHERE source_id IS NOT NULL");
+        assert_eq!(
+            connection
+                .query_row(&query, [], |row| row.get::<_, i64>(0))
+                .unwrap(),
+            expected,
+            "missing source evidence in {table}"
+        );
+    }
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT source_sha256 FROM recordings WHERE id = 'recording-tx02'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "b".repeat(64)
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT batch_phase FROM backup_runs WHERE id = 'run-paired'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "completed"
+    );
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT outcome FROM deletion_items WHERE recording_id = 'recording-tx01'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .unwrap(),
+        "moved_to_trash"
+    );
+    assert!(
+        connection
+            .prepare("PRAGMA foreign_key_check")
+            .unwrap()
+            .query([])
+            .unwrap()
+            .next()
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
 fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("ledger.sqlite3");
@@ -356,12 +573,13 @@ fn artifact_and_preferences_refuse_malformed_persisted_values() {
 fn artifact_and_preferences_reject_invalid_m4a_audio_properties_before_sqlite() {
     let directory = tempdir().unwrap();
     let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    let source_id = test_source(&mut ledger, "TX02");
     ledger
-        .begin_backup_run("run-m4a", "2026-08-09T00:00:00Z", 4)
+        .begin_backup_run("run-m4a", &source_id, "2026-08-09T00:00:00Z", 4)
         .unwrap();
     let recording = VerifiedRecording {
         id: "recording-m4a".to_owned(),
-        transmitter: Transmitter::Tx02,
+        source_id,
         source_relative_path: "TX_MIC001_20260809_021747/source.wav".into(),
         source_size: 4,
         source_mtime_ns: 1,

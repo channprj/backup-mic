@@ -1,6 +1,6 @@
 use std::{collections::BTreeSet, path::PathBuf};
 
-use crate::{error::CoreError, filesystem::is_safe_additional_relative_path, state::Transmitter};
+use crate::{error::CoreError, filesystem::is_safe_additional_relative_path, source::SourceId};
 
 pub const M4A_PROFILE_ID: &str = "aac_lc_128k_v1";
 
@@ -66,6 +66,7 @@ pub struct FrozenPreferences {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BatchRunEvidence {
+    pub source_id: Option<SourceId>,
     pub phase: BatchPhase,
     pub frozen_preferences: FrozenPreferences,
     pub m4a_profile_id: Option<String>,
@@ -74,11 +75,11 @@ pub struct BatchRunEvidence {
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BatchItemKey {
     Recording {
-        transmitter: Transmitter,
+        source_id: SourceId,
         relative_path: PathBuf,
     },
     Additional {
-        transmitter: Transmitter,
+        source_id: SourceId,
         relative_path: PathBuf,
     },
 }

@@ -7,6 +7,7 @@ use backup_core::{
     error::CoreError,
     recording::AdditionalFileObservation,
     scanner::{ScanIssue, scan_once},
+    source::SourceId,
     state::Transmitter,
 };
 use tempfile::tempdir;
@@ -113,9 +114,11 @@ fn raw_additional_files_are_copied_source_equal_under_source_extras() {
     let destination = tempdir().unwrap();
     create_observed_session(source.path());
     let scan = scan_once(source.path(), Transmitter::Tx01, UtcOffset::UTC).unwrap();
+    let source_id = SourceId::new();
     let context = BackupItemContext {
         source_root: source.path(),
         destination_root: destination.path(),
+        source_id: &source_id,
         transmitter: Transmitter::Tx01,
         backup_run_id: "run-1",
         verified_at: "2026-08-10T00:00:00Z",
@@ -188,9 +191,11 @@ fn additional_copy_rejects_an_observation_whose_name_does_not_match_its_path() {
         file_name: "different.m4a".to_owned(),
         ..observed.clone()
     };
+    let source_id = SourceId::new();
     let context = BackupItemContext {
         source_root: source.path(),
         destination_root: destination.path(),
+        source_id: &source_id,
         transmitter: Transmitter::Tx01,
         backup_run_id: "run-1",
         verified_at: "2026-08-10T00:00:00Z",

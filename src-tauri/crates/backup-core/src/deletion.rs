@@ -18,6 +18,7 @@ use crate::{
     hash::hash_file,
     ledger::{Ledger, PendingAdditionalDeletionItem, PendingDeletionItem},
     scanner::scan_once,
+    source::SourceId,
     state::Transmitter,
 };
 
@@ -25,6 +26,7 @@ pub const PROPOSAL_TTL: Duration = Duration::from_secs(5 * 60);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeletionContext {
+    pub source_id: SourceId,
     pub transmitter: Transmitter,
     pub paired_volume_uuid: String,
     pub mount_generation: u64,
@@ -343,7 +345,7 @@ impl DeletionProposalStore {
             .collect();
         ledger.begin_deletion_run_with_additional(
             &run_id,
-            proposal.context.transmitter,
+            &proposal.context.source_id,
             confirmation.started_at,
             &pending_items,
             &pending_additional_items,
@@ -632,7 +634,8 @@ fn verify_ledger_authority(ledger: &Ledger, proposal: &PrivateProposal) -> Resul
     let run = ledger
         .batch_run_evidence(&proposal.m4a_barrier_run_id)?
         .ok_or(CoreError::DeletionPreflightRefused)?;
-    if run.phase != BatchPhase::M4aCohortVerified
+    if run.source_id.as_ref() != Some(&proposal.context.source_id)
+        || run.phase != BatchPhase::M4aCohortVerified
         || !run.frozen_preferences.m4a_conversion
         || run.m4a_profile_id.as_deref() != Some(M4A_PROFILE_ID)
     {
@@ -642,7 +645,7 @@ fn verify_ledger_authority(ledger: &Ledger, proposal: &PrivateProposal) -> Resul
         let recording = ledger
             .verified_recording(&candidate.recording_id)?
             .ok_or(CoreError::DeletionPreflightRefused)?;
-        if recording.transmitter != proposal.context.transmitter
+        if recording.source_id != proposal.context.source_id
             || recording.backup_run_id != proposal.m4a_barrier_run_id
             || recording.source_relative_path != candidate.source_relative_path
             || recording.source_size != candidate.source_size
@@ -666,7 +669,7 @@ fn verify_ledger_authority(ledger: &Ledger, proposal: &PrivateProposal) -> Resul
         let file = ledger
             .verified_additional_file(&candidate.additional_file_id)?
             .ok_or(CoreError::DeletionPreflightRefused)?;
-        if file.transmitter != proposal.context.transmitter
+        if file.source_id != proposal.context.source_id
             || file.backup_run_id != proposal.m4a_barrier_run_id
             || file.source_relative_path != candidate.source_relative_path
             || file.source_size != candidate.source_size
@@ -785,7 +788,7 @@ pub fn reconcile_legacy_empty_sessions(
 ) -> Result<u64, CoreError> {
     let source_root = fs::canonicalize(&context.source_root).map_err(CoreError::CopyFailed)?;
     let mut sessions: BTreeMap<PathBuf, Vec<String>> = BTreeMap::new();
-    for recording in ledger.legacy_retired_recordings(context.transmitter)? {
+    for recording in ledger.legacy_retired_recordings(&context.source_id)? {
         let mut components = recording.source_relative_path.components();
         let Some(session) = components.next() else {
             continue;
@@ -946,6 +949,7 @@ mod tests {
         filesystem::modified_nanos,
         hash::hash_file,
         ledger::VerifiedRecording,
+        source::{SourceId, SourceRecord},
     };
 
     use super::*;
@@ -979,9 +983,20 @@ mod tests {
         let destination = tempdir().unwrap();
         let state = tempdir().unwrap();
         let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+        let source_record = SourceRecord {
+            id: SourceId::new(),
+            rule_id: ledger.dji_rule().unwrap().id,
+            volume_uuid: "deletion-unit-tx01".to_owned(),
+            legacy_slot: Some("TX01".to_owned()),
+            display_name: "Deletion Unit TX01".to_owned(),
+        };
+        ledger
+            .upsert_source(&source_record, "2026-08-09T00:00:00Z")
+            .unwrap();
         ledger
             .begin_batch_run(
                 "backup-run",
+                &source_record.id,
                 "2026-08-09T00:00:00Z",
                 0,
                 FrozenPreferences {
@@ -1017,7 +1032,7 @@ mod tests {
             ledger
                 .commit_verified_recording(&VerifiedRecording {
                     id: id.clone(),
-                    transmitter: Transmitter::Tx01,
+                    source_id: source_record.id.clone(),
                     source_relative_path: relative.clone(),
                     source_size: digest.size,
                     source_mtime_ns: modified_nanos(&source_metadata).unwrap(),
@@ -1076,6 +1091,7 @@ mod tests {
             .collect();
         let snapshot = CompleteDeletionSnapshot {
             context: DeletionContext {
+                source_id: source_record.id,
                 transmitter: Transmitter::Tx01,
                 paired_volume_uuid: "test-volume-uuid".to_owned(),
                 mount_generation: 4,
