@@ -21,6 +21,12 @@ if [[ -e "$FIXTURE_MOUNT" ]]; then
   echo "Refusing to reuse an existing deletion fixture mount." >&2
   exit 1
 fi
+for dji_mount in /Volumes/DJI-MIC-1 /Volumes/DJI-MIC-2; do
+  if [[ -e "$dji_mount" ]] || mount | rg -F -q " on $dji_mount "; then
+    echo "Disconnect DJI recorder volumes before running the deletion fixture." >&2
+    exit 1
+  fi
+done
 
 hdiutil create -quiet -size 64m -fs 'MS-DOS FAT32' -volname DJI-DELTEST "$DISK_IMAGE"
 hdiutil attach -quiet -nobrowse "$DISK_IMAGE"

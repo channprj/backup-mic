@@ -1,4 +1,7 @@
+use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+
 use serde_json::Value;
+use tempfile::tempdir;
 
 #[test]
 fn product_identity_is_backup_mic_everywhere_public() {
@@ -77,4 +80,50 @@ fn settings_window_owns_a_bounded_vertical_scroll_area() {
         stylesheet.contains(".settings-shell {\n  width: 100%;\n  height: 100%;\n  min-height: 0;")
     );
     assert!(stylesheet.contains("  overflow-y: auto;\n  overscroll-behavior-y: contain;"));
+}
+
+#[test]
+fn deletion_fixture_refuses_connected_dji_before_creating_an_image() {
+    let fixture = tempdir().unwrap();
+    let bin = fixture.path().join("bin");
+    fs::create_dir(&bin).unwrap();
+    let mount = bin.join("mount");
+    fs::write(
+        &mount,
+        "#!/bin/bash\nprintf '/dev/disk9 on /Volumes/DJI-MIC-1 (msdos, local)\\n'\n",
+    )
+    .unwrap();
+    let hdiutil = bin.join("hdiutil");
+    fs::write(
+        &hdiutil,
+        "#!/bin/bash\nprintf '%s\\n' \"$*\" >> \"$BACKUP_MIC_TEST_HDIUTIL_LOG\"\nexit 97\n",
+    )
+    .unwrap();
+    for executable in [&mount, &hdiutil] {
+        let mut permissions = fs::metadata(executable).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(executable, permissions).unwrap();
+    }
+    let log = fixture.path().join("hdiutil.log");
+    let system_path = std::env::var("PATH").unwrap();
+    let output = Command::new("/bin/bash")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/accept-deletion-fixture.sh"
+        ))
+        .env("PATH", format!("{}:{system_path}", bin.display()))
+        .env("TMPDIR", fixture.path())
+        .env("BACKUP_MIC_TEST_HDIUTIL_LOG", &log)
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "Disconnect DJI recorder volumes before running the deletion fixture.\n"
+    );
+    assert!(
+        !log.exists(),
+        "hdiutil must not run when a DJI volume is mounted"
+    );
 }
