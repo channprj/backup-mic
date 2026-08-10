@@ -48,6 +48,7 @@ pub struct AdditionalFilePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleDestinationPlan {
     pub source: RuleFileObservation,
+    pub source_sha256: String,
     pub relative_destination: PathBuf,
     pub disposition: DestinationDisposition,
 }
@@ -77,6 +78,7 @@ pub fn plan_rule_file(
     {
         return Ok(RuleDestinationPlan {
             source,
+            source_sha256: source_digest.sha256,
             relative_destination,
             disposition: DestinationDisposition::Reuse,
         });
@@ -95,6 +97,7 @@ pub fn plan_rule_file(
         choose_available_name(destination_root, &default_relative, &source_digest)?;
     Ok(RuleDestinationPlan {
         source,
+        source_sha256: source_digest.sha256,
         relative_destination,
         disposition,
     })

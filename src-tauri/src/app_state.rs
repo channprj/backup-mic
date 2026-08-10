@@ -20,7 +20,11 @@ use backup_core::{
     events::{ActivityEntry, ActivitySeverity},
     ledger::Ledger,
     preferences::{BackupPreferences, PreferenceKey},
-    source::{LEGACY_TX01_SOURCE_ID, LEGACY_TX02_SOURCE_ID, SourceId, SourceRecord},
+    rule::{BackupRule, BackupRuleDraft},
+    source::{
+        LEGACY_TX01_SOURCE_ID, LEGACY_TX02_SOURCE_ID, MountedSourceAuthority, SourceId,
+        SourceRecord,
+    },
     state::{BackupPhase, DeletionPhase, Progress, Transmitter},
 };
 use parking_lot::Mutex;
@@ -392,6 +396,55 @@ impl AppState {
 
     pub fn matched_sources(&self) -> HashMap<SourceId, MatchedSource> {
         self.runtime.lock().matched.clone()
+    }
+
+    pub(crate) fn backup_destination_snapshot(&self) -> (PathBuf, u64) {
+        let runtime = self.runtime.lock();
+        (runtime.destination.clone(), runtime.destination_generation)
+    }
+
+    pub(crate) fn destination_snapshot_is_current(
+        &self,
+        destination: &Path,
+        generation: u64,
+    ) -> bool {
+        let runtime = self.runtime.lock();
+        runtime.destination_generation == generation && runtime.destination == destination
+    }
+
+    pub(crate) fn source_authority_is_current(&self, authority: &MountedSourceAuthority) -> bool {
+        self.runtime
+            .lock()
+            .matched
+            .get(&authority.source.id)
+            .is_some_and(|matched| matched.authority == *authority)
+    }
+
+    pub fn save_backup_rule_for_state(
+        &self,
+        draft: BackupRuleDraft,
+        updated_at: &str,
+    ) -> Result<BackupRule, CoreError> {
+        let rule = self.ledger.lock().save_backup_rule(draft, updated_at)?;
+        let mut runtime = self.runtime.lock();
+        runtime.snapshot.setting_applies_next_run = self.operation_is_active();
+        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
+        Ok(rule)
+    }
+
+    pub fn upsert_source_for_state(
+        &self,
+        source: &SourceRecord,
+        seen_at: &str,
+    ) -> Result<(), CoreError> {
+        self.ledger.lock().upsert_source(source, seen_at)
+    }
+
+    pub fn install_matched_source_for_state(&self, matched: MatchedSource) {
+        self.runtime
+            .lock()
+            .matched
+            .insert(matched.authority.source.id.clone(), matched);
     }
 
     pub fn cancel_active_operation(&self) {

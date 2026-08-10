@@ -119,7 +119,6 @@ fn raw_additional_files_are_copied_source_equal_under_source_extras() {
         source_root: source.path(),
         destination_root: destination.path(),
         source_id: &source_id,
-        transmitter: Transmitter::Tx01,
         backup_run_id: "run-1",
         verified_at: "2026-08-10T00:00:00Z",
     };
@@ -196,7 +195,6 @@ fn additional_copy_rejects_an_observation_whose_name_does_not_match_its_path() {
         source_root: source.path(),
         destination_root: destination.path(),
         source_id: &source_id,
-        transmitter: Transmitter::Tx01,
         backup_run_id: "run-1",
         verified_at: "2026-08-10T00:00:00Z",
     };

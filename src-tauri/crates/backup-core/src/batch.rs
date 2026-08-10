@@ -137,4 +137,8 @@ impl CopyBarrier {
     pub fn conversion_allowed(&self) -> bool {
         self.failed.is_empty() && self.verified == self.expected
     }
+
+    pub fn verified_count(&self) -> usize {
+        self.verified.len()
+    }
 }

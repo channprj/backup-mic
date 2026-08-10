@@ -163,6 +163,29 @@ impl Ledger {
             .collect()
     }
 
+    pub fn backup_rule(&self, id: &RuleId) -> Result<Option<BackupRule>, CoreError> {
+        self.backup_rule_by_id(id)
+    }
+
+    pub fn lock_rule_archive_directory(
+        &mut self,
+        id: &RuleId,
+        expected_archive_directory: &str,
+    ) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE backup_rules SET archive_directory_locked = 1
+                   WHERE id = ?1 AND archive_directory_name = ?2"#,
+                params![id.as_str(), expected_archive_directory],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRule);
+        }
+        Ok(())
+    }
+
     pub fn save_backup_rule(
         &mut self,
         mut draft: BackupRuleDraft,
@@ -936,6 +959,27 @@ impl Ledger {
         Ok(())
     }
 
+    pub fn commit_empty_m4a_barrier(&mut self, backup_run_id: &str) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE backup_runs
+                   SET batch_phase = 'm4a_cohort_verified', m4a_profile_id = ?1
+                   WHERE id = ?2 AND outcome = 'running' AND batch_phase = 'copies_verified'
+                     AND source_id IS NOT NULL
+                     AND NOT EXISTS (
+                       SELECT 1 FROM recordings
+                       WHERE backup_run_id = ?2 AND artifact_format = 'wav'
+                     )"#,
+                params![crate::batch::M4A_PROFILE_ID, backup_run_id],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
     pub fn mark_interrupted_runs(&mut self, finished_at: &str) -> Result<usize, CoreError> {
         self.connection
             .execute(
@@ -1647,6 +1691,31 @@ impl Ledger {
             .map_err(CoreError::Ledger)?;
         let rows = statement
             .query_map([], row_to_verified_recording)
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| row.map_err(CoreError::Ledger)).collect()
+    }
+
+    pub fn historical_wav_recordings_for_source(
+        &self,
+        source_id: &SourceId,
+    ) -> Result<Vec<VerifiedRecording>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings
+                   WHERE source_id = ?1 AND artifact_format = 'wav'
+                   ORDER BY destination_relative_path, id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([source_id.as_str()], row_to_verified_recording)
             .map_err(CoreError::Ledger)?;
         rows.map(|row| row.map_err(CoreError::Ledger)).collect()
     }

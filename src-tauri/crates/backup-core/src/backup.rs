@@ -22,7 +22,7 @@ use crate::{
     ledger::{Ledger, VerifiedRecording},
     recording::AdditionalFileObservation,
     source::SourceId,
-    state::{Progress, Transmitter},
+    state::Progress,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +73,6 @@ pub struct BackupItemContext<'a> {
     pub source_root: &'a Path,
     pub destination_root: &'a Path,
     pub source_id: &'a SourceId,
-    pub transmitter: Transmitter,
     pub backup_run_id: &'a str,
     pub verified_at: &'a str,
 }
@@ -681,6 +680,7 @@ mod tests {
         destination::{DestinationDisposition, plan_recording},
         filesystem::modified_nanos,
         recording::{ParsedRecordingName, RecordingObservation},
+        state::Transmitter,
     };
 
     use super::*;
@@ -792,7 +792,6 @@ mod tests {
                 source_root: source,
                 destination_root: destination,
                 source_id: &source_record.id,
-                transmitter: Transmitter::Tx01,
                 backup_run_id: &run_id,
                 verified_at: "2026-08-09T00:01:00Z",
             },
