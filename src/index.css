@@ -829,7 +829,7 @@ button:not(:disabled):active {
   width: 100%;
   height: 100%;
   min-height: 0;
-  padding: 18px 28px 22px;
+  padding: 16px 24px 20px;
   overflow-y: auto;
   overscroll-behavior-y: contain;
   background: color-mix(in srgb, var(--background) 92%, transparent);
@@ -873,7 +873,7 @@ button:not(:disabled):active {
     "SF Pro Rounded",
     -apple-system,
     sans-serif;
-  font-size: 24px;
+  font-size: 22px;
   letter-spacing: -0.025em;
 }
 
@@ -883,13 +883,13 @@ button:not(:disabled):active {
 }
 
 .settings-section {
-  margin-top: 14px;
+  margin-top: 16px;
 }
 
 .settings-section-title {
   align-items: flex-start;
-  gap: 10px;
-  margin: 0 4px 6px;
+  gap: 8px;
+  margin: 0 4px 8px;
 }
 
 .settings-section-title > svg {
@@ -920,10 +920,10 @@ button:not(:disabled):active {
 }
 
 .settings-row {
-  min-height: 54px;
+  min-height: 52px;
   justify-content: space-between;
-  gap: 20px;
-  padding: 8px 14px;
+  gap: 16px;
+  padding: 8px 12px;
 }
 
 .settings-row + .settings-row,
@@ -953,7 +953,7 @@ button:not(:disabled):active {
 
 .settings-control {
   min-width: 52px;
-  min-height: 44px;
+  min-height: 32px;
   justify-content: flex-end;
   gap: 8px;
 }
@@ -964,7 +964,7 @@ button:not(:disabled):active {
 
 .settings-destination-row button,
 .settings-shortcuts button {
-  min-height: 36px;
+  min-height: 32px;
 }
 
 .settings-destination-path {
@@ -973,7 +973,7 @@ button:not(:disabled):active {
 }
 
 .settings-status-note {
-  padding: 10px 14px;
+  padding: 8px 12px;
   color: var(--warning);
   font-size: 10px;
 }
@@ -988,7 +988,7 @@ button:not(:disabled):active {
 
 .settings-shortcuts {
   gap: 8px;
-  padding: 9px 14px;
+  padding: 8px 12px;
 }
 
 .settings-shortcuts button {
@@ -1059,8 +1059,8 @@ button:not(:disabled):active {
   min-width: 0;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
-  padding: 10px;
+  gap: 8px;
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: 9px;
   background: var(--muted);
@@ -1133,7 +1133,7 @@ button:not(:disabled):active {
   display: flex;
   min-width: 0;
   flex-direction: column;
-  gap: 5px;
+  gap: 4px;
   color: var(--muted-foreground);
   font-size: 10px;
 }
@@ -1143,7 +1143,7 @@ button:not(:disabled):active {
 .rule-pattern-row input {
   width: 100%;
   min-width: 0;
-  min-height: 34px;
+  min-height: 32px;
   padding: 6px 8px;
   border: 1px solid var(--input);
   border-radius: 7px;
@@ -1181,7 +1181,7 @@ button:not(:disabled):active {
 .rule-pattern-group {
   min-width: 0;
   margin: 0;
-  padding: 9px;
+  padding: 8px;
   border: 1px solid var(--border);
   border-radius: 9px;
 }
@@ -1199,8 +1199,8 @@ button:not(:disabled):active {
 .rule-pattern-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 32px;
-  gap: 5px;
-  margin-top: 5px;
+  gap: 4px;
+  margin-top: 4px;
 }
 
 .rule-pattern-row label {
@@ -1219,7 +1219,7 @@ button:not(:disabled):active {
   min-width: 0;
   flex-direction: column;
   gap: 5px;
-  padding: 9px;
+  padding: 8px;
   border-radius: 8px;
   background: var(--muted);
 }
@@ -1264,7 +1264,7 @@ button:not(:disabled):active {
 
 .trash-dialog button,
 .settings-confirmation-dialog button {
-  min-height: 44px;
+  min-height: 32px;
 }
 
 .settings-loading,
