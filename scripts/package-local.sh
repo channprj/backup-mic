@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd -P)"
 BUNDLE_ROOT="$PROJECT_ROOT/src-tauri/target/release/bundle"
 
 if [[ $# -gt 1 ]]; then

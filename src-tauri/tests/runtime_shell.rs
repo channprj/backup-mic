@@ -83,6 +83,16 @@ fn settings_window_owns_a_bounded_vertical_scroll_area() {
 }
 
 #[test]
+fn package_cleanup_compares_only_canonical_physical_paths() {
+    let package_script = include_str!("../../scripts/package-local.sh");
+
+    assert!(package_script.contains(
+        "PROJECT_ROOT=\"$(cd \"$(dirname \"$0\")/..\" && pwd -P)\""
+    ));
+    assert!(package_script.contains("$(cd \"$BUNDLE_ROOT\" && pwd -P)"));
+}
+
+#[test]
 fn deletion_fixture_refuses_connected_dji_before_creating_an_image() {
     let fixture = tempdir().unwrap();
     let bin = fixture.path().join("bin");
