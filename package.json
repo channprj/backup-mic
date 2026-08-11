@@ -1,6 +1,6 @@
 {
   "name": "backup-mic",
-  "version": "0.260810.8",
+  "version": "0.260811.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.33.4",
