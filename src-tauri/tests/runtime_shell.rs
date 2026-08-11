@@ -84,7 +84,10 @@ fn installer_stop_helper_bounds_an_unresponsive_quit_request_with_exact_process_
         "stop helper failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(child_status.is_some(), "the exact fixture process must exit");
+    assert!(
+        child_status.is_some(),
+        "the exact fixture process must exit"
+    );
     assert!(
         elapsed < Duration::from_secs(10),
         "the stop helper must not inherit an unbounded quit wait: {elapsed:?}"
