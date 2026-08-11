@@ -21,7 +21,9 @@ use crate::{
     orchestrator,
 };
 
-pub const REGISTERED_COMMANDS: [&str; 17] = [
+pub(crate) use backup_core::initial_setup::DESTINATION_SETTING;
+
+pub const REGISTERED_COMMANDS: [&str; 18] = [
     "get_app_snapshot",
     "backup_now",
     "choose_destination",
@@ -38,10 +40,9 @@ pub const REGISTERED_COMMANDS: [&str; 17] = [
     "set_automatic_backup",
     "set_m4a_conversion",
     "set_automatic_trash",
+    "complete_initial_setup",
     "open_logs",
 ];
-
-pub(crate) const DESTINATION_SETTING: &str = "destination_path";
 
 #[tauri::command]
 pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshotDto, PublicError> {
@@ -106,6 +107,7 @@ pub(crate) async fn choose_destination_for_state(
             reported_core_error(state, "choose_destination", "ledger_read", error, None)
         });
     };
+    let _save_guard = state.preference_save.lock().await;
     let selected = selection.into_path().map_err(|_| {
         reported_public_error(
             state,
@@ -117,18 +119,8 @@ pub(crate) async fn choose_destination_for_state(
     let destination = validate_destination(&selected, state).map_err(|error| {
         reported_public_error(state, "choose_destination", "destination_validation", error)
     })?;
-    let encoded = serde_json::to_string(&destination.to_string_lossy()).map_err(|_| {
-        reported_public_error(
-            state,
-            "choose_destination",
-            "destination_persistence",
-            adapter_error("destination_invalid", false),
-        )
-    })?;
     state
-        .ledger
-        .lock()
-        .set_setting(DESTINATION_SETTING, &encoded, &orchestrator::now_string())
+        .persist_destination_for_state(app, destination, &orchestrator::now_string())
         .map_err(|error| {
             reported_core_error(
                 state,
@@ -138,7 +130,6 @@ pub(crate) async fn choose_destination_for_state(
                 None,
             )
         })?;
-    state.set_destination(app, destination);
     if let Err(error) = state.record_activity(
         app,
         activity("destination_changed", None, None, ActivitySeverity::Info),
@@ -467,6 +458,50 @@ pub async fn set_automatic_trash(
 }
 
 #[tauri::command]
+pub async fn complete_initial_setup(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<AppSnapshotDto, PublicError> {
+    let _save_guard = state.preference_save.lock().await;
+    state
+        .complete_initial_setup_for_state(&app, &orchestrator::now_string())
+        .map_err(|error| {
+            reported_core_error(
+                state.inner(),
+                "complete_initial_setup",
+                "setup_persistence",
+                error,
+                None,
+            )
+        })?;
+    if state.automatic_backup_enabled() && state.backup_is_ready() {
+        match orchestrator::start_backup(app, state.inner().clone()) {
+            Ok(())
+            | Err(backup_core::error::CoreError::Busy)
+            | Err(backup_core::error::CoreError::InvalidRequest) => {}
+            Err(error) => {
+                return Err(reported_core_error(
+                    state.inner(),
+                    "complete_initial_setup",
+                    "backup_start",
+                    error,
+                    None,
+                ));
+            }
+        }
+    }
+    state.snapshot_with_activity().map_err(|error| {
+        reported_core_error(
+            state.inner(),
+            "complete_initial_setup",
+            "ledger_read",
+            error,
+            None,
+        )
+    })
+}
+
+#[tauri::command]
 pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
     let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
     let logs = state
@@ -701,8 +736,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_exactly_the_seventeen_approved_commands() {
-        assert_eq!(REGISTERED_COMMANDS.len(), 17);
+    fn exposes_exactly_the_eighteen_approved_commands() {
+        assert_eq!(REGISTERED_COMMANDS.len(), 18);
+        assert!(REGISTERED_COMMANDS.contains(&"complete_initial_setup"));
         let serialized = serde_json::to_string(&REGISTERED_COMMANDS).unwrap();
         for forbidden in [
             "read_file",

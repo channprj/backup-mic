@@ -53,6 +53,7 @@ pub fn run() {
             commands::set_automatic_backup,
             commands::set_m4a_conversion,
             commands::set_automatic_trash,
+            commands::complete_initial_setup,
             commands::open_logs,
         ])
         .setup(|app| {

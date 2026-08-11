@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use backup_core::{
     error::PublicError,
     events::ActivityEntry,
@@ -146,6 +148,7 @@ pub enum NotificationStatusDto {
 #[serde(rename_all = "snake_case")]
 pub enum SetupStateDto {
     NeedsDestination,
+    NeedsSettingsReview,
     Ready,
 }
 
@@ -202,6 +205,8 @@ pub struct AppSnapshotDto {
     pub retirement_mode: RetirementModeDto,
     pub current_log_available: bool,
     #[serde(default)]
+    pub destination_display: Option<String>,
+    #[serde(default)]
     pub settings: BackupSettingsDto,
     pub notification_status: NotificationStatusDto,
     pub setup_state: SetupStateDto,
@@ -246,8 +251,38 @@ pub struct TrashProposalSummaryDto {
     pub expires_at: String,
 }
 
+pub(crate) fn destination_display_for(
+    destination: &Path,
+    home: Option<&Path>,
+    configured: bool,
+) -> Option<String> {
+    if !configured {
+        return None;
+    }
+    let raw = home
+        .and_then(|home| destination.strip_prefix(home).ok())
+        .map_or_else(
+            || destination.to_string_lossy().into_owned(),
+            |relative| {
+                if relative.as_os_str().is_empty() {
+                    "~".to_owned()
+                } else {
+                    format!("~/{}", relative.to_string_lossy())
+                }
+            },
+        );
+    let display = raw
+        .chars()
+        .filter(|character| !character.is_control())
+        .take(2_048)
+        .collect::<String>();
+    (!display.is_empty()).then_some(display)
+}
+
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+
     use backup_core::events::ActivitySeverity;
 
     use super::*;
@@ -284,6 +319,7 @@ mod tests {
             artifact_format: ArtifactFormatDto::M4a,
             retirement_mode: RetirementModeDto::Manual,
             current_log_available: false,
+            destination_display: None,
             settings: BackupSettingsDto::default(),
             notification_status: NotificationStatusDto::Unknown,
             setup_state: SetupStateDto::NeedsDestination,
@@ -300,6 +336,50 @@ mod tests {
         assert!(settings.m4a_conversion);
         assert!(!settings.automatic_trash);
         assert!(!settings.autostart);
+    }
+
+    #[test]
+    fn destination_display_is_home_relative_or_external_absolute() {
+        assert_eq!(
+            destination_display_for(
+                Path::new("/Users/example/Documents/Backup Mic"),
+                Some(Path::new("/Users/example")),
+                true,
+            ),
+            Some("~/Documents/Backup Mic".to_owned())
+        );
+        assert_eq!(
+            destination_display_for(
+                Path::new("/Volumes/Recorder Backups/Backup Mic"),
+                Some(Path::new("/Users/example")),
+                true,
+            ),
+            Some("/Volumes/Recorder Backups/Backup Mic".to_owned())
+        );
+        assert_eq!(
+            destination_display_for(
+                Path::new("/Users/example/Documents/Backup Mic"),
+                Some(Path::new("/Users/example")),
+                false,
+            ),
+            None
+        );
+        assert_eq!(
+            destination_display_for(
+                Path::new("/Volumes/Recorder\nBackups/Backup Mic"),
+                Some(Path::new("/Users/example")),
+                true,
+            ),
+            Some("/Volumes/RecorderBackups/Backup Mic".to_owned())
+        );
+        let long = format!("/Volumes/{}", "a".repeat(3_000));
+        assert_eq!(
+            destination_display_for(Path::new(&long), None, true)
+                .unwrap()
+                .chars()
+                .count(),
+            2_048
+        );
     }
 
     #[test]

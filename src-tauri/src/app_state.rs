@@ -16,6 +16,7 @@ use backup_core::{
     device::PairedDevice,
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
+    initial_setup::InitialSetupMarker,
     layout::{
         LayoutMigration, flatten_verified_recording_layout_resilient,
         migrate_legacy_rule_layout_resilient,
@@ -40,7 +41,7 @@ use crate::{
     dto::{
         AppSnapshotDto, ArtifactFormatDto, BackupRuleDto, BackupSettingsDto, NotificationStatusDto,
         ProgressDto, RetirementModeDto, RuleTestResultDto, SetupStateDto, SourceSnapshotDto,
-        TransmitterSnapshotDto,
+        TransmitterSnapshotDto, destination_display_for,
     },
     failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome},
     pairing::{PairingAssignment, PairingManager},
@@ -114,6 +115,7 @@ impl AppState {
     ) -> Result<Self, CoreError> {
         let paired = ledger.paired_devices()?;
         let preferences = ledger.read_preferences()?;
+        let initial_setup_marker = ledger.initial_setup_marker()?;
         let rules = ledger.backup_rules(true)?;
         let mut sources = Vec::new();
         for rule in &rules {
@@ -127,11 +129,11 @@ impl AppState {
             }
         }
         let backup_rules = rules.iter().map(BackupRuleDto::from).collect();
-        let setup_state = if destination_configured {
-            SetupStateDto::Ready
-        } else {
-            SetupStateDto::NeedsDestination
-        };
+        let setup_state = setup_state_for(destination_configured, initial_setup_marker);
+        let home =
+            directories::BaseDirs::new().map(|directories| directories.home_dir().to_owned());
+        let destination_display =
+            destination_display_for(&destination, home.as_deref(), destination_configured);
         Ok(Self {
             runtime: Arc::new(Mutex::new(RuntimeState {
                 snapshot: AppSnapshotDto {
@@ -161,6 +163,7 @@ impl AppState {
                         RetirementModeDto::Manual
                     },
                     current_log_available: destination_configured,
+                    destination_display,
                     settings: BackupSettingsDto {
                         automatic_backup: preferences.automatic_backup,
                         m4a_conversion: preferences.m4a_conversion,
@@ -331,10 +334,11 @@ impl AppState {
     }
 
     pub fn backup_is_ready(&self) -> bool {
-        let (destination_configured, mounted_count, destination, source_roots) = {
+        let (destination_configured, setup_state, mounted_count, destination, source_roots) = {
             let runtime = self.runtime.lock();
             (
                 runtime.destination_configured,
+                runtime.snapshot.setup_state,
                 runtime.matched.len(),
                 runtime.destination.clone(),
                 runtime
@@ -345,7 +349,7 @@ impl AppState {
             )
         };
 
-        backup_requirements_met(destination_configured, mounted_count)
+        backup_requirements_met(destination_configured, setup_state, mounted_count)
             && canonical_destination_is_separate(&destination, &source_roots)
     }
 
@@ -880,7 +884,11 @@ impl AppState {
         sync_pairing_snapshot(&mut runtime);
         let should_schedule = matched_source.clone().filter(|_| {
             runtime.preferences.automatic_backup
-                && backup_requirements_met(runtime.destination_configured, runtime.matched.len())
+                && backup_requirements_met(
+                    runtime.destination_configured,
+                    runtime.snapshot.setup_state,
+                    runtime.matched.len(),
+                )
         });
         publish_locked(app, &mut runtime);
         drop(runtime);
@@ -968,11 +976,28 @@ impl AppState {
         Ok(mounted_transmitters)
     }
 
-    pub fn set_destination(&self, app: &AppHandle, destination: PathBuf) {
+    pub fn persist_destination_for_state(
+        &self,
+        app: &AppHandle,
+        destination: PathBuf,
+        occurred_at: &str,
+    ) -> Result<AppSnapshotDto, CoreError> {
+        let current_setup = self.runtime.lock().snapshot.setup_state;
+        let require_settings_review = current_setup == SetupStateDto::NeedsDestination;
+        let encoded = serde_json::to_string(&destination.to_string_lossy())
+            .map_err(|_| CoreError::InvalidRequest)?;
+        self.ledger
+            .lock()
+            .persist_destination(&encoded, require_settings_review, occurred_at)?;
+
         self.proposals
             .lock()
             .invalidate(ProposalInvalidation::DestinationChanged);
         let mut runtime = self.runtime.lock();
+        let home =
+            directories::BaseDirs::new().map(|directories| directories.home_dir().to_owned());
+        runtime.snapshot.destination_display =
+            destination_display_for(&destination, home.as_deref(), true);
         runtime.destination = destination;
         runtime.destination_configured = true;
         runtime.snapshot.current_log_available = true;
@@ -988,8 +1013,32 @@ impl AppState {
             source.deletion_ready = false;
             source.retirement_outcome = DeletionPhase::Inactive;
         }
+        runtime.snapshot.setup_state = match current_setup {
+            SetupStateDto::NeedsDestination => SetupStateDto::NeedsSettingsReview,
+            SetupStateDto::NeedsSettingsReview => SetupStateDto::NeedsSettingsReview,
+            SetupStateDto::Ready => SetupStateDto::Ready,
+        };
+        publish_locked(app, &mut runtime);
+        Ok(runtime.snapshot.clone())
+    }
+
+    pub fn complete_initial_setup_for_state(
+        &self,
+        app: &AppHandle,
+        occurred_at: &str,
+    ) -> Result<AppSnapshotDto, CoreError> {
+        let (setup_state, destination) = {
+            let runtime = self.runtime.lock();
+            (runtime.snapshot.setup_state, runtime.destination.clone())
+        };
+        if setup_state != SetupStateDto::NeedsSettingsReview || !destination.is_dir() {
+            return Err(CoreError::InvalidRequest);
+        }
+        self.ledger.lock().complete_initial_setup(occurred_at)?;
+        let mut runtime = self.runtime.lock();
         runtime.snapshot.setup_state = SetupStateDto::Ready;
         publish_locked(app, &mut runtime);
+        Ok(runtime.snapshot.clone())
     }
 
     pub fn record_activity(&self, app: &AppHandle, entry: ActivityEntry) -> Result<(), CoreError> {
@@ -1263,15 +1312,27 @@ fn refresh_rule_catalog(
 
 fn sync_pairing_snapshot(runtime: &mut RuntimeState) {
     runtime.snapshot.pairing_candidates = runtime.pairing.summaries();
-    runtime.snapshot.setup_state = if !runtime.destination_configured {
-        SetupStateDto::NeedsDestination
-    } else {
-        SetupStateDto::Ready
-    };
 }
 
-fn backup_requirements_met(destination_configured: bool, mounted_devices: usize) -> bool {
-    destination_configured && mounted_devices > 0
+fn setup_state_for(
+    destination_configured: bool,
+    marker: Option<InitialSetupMarker>,
+) -> SetupStateDto {
+    if !destination_configured {
+        return SetupStateDto::NeedsDestination;
+    }
+    match marker {
+        Some(InitialSetupMarker::SettingsReviewPending) => SetupStateDto::NeedsSettingsReview,
+        None | Some(InitialSetupMarker::Complete) => SetupStateDto::Ready,
+    }
+}
+
+fn backup_requirements_met(
+    destination_configured: bool,
+    setup_state: SetupStateDto,
+    mounted_devices: usize,
+) -> bool {
+    destination_configured && setup_state == SetupStateDto::Ready && mounted_devices > 0
 }
 
 fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
@@ -1405,6 +1466,7 @@ fn canonical_destination_is_separate(destination: &Path, source_roots: &[PathBuf
 #[cfg(test)]
 mod tests {
     use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
+    use backup_core::initial_setup::InitialSetupMarker;
     use backup_core::preferences::PreferenceKey;
     use tempfile::tempdir;
     use time::macros::datetime;
@@ -1426,11 +1488,64 @@ mod tests {
     }
 
     #[test]
+    fn setup_state_preserves_existing_destinations_and_resumes_pending_review() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let legacy_ledger = Ledger::open(state_directory.path().join("legacy.sqlite3")).unwrap();
+        let legacy =
+            AppState::new(legacy_ledger, destination.path().to_path_buf(), true, false).unwrap();
+        assert_eq!(legacy.snapshot().setup_state, SetupStateDto::Ready);
+
+        let pending_path = state_directory.path().join("pending.sqlite3");
+        let mut pending_ledger = Ledger::open(&pending_path).unwrap();
+        pending_ledger
+            .persist_destination(r#""/tmp/Pending Backup""#, true, "2026-08-11T00:00:00Z")
+            .unwrap();
+        assert_eq!(
+            pending_ledger.initial_setup_marker().unwrap(),
+            Some(InitialSetupMarker::SettingsReviewPending)
+        );
+        let pending = AppState::new(
+            pending_ledger,
+            destination.path().to_path_buf(),
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            pending.snapshot().setup_state,
+            SetupStateDto::NeedsSettingsReview
+        );
+
+        let mut completed_ledger = Ledger::open(&pending_path).unwrap();
+        completed_ledger
+            .complete_initial_setup("2026-08-11T00:01:00Z")
+            .unwrap();
+        let completed = AppState::new(
+            completed_ledger,
+            destination.path().to_path_buf(),
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(completed.snapshot().setup_state, SetupStateDto::Ready);
+    }
+
+    #[test]
     fn automatic_backup_waits_for_every_setup_requirement() {
-        assert!(!backup_requirements_met(false, 2));
-        assert!(!backup_requirements_met(true, 0));
-        assert!(backup_requirements_met(true, 1));
-        assert!(backup_requirements_met(true, 2));
+        assert!(!backup_requirements_met(
+            false,
+            SetupStateDto::NeedsDestination,
+            2
+        ));
+        assert!(!backup_requirements_met(
+            true,
+            SetupStateDto::NeedsSettingsReview,
+            2
+        ));
+        assert!(!backup_requirements_met(true, SetupStateDto::Ready, 0));
+        assert!(backup_requirements_met(true, SetupStateDto::Ready, 1));
+        assert!(backup_requirements_met(true, SetupStateDto::Ready, 2));
     }
 
     #[test]
