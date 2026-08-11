@@ -14,6 +14,7 @@ const lockedDjiRule: BackupRule = {
   session_directory_globs: ["TX_MIC*"],
   filename_prefix: "",
   filename_suffix: "",
+  date_folder_layout: "year_month",
   archive_directory_locked: true,
   is_dji_preset: true,
   archived: false,
@@ -29,6 +30,7 @@ function renderEditor() {
   render(
     <RuleEditor
       rule={null}
+      artifactFormat="m4a"
       connectedVolumeNames={["ZOOM_TEST"]}
       busy={false}
       onCancel={vi.fn()}
@@ -39,6 +41,14 @@ function renderEditor() {
   return { onSave, onTest };
 }
 
+function previewDate() {
+  const date = new Date();
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return { year, month, day, compact: `${year.slice(-2)}${month}${day}` };
+}
+
 function fillValidRule() {
   if (!screen.queryByLabelText("필수 경로 glob 1")) {
     fireEvent.click(screen.getByRole("button", { name: "필수 경로 추가" }));
@@ -46,8 +56,12 @@ function fillValidRule() {
   if (!screen.queryByLabelText("세션 폴더 glob 1")) {
     fireEvent.click(screen.getByRole("button", { name: "세션 폴더 추가" }));
   }
-  fireEvent.change(screen.getByLabelText("규칙 이름"), { target: { value: "Zoom H1n" } });
-  fireEvent.change(screen.getByLabelText("볼륨 이름 glob"), { target: { value: "ZOOM_*" } });
+  fireEvent.change(screen.getByLabelText("규칙 이름"), {
+    target: { value: "Zoom H1n" },
+  });
+  fireEvent.change(screen.getByLabelText("볼륨 이름 glob"), {
+    target: { value: "ZOOM_*" },
+  });
   fireEvent.change(screen.getByLabelText("필수 경로 glob 1"), {
     target: { value: "RECORD/**" },
   });
@@ -57,8 +71,12 @@ function fillValidRule() {
   fireEvent.change(screen.getByLabelText("세션 폴더 glob 1"), {
     target: { value: "RECORD/*" },
   });
-  fireEvent.change(screen.getByLabelText("파일명 프리픽스"), { target: { value: "zoom-" } });
-  fireEvent.change(screen.getByLabelText("파일명 서픽스"), { target: { value: "-field" } });
+  fireEvent.change(screen.getByLabelText("파일명 프리픽스"), {
+    target: { value: "zoom-" },
+  });
+  fireEvent.change(screen.getByLabelText("파일명 서픽스"), {
+    target: { value: "-field" },
+  });
 }
 
 describe("RuleEditor", () => {
@@ -67,6 +85,7 @@ describe("RuleEditor", () => {
     render(
       <RuleEditor
         rule={lockedDjiRule}
+        artifactFormat="m4a"
         connectedVolumeNames={[]}
         busy={false}
         onCancel={vi.fn()}
@@ -87,17 +106,42 @@ describe("RuleEditor", () => {
     });
   });
 
+  it("offers exactly the three approved date folder layouts", () => {
+    renderEditor();
+
+    const select = screen.getByRole("combobox", { name: "날짜 폴더 구조" });
+    expect(select).toHaveValue("year_month");
+    expect(
+      screen.getAllByRole("option").map((option) => option.textContent),
+    ).toEqual(["YYYY/MM/DD/", "YYYY/MM/", "YYMMDD/"]);
+  });
+
   it("previews and saves ordered repeatable patterns", async () => {
     const { onSave, onTest } = renderEditor();
     fillValidRule();
 
-    expect(screen.getByText("Zoom H1n/YYYY/MM/YYMMDD-zoom-ZOOM0001-field.m4a")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "필수 경로 glob 1 제거" })).not.toHaveAttribute(
-      "tabindex",
-      "-1",
-    );
+    const { year, month, day, compact } = previewDate();
+    expect(
+      screen.getByText(
+        `Zoom H1n/${year}/${month}/${compact}-zoom-ZOOM0001-field.m4a`,
+      ),
+    ).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "연결된 디스크에서 테스트" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "날짜 폴더 구조" }), {
+      target: { value: "year_month_day" },
+    });
+    expect(
+      screen.getByText(
+        `Zoom H1n/${year}/${month}/${day}/${compact}-zoom-ZOOM0001-field.m4a`,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "필수 경로 glob 1 제거" }),
+    ).not.toHaveAttribute("tabindex", "-1");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "연결된 디스크에서 테스트" }),
+    );
     await waitFor(() => expect(onTest).toHaveBeenCalledOnce());
     expect(await screen.findByText("ZOOM_TEST · 3개 파일")).toBeInTheDocument();
 
@@ -112,7 +156,32 @@ describe("RuleEditor", () => {
       session_directory_globs: ["RECORD/*"],
       filename_prefix: "zoom-",
       filename_suffix: "-field",
+      date_folder_layout: "year_month_day",
     });
+  });
+
+  it("shows a profile-aware DJI source and WAV result", () => {
+    render(
+      <RuleEditor
+        rule={lockedDjiRule}
+        artifactFormat="wav"
+        connectedVolumeNames={[]}
+        busy={false}
+        onCancel={vi.fn()}
+        onSave={vi.fn()}
+        onTest={vi.fn()}
+      />,
+    );
+    const { year, month, day, compact } = previewDate();
+
+    expect(
+      screen.getByText(`TX01_MIC001_${year}${month}${day}_120000.WAV`),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        `DJI Mic Mini 2S/${year}/${month}/${compact}-T01_MIC001_${year}${month}${day}_120000.wav`,
+      ),
+    ).toBeInTheDocument();
   });
 
   for (const [label, value, message] of [
@@ -124,7 +193,9 @@ describe("RuleEditor", () => {
       const { onSave, onTest } = renderEditor();
       fillValidRule();
       fireEvent.change(screen.getByLabelText(label), { target: { value } });
-      fireEvent.click(screen.getByRole("button", { name: "연결된 디스크에서 테스트" }));
+      fireEvent.click(
+        screen.getByRole("button", { name: "연결된 디스크에서 테스트" }),
+      );
       fireEvent.click(screen.getByRole("button", { name: "규칙 저장" }));
       expect((await screen.findAllByText(message)).length).toBeGreaterThan(0);
       expect(onSave).not.toHaveBeenCalled();
@@ -135,9 +206,13 @@ describe("RuleEditor", () => {
   it("requires at least one backup pattern", async () => {
     const { onSave, onTest } = renderEditor();
     fillValidRule();
-    fireEvent.click(screen.getByRole("button", { name: "백업 파일 glob 1 제거" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "백업 파일 glob 1 제거" }),
+    );
     fireEvent.click(screen.getByRole("button", { name: "규칙 저장" }));
-    expect(await screen.findByText("백업 파일 glob을 하나 이상 추가해 주세요")).toBeInTheDocument();
+    expect(
+      await screen.findByText("백업 파일 glob을 하나 이상 추가해 주세요"),
+    ).toBeInTheDocument();
     expect(onSave).not.toHaveBeenCalled();
     expect(onTest).not.toHaveBeenCalled();
   });
@@ -147,8 +222,12 @@ describe("RuleEditor", () => {
     fillValidRule();
     onTest.mockRejectedValueOnce({ message_code: "invalid_rule" });
 
-    fireEvent.click(screen.getByRole("button", { name: "연결된 디스크에서 테스트" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "연결된 디스크에서 테스트" }),
+    );
 
-    expect(await screen.findByText("규칙을 테스트하지 못했습니다")).toBeInTheDocument();
+    expect(
+      await screen.findByText("규칙을 테스트하지 못했습니다"),
+    ).toBeInTheDocument();
   });
 });

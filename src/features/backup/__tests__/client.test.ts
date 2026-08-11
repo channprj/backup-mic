@@ -16,8 +16,9 @@ import {
   showSettings,
   testBackupRule,
 } from "../client";
+import type { BackupRuleDraft } from "../contracts";
 
-const draft = {
+const draft: BackupRuleDraft = {
   id: null,
   name: "Zoom H1n",
   archive_directory_name: "Zoom H1n",
@@ -28,13 +29,17 @@ const draft = {
   session_directory_globs: ["RECORD/*"],
   filename_prefix: "zoom-",
   filename_suffix: "-field",
+  date_folder_layout: "year_month",
 };
 
 describe("typed Tauri client", () => {
   beforeEach(() => invoke.mockReset());
 
   it("validates every snapshot returned by Rust", async () => {
-    invoke.mockResolvedValue({ ...completeFixture, unexpected_private_field: "/Volumes/source" });
+    invoke.mockResolvedValue({
+      ...completeFixture,
+      unexpected_private_field: "/Volumes/source",
+    });
     await expect(getAppSnapshot()).rejects.toThrow();
   });
 
@@ -45,7 +50,9 @@ describe("typed Tauri client", () => {
   });
 
   it("rejects authority-shaped rule data before IPC", async () => {
-    expect(() => saveBackupRule({ ...draft, volume_uuid: "private" } as never)).toThrow();
+    expect(() =>
+      saveBackupRule({ ...draft, volume_uuid: "private" } as never),
+    ).toThrow();
     expect(invoke).not.toHaveBeenCalled();
   });
 
@@ -53,7 +60,9 @@ describe("typed Tauri client", () => {
     invoke.mockResolvedValueOnce(completeFixture);
     const id = "33333333-3333-4333-8333-333333333333";
     await archiveBackupRule(id);
-    expect(invoke).toHaveBeenLastCalledWith("archive_backup_rule", { ruleId: id });
+    expect(invoke).toHaveBeenLastCalledWith("archive_backup_rule", {
+      ruleId: id,
+    });
 
     invoke.mockResolvedValueOnce({
       proposal_id: "550e8400-e29b-41d4-a716-446655440000",

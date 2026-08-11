@@ -6,10 +6,17 @@ const ruleTextSchema = z.string().trim().min(1).max(64);
 const optionalRuleTextSchema = z
   .string()
   .max(64)
-  .refine((value) => !/[\\/\0]/u.test(value), "Must not contain path separators");
+  .refine(
+    (value) => !/[\\/\0]/u.test(value),
+    "Must not contain path separators",
+  );
 const globSchema = z.string().min(1).max(256);
 const optionalPatternsSchema = z.array(globSchema).max(32);
 const requiredPatternsSchema = optionalPatternsSchema.min(1);
+
+export const dateFolderLayoutSchema = z
+  .enum(["year_month_day", "year_month", "compact_date"])
+  .default("year_month");
 
 export const backupPhaseSchema = z.enum([
   "idle",
@@ -71,6 +78,7 @@ export const backupRuleDraftSchema = z
     session_directory_globs: optionalPatternsSchema,
     filename_prefix: optionalRuleTextSchema,
     filename_suffix: optionalRuleTextSchema,
+    date_folder_layout: dateFolderLayoutSchema,
   })
   .strict();
 
@@ -145,7 +153,11 @@ export const appSnapshotSchema = z
     destination_display: z.string().min(1).max(2048).nullable(),
     settings: backupSettingsSchema,
     notification_status: z.enum(["unknown", "granted", "denied"]),
-    setup_state: z.enum(["needs_destination", "needs_settings_review", "ready"]),
+    setup_state: z.enum([
+      "needs_destination",
+      "needs_settings_review",
+      "ready",
+    ]),
     recent_activity: z.array(activitySchema).max(8),
     error: publicErrorSchema.nullable(),
   })

@@ -27,11 +27,16 @@ describe("RuleList", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0]).toHaveTextContent("DJI Mic Mini 2S");
     expect(items[0]).toHaveTextContent("기본 규칙");
-    fireEvent.click(screen.getByRole("button", { name: "DJI Mic Mini 2S 편집" }));
+    expect(items[0]).toHaveTextContent("DJI Mic Mini 2S/YYYY/MM/");
+    fireEvent.click(
+      screen.getByRole("button", { name: "DJI Mic Mini 2S 편집" }),
+    );
     expect(onEdit).toHaveBeenCalledWith(rules[0]);
     fireEvent.click(screen.getByRole("button", { name: "Zoom H1n 복제" }));
     expect(onDuplicate).toHaveBeenCalledWith(rules[1]);
-    expect(screen.getByRole("button", { name: "DJI 기본값 복원" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "DJI 기본값 복원" }),
+    ).toBeEnabled();
   });
 
   it("creates an enabled unlocked draft without carrying the source rule ID", () => {
@@ -40,8 +45,11 @@ describe("RuleList", () => {
       name: "DJI Mic Mini 2S 복사본",
       archive_directory_name: "DJI Mic Mini 2S 복사본",
       enabled: true,
+      date_folder_layout: "year_month",
     });
-    expect(duplicateRuleDraft(rules[0])).not.toHaveProperty("archive_directory_locked");
+    expect(duplicateRuleDraft(rules[0])).not.toHaveProperty(
+      "archive_directory_locked",
+    );
   });
 
   it("confirms archival for an evidenced rule before invoking the command", () => {
@@ -57,8 +65,12 @@ describe("RuleList", () => {
         onRestoreDji={vi.fn()}
       />,
     );
-    fireEvent.click(screen.getByRole("button", { name: "DJI Mic Mini 2S 보관" }));
-    expect(screen.getByRole("alertdialog")).toHaveTextContent("기존 백업 기록은 유지됩니다");
+    fireEvent.click(
+      screen.getByRole("button", { name: "DJI Mic Mini 2S 보관" }),
+    );
+    expect(screen.getByRole("alertdialog")).toHaveTextContent(
+      "기존 백업 기록은 유지됩니다",
+    );
     expect(onArchive).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "규칙 보관" }));
     expect(onArchive).toHaveBeenCalledWith(rules[0].id);

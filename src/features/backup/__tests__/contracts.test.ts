@@ -47,10 +47,17 @@ const baseSnapshot = {
 
 describe("app snapshot contract", () => {
   test("accepts every committed Rust snapshot fixture", () => {
-    for (const fixture of [backupComplete, backupCopying, destinationFull, partialTrash]) {
+    for (const fixture of [
+      backupComplete,
+      backupCopying,
+      destinationFull,
+      partialTrash,
+    ]) {
       expect(appSnapshotSchema.safeParse(fixture).success).toBe(true);
     }
-    expect(trashProposalSummarySchema.safeParse(trashProposal).success).toBe(true);
+    expect(trashProposalSummarySchema.safeParse(trashProposal).success).toBe(
+      true,
+    );
   });
 
   test("accepts exactly the six public backup stages", () => {
@@ -62,10 +69,15 @@ describe("app snapshot contract", () => {
       "source_revalidation",
       "trash",
     ]) {
-      expect(appSnapshotSchema.safeParse({ ...baseSnapshot, current_stage }).success).toBe(true);
+      expect(
+        appSnapshotSchema.safeParse({ ...baseSnapshot, current_stage }).success,
+      ).toBe(true);
     }
     expect(
-      appSnapshotSchema.safeParse({ ...baseSnapshot, current_stage: "sha256_verification" }).success,
+      appSnapshotSchema.safeParse({
+        ...baseSnapshot,
+        current_stage: "sha256_verification",
+      }).success,
     ).toBe(false);
   });
 
@@ -79,6 +91,42 @@ describe("app snapshot contract", () => {
     expect(parsed.setting_applies_next_run).toBe(false);
     expect(parsed.settings.automatic_trash).toBe(false);
     expect(parsed.backup_rules[0].is_dji_preset).toBe(true);
+    expect(parsed.backup_rules[0].date_folder_layout).toBe("year_month");
+  });
+
+  test("accepts only the three date folder layouts and defaults legacy drafts", () => {
+    const draft = {
+      id: null,
+      name: "Zoom",
+      archive_directory_name: "Zoom",
+      enabled: true,
+      volume_name_glob: "ZOOM_*",
+      required_path_globs: [],
+      backup_file_globs: ["*.WAV"],
+      session_directory_globs: [],
+      filename_prefix: "",
+      filename_suffix: "",
+    };
+
+    expect(backupRuleDraftSchema.parse(draft).date_folder_layout).toBe(
+      "year_month",
+    );
+    for (const date_folder_layout of [
+      "year_month_day",
+      "year_month",
+      "compact_date",
+    ]) {
+      expect(
+        backupRuleDraftSchema.safeParse({ ...draft, date_folder_layout })
+          .success,
+      ).toBe(true);
+    }
+    expect(
+      backupRuleDraftSchema.safeParse({
+        ...draft,
+        date_folder_layout: "custom",
+      }).success,
+    ).toBe(false);
   });
 
   test("accepts the pending settings-review state and bounds the display-only destination", () => {
@@ -134,14 +182,20 @@ describe("app snapshot contract", () => {
       session_directory_globs: ["RECORD/*"],
       filename_prefix: "zoom-",
       filename_suffix: "-field",
+      date_folder_layout: "year_month",
     };
     expect(backupRuleDraftSchema.parse(draft)).toEqual(draft);
-    expect(backupRuleDraftSchema.safeParse({ ...draft, filename_suffix: "/private" }).success).toBe(
-      false,
-    );
-    expect(backupRuleDraftSchema.safeParse({ ...draft, backup_file_globs: [] }).success).toBe(false);
     expect(
-      backupRuleDraftSchema.safeParse({ ...draft, arbitrary_pattern: "**/*" }).success,
+      backupRuleDraftSchema.safeParse({ ...draft, filename_suffix: "/private" })
+        .success,
+    ).toBe(false);
+    expect(
+      backupRuleDraftSchema.safeParse({ ...draft, backup_file_globs: [] })
+        .success,
+    ).toBe(false);
+    expect(
+      backupRuleDraftSchema.safeParse({ ...draft, arbitrary_pattern: "**/*" })
+        .success,
     ).toBe(false);
   });
 

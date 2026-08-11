@@ -51,7 +51,11 @@ export function SettingsApp() {
 
   if (loading) {
     return (
-      <main className="settings-shell settings-loading" aria-label="Backup Mic 설정" aria-busy>
+      <main
+        className="settings-shell settings-loading"
+        aria-label="Backup Mic 설정"
+        aria-busy
+      >
         <Skeleton className="settings-title-skeleton" />
         <Skeleton className="settings-group-skeleton" />
         <Skeleton className="settings-group-skeleton" />
@@ -62,7 +66,10 @@ export function SettingsApp() {
   if (!snapshot) {
     const copy = errorCopy(errorCode ?? "snapshot_unavailable");
     return (
-      <main className="settings-shell settings-unavailable" aria-label="Backup Mic 설정">
+      <main
+        className="settings-shell settings-unavailable"
+        aria-label="Backup Mic 설정"
+      >
         <Alert variant="destructive">
           <AlertTitle>{copy.title}</AlertTitle>
           <AlertDescription>{copy.detail}</AlertDescription>
@@ -88,7 +95,9 @@ export function SettingsView({
   const [viewSnapshot, setViewSnapshot] = useState(snapshot);
   const [pending, setPending] = useState<Set<SettingKey>>(new Set());
   const [destinationPending, setDestinationPending] = useState(false);
-  const [destinationStatus, setDestinationStatus] = useState<string | null>(null);
+  const [destinationStatus, setDestinationStatus] = useState<string | null>(
+    null,
+  );
   const [actionError, setActionError] = useState<ActionError | null>(null);
   const [confirmAutomaticTrash, setConfirmAutomaticTrash] = useState(false);
   const [editorRule, setEditorRule] = useState<BackupRule | null>(null);
@@ -97,7 +106,9 @@ export function SettingsView({
   const [busyRuleId, setBusyRuleId] = useState<string | null>(null);
 
   useEffect(() => {
-    setViewSnapshot((current) => (snapshot.revision > current.revision ? snapshot : current));
+    setViewSnapshot((current) =>
+      snapshot.revision > current.revision ? snapshot : current,
+    );
   }, [snapshot]);
 
   function markPending(key: SettingKey, value: boolean) {
@@ -129,9 +140,13 @@ export function SettingsView({
         return {
           ...persisted,
           artifact_format:
-            key === "m4a_conversion" ? persisted.artifact_format : current.artifact_format,
+            key === "m4a_conversion"
+              ? persisted.artifact_format
+              : current.artifact_format,
           retirement_mode:
-            key === "automatic_trash" ? persisted.retirement_mode : current.retirement_mode,
+            key === "automatic_trash"
+              ? persisted.retirement_mode
+              : current.retirement_mode,
           settings: {
             ...current.settings,
             [key]: persisted.settings[key],
@@ -143,7 +158,10 @@ export function SettingsView({
         ...current,
         settings: { ...current.settings, [key]: previous },
       }));
-      setActionError({ ...commandError(error), title: "설정을 저장하지 못했습니다" });
+      setActionError({
+        ...commandError(error),
+        title: "설정을 저장하지 못했습니다",
+      });
     } finally {
       markPending(key, false);
     }
@@ -193,7 +211,10 @@ export function SettingsView({
       setViewSnapshot(await actions.saveBackupRule(draft));
       closeRuleEditor();
     } catch (error) {
-      setActionError({ ...commandError(error), title: "규칙을 저장하지 못했습니다" });
+      setActionError({
+        ...commandError(error),
+        title: "규칙을 저장하지 못했습니다",
+      });
     } finally {
       setBusyRuleId(null);
     }
@@ -206,7 +227,10 @@ export function SettingsView({
     try {
       setViewSnapshot(await actions.archiveBackupRule(ruleId));
     } catch (error) {
-      setActionError({ ...commandError(error), title: "규칙을 보관하지 못했습니다" });
+      setActionError({
+        ...commandError(error),
+        title: "규칙을 보관하지 못했습니다",
+      });
     } finally {
       setBusyRuleId(null);
     }
@@ -215,14 +239,18 @@ export function SettingsView({
   async function restoreDjiRule() {
     if (busyRuleId !== null) return;
     const djiRuleId =
-      viewSnapshot.backup_rules.find((rule) => rule.is_dji_preset)?.id ?? "dji-preset";
+      viewSnapshot.backup_rules.find((rule) => rule.is_dji_preset)?.id ??
+      "dji-preset";
     setBusyRuleId(djiRuleId);
     setActionError(null);
     try {
       setViewSnapshot(await actions.restoreDjiRule());
       closeRuleEditor();
     } catch (error) {
-      setActionError({ ...commandError(error), title: "DJI 기본 규칙을 복원하지 못했습니다" });
+      setActionError({
+        ...commandError(error),
+        title: "DJI 기본 규칙을 복원하지 못했습니다",
+      });
     } finally {
       setBusyRuleId(null);
     }
@@ -230,7 +258,9 @@ export function SettingsView({
 
   const refusal = viewSnapshot.sources
     .map(({ retirement_outcome }) => retirementOutcomeLabel(retirement_outcome))
-    .find((outcome) => outcome === "이동 중단됨" || outcome === "일부만 이동됨");
+    .find(
+      (outcome) => outcome === "이동 중단됨" || outcome === "일부만 이동됨",
+    );
 
   return (
     <main className="settings-shell" aria-label="Backup Mic 설정">
@@ -249,7 +279,11 @@ export function SettingsView({
             <p>{actionError.detail}</p>
             <p className="support-code">오류 코드: {actionError.messageCode}</p>
             {viewSnapshot.current_log_available ? (
-              <Button variant="outline" size="sm" onClick={() => void actions.openLogs()}>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => void actions.openLogs()}
+              >
                 <FileTextIcon data-icon="inline-start" />
                 로그 열기
               </Button>
@@ -258,7 +292,10 @@ export function SettingsView({
         </Alert>
       ) : null}
 
-      <section className="settings-section" aria-labelledby="recorder-rules-title">
+      <section
+        className="settings-section"
+        aria-labelledby="recorder-rules-title"
+      >
         <div className="settings-section-title">
           <RadioTowerIcon aria-hidden="true" />
           <div>
@@ -271,6 +308,7 @@ export function SettingsView({
             <RuleEditor
               rule={editorRule}
               initialDraft={editorDraft}
+              artifactFormat={viewSnapshot.artifact_format}
               connectedVolumeNames={[
                 ...new Set(
                   viewSnapshot.sources
@@ -309,7 +347,10 @@ export function SettingsView({
         </div>
       </section>
 
-      <section className="settings-section" aria-labelledby="backup-settings-title">
+      <section
+        className="settings-section"
+        aria-labelledby="backup-settings-title"
+      >
         <div className="settings-section-title">
           <HardDriveIcon aria-hidden="true" />
           <div>
@@ -338,7 +379,11 @@ export function SettingsView({
             </Button>
           </div>
           {destinationStatus ? (
-            <p className="settings-status-note is-success" role="status" aria-live="polite">
+            <p
+              className="settings-status-note is-success"
+              role="status"
+              aria-live="polite"
+            >
               {destinationStatus}
             </p>
           ) : null}
@@ -367,12 +412,17 @@ export function SettingsView({
             }
           />
           {viewSnapshot.setting_applies_next_run ? (
-            <p className="settings-status-note is-info">다음 백업부터 적용됩니다</p>
+            <p className="settings-status-note is-info">
+              다음 백업부터 적용됩니다
+            </p>
           ) : null}
         </div>
       </section>
 
-      <section className="settings-section" aria-labelledby="source-safety-title">
+      <section
+        className="settings-section"
+        aria-labelledby="source-safety-title"
+      >
         <div className="settings-section-title">
           <ShieldCheckIcon aria-hidden="true" />
           <div>
@@ -396,11 +446,16 @@ export function SettingsView({
               }
             }}
           />
-          {refusal ? <p className="settings-status-note">최근 원본 처리: {refusal}</p> : null}
+          {refusal ? (
+            <p className="settings-status-note">최근 원본 처리: {refusal}</p>
+          ) : null}
         </div>
       </section>
 
-      <section className="settings-section" aria-labelledby="general-settings-title">
+      <section
+        className="settings-section"
+        aria-labelledby="general-settings-title"
+      >
         <div className="settings-section-title">
           <FolderOpenIcon aria-hidden="true" />
           <div>
@@ -416,11 +471,16 @@ export function SettingsView({
             checked={viewSnapshot.settings.autostart}
             pending={pending.has("autostart")}
             onChange={(enabled) =>
-              void persistSetting("autostart", enabled, () => actions.setAutostart(enabled))
+              void persistSetting("autostart", enabled, () =>
+                actions.setAutostart(enabled),
+              )
             }
           />
           <div className="settings-shortcuts">
-            <Button variant="outline" onClick={() => void actions.openDestination()}>
+            <Button
+              variant="outline"
+              onClick={() => void actions.openDestination()}
+            >
               <FolderOpenIcon data-icon="inline-start" />
               백업 폴더 열기
             </Button>
@@ -437,13 +497,17 @@ export function SettingsView({
         </div>
       </section>
 
-      <AlertDialog open={confirmAutomaticTrash} onOpenChange={setConfirmAutomaticTrash}>
+      <AlertDialog
+        open={confirmAutomaticTrash}
+        onOpenChange={setConfirmAutomaticTrash}
+      >
         <AlertDialogContent className="settings-confirmation-dialog">
           <AlertDialogHeader>
             <AlertDialogTitle>자동 휴지통 이동을 켤까요?</AlertDialogTitle>
             <AlertDialogDescription>
-              각 녹음기의 모든 녹음과 M4A 백업을 다시 검증한 뒤 세션 폴더 전체를 macOS
-              휴지통으로 이동합니다. 원본을 즉시 영구적으로 지우지 않습니다.
+              각 녹음기의 모든 녹음과 M4A 백업을 다시 검증한 뒤 세션 폴더 전체를
+              macOS 휴지통으로 이동합니다. 원본을 즉시 영구적으로 지우지
+              않습니다.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>

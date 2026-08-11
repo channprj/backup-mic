@@ -1,5 +1,11 @@
 import { useState } from "react";
-import { CopyIcon, PencilIcon, PlusIcon, RotateCcwIcon, Trash2Icon } from "lucide-react";
+import {
+  CopyIcon,
+  PencilIcon,
+  PlusIcon,
+  RotateCcwIcon,
+  Trash2Icon,
+} from "lucide-react";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -25,6 +31,13 @@ export interface RuleListProps {
   onRestoreDji: () => Promise<void>;
 }
 
+const dateFolderLayoutLabels: Record<BackupRule["date_folder_layout"], string> =
+  {
+    year_month_day: "YYYY/MM/DD/",
+    year_month: "YYYY/MM/",
+    compact_date: "YYMMDD/",
+  };
+
 export function duplicateRuleDraft(rule: BackupRule): BackupRuleDraft {
   return {
     id: null,
@@ -37,6 +50,7 @@ export function duplicateRuleDraft(rule: BackupRule): BackupRuleDraft {
     session_directory_globs: [...rule.session_directory_globs],
     filename_prefix: rule.filename_prefix,
     filename_suffix: rule.filename_suffix,
+    date_folder_layout: rule.date_folder_layout,
   };
 }
 
@@ -49,9 +63,13 @@ export function RuleList({
   onArchive,
   onRestoreDji,
 }: RuleListProps) {
-  const [archiveCandidate, setArchiveCandidate] = useState<BackupRule | null>(null);
-  const ordered = [...rules].sort((left, right) =>
-    Number(right.is_dji_preset) - Number(left.is_dji_preset) || left.name.localeCompare(right.name),
+  const [archiveCandidate, setArchiveCandidate] = useState<BackupRule | null>(
+    null,
+  );
+  const ordered = [...rules].sort(
+    (left, right) =>
+      Number(right.is_dji_preset) - Number(left.is_dji_preset) ||
+      left.name.localeCompare(right.name),
   );
   const dji = ordered.find((rule) => rule.is_dji_preset);
 
@@ -76,11 +94,20 @@ export function RuleList({
               disabled={busyRuleId !== null}
               onClick={() => void onRestoreDji()}
             >
-              {busyRuleId === dji.id ? <Spinner data-icon="inline-start" /> : <RotateCcwIcon data-icon="inline-start" />}
+              {busyRuleId === dji.id ? (
+                <Spinner data-icon="inline-start" />
+              ) : (
+                <RotateCcwIcon data-icon="inline-start" />
+              )}
               DJI 기본값 복원
             </Button>
           ) : null}
-          <Button type="button" size="sm" disabled={busyRuleId !== null} onClick={onAdd}>
+          <Button
+            type="button"
+            size="sm"
+            disabled={busyRuleId !== null}
+            onClick={onAdd}
+          >
             <PlusIcon data-icon="inline-start" />
             녹음기 규칙 추가
           </Button>
@@ -88,16 +115,28 @@ export function RuleList({
       </div>
       <ul className="rule-list">
         {ordered.map((rule) => (
-          <li key={rule.id} className={rule.archived ? "is-archived" : undefined}>
+          <li
+            key={rule.id}
+            className={rule.archived ? "is-archived" : undefined}
+          >
             <div className="rule-list-copy">
               <div>
                 <strong>{rule.name}</strong>
-                {rule.is_dji_preset ? <Badge variant="secondary">기본 규칙</Badge> : null}
-                {!rule.enabled ? <Badge variant="outline">사용 안 함</Badge> : null}
+                {rule.is_dji_preset ? (
+                  <Badge variant="secondary">기본 규칙</Badge>
+                ) : null}
+                {!rule.enabled ? (
+                  <Badge variant="outline">사용 안 함</Badge>
+                ) : null}
                 {rule.archived ? <Badge variant="outline">보관됨</Badge> : null}
               </div>
-              <span>{rule.volume_name_glob} · {rule.backup_file_globs.join(", ")}</span>
-              <code>{rule.archive_directory_name}/YYYY/MM</code>
+              <span>
+                {rule.volume_name_glob} · {rule.backup_file_globs.join(", ")}
+              </span>
+              <code>
+                {rule.archive_directory_name}/
+                {dateFolderLayoutLabels[rule.date_folder_layout]}
+              </code>
             </div>
             <div className="rule-list-actions">
               <Button
@@ -129,7 +168,11 @@ export function RuleList({
                   disabled={busyRuleId !== null}
                   onClick={() => requestArchive(rule)}
                 >
-                  {busyRuleId === rule.id ? <Spinner /> : <Trash2Icon aria-hidden="true" />}
+                  {busyRuleId === rule.id ? (
+                    <Spinner />
+                  ) : (
+                    <Trash2Icon aria-hidden="true" />
+                  )}
                 </Button>
               ) : null}
             </div>
@@ -143,9 +186,12 @@ export function RuleList({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>{archiveCandidate?.name} 규칙을 보관할까요?</AlertDialogTitle>
+            <AlertDialogTitle>
+              {archiveCandidate?.name} 규칙을 보관할까요?
+            </AlertDialogTitle>
             <AlertDialogDescription>
-              규칙은 더 이상 새 녹음기에 적용되지 않지만 기존 백업 기록은 유지됩니다.
+              규칙은 더 이상 새 녹음기에 적용되지 않지만 기존 백업 기록은
+              유지됩니다.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
