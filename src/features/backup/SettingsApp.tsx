@@ -239,7 +239,7 @@ export function SettingsView({
           <p>Backup Mic</p>
           <h1>설정</h1>
         </div>
-        <span>v0.260811.2</span>
+        <span>v0.260811.3</span>
       </header>
 
       {actionError ? (
