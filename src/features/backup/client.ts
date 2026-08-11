@@ -27,6 +27,10 @@ export async function backupNow(): Promise<void> {
   await invoke("backup_now");
 }
 
+export async function cancelBackup(): Promise<void> {
+  await invoke("cancel_backup");
+}
+
 export function chooseDestination(): Promise<AppSnapshot> {
   return invokeSnapshot("choose_destination");
 }
@@ -111,6 +115,7 @@ export function listenForSnapshots(
 
 export const backupClient = {
   backupNow,
+  cancelBackup,
   chooseDestination,
   completeInitialSetup,
   saveBackupRule,

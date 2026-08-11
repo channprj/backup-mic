@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import {
   archiveBackupRule,
+  cancelBackup,
   completeInitialSetup,
   confirmTrash,
   getAppSnapshot,
@@ -41,6 +42,14 @@ describe("typed Tauri client", () => {
       unexpected_private_field: "/Volumes/source",
     });
     await expect(getAppSnapshot()).rejects.toThrow();
+  });
+
+  it("cancels only the current process-wide backup operation", async () => {
+    invoke.mockResolvedValue(undefined);
+
+    await cancelBackup();
+
+    expect(invoke).toHaveBeenCalledWith("cancel_backup");
   });
 
   it("sends only a validated rule draft to the exact save command", async () => {

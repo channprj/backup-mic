@@ -194,6 +194,7 @@ pub fn run_matched_sources_with_adapters(
             preferences,
             local_offset,
             clock,
+            cancellation,
         ) {
             Ok(source) => prepared.push(source),
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
@@ -273,10 +274,11 @@ fn prepare_matched_source(
     preferences: backup_core::batch::FrozenPreferences,
     local_offset: UtcOffset,
     clock: &dyn Clock,
+    cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<PreparedSource, CoreError> {
     let compiled = compile_rule(matched.rule.clone())?;
     let source_root = matched.authority.descriptor.mount_root.clone();
-    let scan = scan_rule_stable(&source_root, &compiled, local_offset, clock)?;
+    let scan = scan_rule_stable(&source_root, &compiled, local_offset, clock, cancellation)?;
     if !state.destination_snapshot_is_current(destination, destination_generation) {
         return Err(CoreError::DestinationUnavailable);
     }
@@ -1136,8 +1138,12 @@ pub fn start_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
         .invalidate(ProposalInvalidation::BackupStarted);
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = run_backup(&app, &state, &guard) {
-            state.report_failure("backup_run", "background_operation", &error, None, None);
-            state.set_error(&app, error, None);
+            if matches!(error, CoreError::Cancelled) {
+                state.settle_cancelled_operation(&app);
+            } else {
+                state.report_failure("backup_run", "background_operation", &error, None, None);
+                state.set_error(&app, error, None);
+            }
         }
     });
     Ok(())
@@ -1181,11 +1187,13 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         &SystemClock,
         &guard.cancellation,
     )?;
+    guard.cancellation.check()?;
     let automatic_retirements = retire_ready_rule_sources_with_adapter(
         state,
         &outcomes,
         OffsetDateTime::now_utc(),
         &MacTrash,
+        &guard.cancellation,
     )?;
     let automatic_retirement_failed = automatic_retirements.iter().any(|retirement| {
         retirement.error.is_some()
@@ -1658,9 +1666,12 @@ pub fn retire_ready_rule_sources_with_adapter(
     outcomes: &[SourceRunOutcome],
     now: OffsetDateTime,
     trash: &dyn TrashAdapter,
+    cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<Vec<SourceDeletionOutcome>, CoreError> {
+    cancellation.check()?;
     let mut retirements = Vec::new();
     for outcome in outcomes.iter().filter(|outcome| outcome.deletion_ready) {
+        cancellation.check()?;
         let automatic_trash = state
             .ledger
             .lock()
@@ -1682,6 +1693,7 @@ pub fn retire_ready_rule_sources_with_adapter(
                 continue;
             }
         };
+        cancellation.check()?;
         let result = confirm_rule_trash_with_adapter(
             state,
             &source_id,

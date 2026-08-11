@@ -7,6 +7,7 @@ fn command_surface_is_exact_and_has_no_arbitrary_settings_or_path_ipc() {
         [
             "get_app_snapshot",
             "backup_now",
+            "cancel_backup",
             "choose_destination",
             "save_backup_rule",
             "archive_backup_rule",

@@ -97,6 +97,7 @@ const activityMessages: Record<string, string> = {
   partial_trash: "일부 원본만 휴지통으로 이동했습니다",
   automatic_trash_complete: "검증된 원본을 자동으로 휴지통으로 이동했습니다",
   automatic_trash_partial: "자동 휴지통 이동이 일부만 완료됐습니다",
+  backup_cancelled: "백업을 취소했습니다",
   legacy_session_moved_to_trash: "빈 이전 세션 폴더를 휴지통으로 이동했습니다",
   capacity_check_failed: "백업 공간이 부족합니다",
 };

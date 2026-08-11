@@ -49,6 +49,17 @@ function Preview() {
       };
       return {
       backupNow: async () => setSnapshot(copying),
+      cancelBackup: async () => {
+        setSnapshot((current) => ({
+          ...current,
+          revision: current.revision + 1,
+          phase: "idle",
+          message_code: "operation_cancelled",
+          current_stage: null,
+          failure_stage: null,
+          error: null,
+        }));
+      },
       chooseDestination: async () => {
         const next: AppSnapshot = {
           ...snapshot,

@@ -33,6 +33,7 @@ pub struct BackupRuleDto {
     pub session_directory_globs: Vec<String>,
     pub filename_prefix: String,
     pub filename_suffix: String,
+    #[serde(default)]
     pub date_folder_layout: DateFolderLayout,
     pub is_dji_preset: bool,
     pub archived: bool,

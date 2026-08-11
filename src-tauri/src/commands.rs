@@ -23,9 +23,10 @@ use crate::{
 
 pub(crate) use backup_core::initial_setup::DESTINATION_SETTING;
 
-pub const REGISTERED_COMMANDS: [&str; 18] = [
+pub const REGISTERED_COMMANDS: [&str; 19] = [
     "get_app_snapshot",
     "backup_now",
+    "cancel_backup",
     "choose_destination",
     "save_backup_rule",
     "archive_backup_rule",
@@ -62,6 +63,14 @@ pub fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<(), Publ
     orchestrator::start_backup(app, state.inner().clone()).map_err(|error| {
         reported_core_error(state.inner(), "backup_now", "operation_start", error, None)
     })
+}
+
+#[tauri::command]
+pub fn cancel_backup(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
+    if !state.cancel_active_operation() {
+        state.settle_cancelled_operation(&app);
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -736,8 +745,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exposes_exactly_the_eighteen_approved_commands() {
-        assert_eq!(REGISTERED_COMMANDS.len(), 18);
+    fn exposes_exactly_the_nineteen_approved_commands() {
+        assert_eq!(REGISTERED_COMMANDS.len(), 19);
+        assert!(REGISTERED_COMMANDS.contains(&"cancel_backup"));
         assert!(REGISTERED_COMMANDS.contains(&"complete_initial_setup"));
         let serialized = serde_json::to_string(&REGISTERED_COMMANDS).unwrap();
         for forbidden in [

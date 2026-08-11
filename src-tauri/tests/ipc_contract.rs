@@ -75,5 +75,5 @@ fn webview_capability_has_no_direct_plugin_authority() {
         capability["permissions"],
         serde_json::json!(["core:default"])
     );
-    assert_eq!(REGISTERED_COMMANDS.len(), 18);
+    assert_eq!(REGISTERED_COMMANDS.len(), 19);
 }

@@ -265,6 +265,7 @@ fn automatic_trash_refusal_for_one_source_does_not_block_another_source() {
         &outcomes,
         OffsetDateTime::from_unix_timestamp(1_786_320_000).unwrap(),
         &trash,
+        &CancellationToken::default(),
     )
     .unwrap();
 
@@ -300,6 +301,44 @@ fn automatic_trash_refusal_for_one_source_does_not_block_another_source() {
     );
     assert!(fixture.destination.path().join("ZOOM Archive").exists());
     assert!(fixture.destination.path().join("SONY Archive").exists());
+}
+
+#[test]
+fn cancellation_before_automatic_retirement_keeps_source_files_in_place() {
+    let fixture = Fixture::new();
+    fixture
+        .state
+        .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-10T00:00:00Z")
+        .unwrap();
+    let (source_root, source) = fixture.add_source("ZOOM", "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
+    let outcomes = run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&source),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &InstantClock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    let cancellation = CancellationToken::default();
+    cancellation.cancel();
+
+    let result = retire_ready_rule_sources_with_adapter(
+        &fixture.state,
+        &outcomes,
+        OffsetDateTime::from_unix_timestamp(1_786_320_000).unwrap(),
+        &FakeTrash::new(None),
+        &cancellation,
+    );
+
+    assert!(matches!(result, Err(CoreError::Cancelled)));
+    assert!(source_root.path().join("RECORD/FOLDER01").is_dir());
+    assert!(
+        source_root
+            .path()
+            .join("RECORD/FOLDER01/REC0001.wav")
+            .is_file()
+    );
 }
 
 #[test]

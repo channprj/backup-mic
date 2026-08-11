@@ -39,6 +39,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::get_app_snapshot,
             commands::backup_now,
+            commands::cancel_backup,
             commands::choose_destination,
             commands::save_backup_rule,
             commands::archive_backup_rule,

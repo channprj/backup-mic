@@ -10,6 +10,7 @@ import {
   ShieldCheckIcon,
   Trash2Icon,
   UsbIcon,
+  XIcon,
 } from "lucide-react";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -78,6 +79,7 @@ function isEditableTarget(target: EventTarget | null) {
 
 export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const [pending, setPending] = useState<string | null>(null);
+  const [cancelRequested, setCancelRequested] = useState(false);
   const [proposal, setProposal] = useState<TrashProposalSummary | null>(null);
   const [actionError, setActionError] = useState<ActionError | null>(null);
   const pendingRef = useRef<string | null>(null);
@@ -85,6 +87,10 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const active = activePhases.has(snapshot.phase) || snapshot.current_stage !== null;
   const failed = snapshot.phase === "error" || snapshot.phase === "partial_failure";
   const mountedCount = snapshot.sources.filter(({ mounted }) => mounted).length;
+
+  useEffect(() => {
+    if (!active) setCancelRequested(false);
+  }, [active]);
 
   useEffect(() => {
     if (!proposal || pending === "confirm-trash") return;
@@ -128,6 +134,16 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
       // The inline error already describes the retry path.
     }
   }, [actions.backupNow, run]);
+
+  const cancelCurrentBackup = useCallback(async () => {
+    if (cancelRequested || pendingRef.current) return;
+    setCancelRequested(true);
+    try {
+      await run("cancel", actions.cancelBackup);
+    } catch {
+      setCancelRequested(false);
+    }
+  }, [actions.cancelBackup, cancelRequested, run]);
 
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -289,20 +305,37 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
         <div className="utility-actions">
           {setupComplete ? (
             <>
-              <Button
-                variant="ghost"
-                size="sm"
-                aria-label="지금 백업"
-                disabled={active || pending !== null}
-                onClick={() => void refreshAndBackup()}
-              >
-                {pending === "backup" ? (
-                  <Spinner data-icon="inline-start" />
-                ) : (
-                  <RefreshCwIcon data-icon="inline-start" />
-                )}
-                지금 백업
-              </Button>
+              {active ? (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  aria-label="백업 취소"
+                  disabled={cancelRequested || pending !== null}
+                  onClick={() => void cancelCurrentBackup()}
+                >
+                  {cancelRequested ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <XIcon data-icon="inline-start" />
+                  )}
+                  {cancelRequested ? "취소 중…" : "백업 취소"}
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label="지금 백업"
+                  disabled={pending !== null}
+                  onClick={() => void refreshAndBackup()}
+                >
+                  {pending === "backup" ? (
+                    <Spinner data-icon="inline-start" />
+                  ) : (
+                    <RefreshCwIcon data-icon="inline-start" />
+                  )}
+                  지금 백업
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="sm"

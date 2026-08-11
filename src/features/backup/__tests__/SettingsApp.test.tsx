@@ -9,6 +9,7 @@ const complete = appSnapshotSchema.parse(completeFixture);
 function renderSettings() {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
+    cancelBackup: vi.fn().mockResolvedValue(undefined),
     chooseDestination: vi.fn().mockResolvedValue(complete),
     completeInitialSetup: vi.fn().mockResolvedValue(complete),
     saveBackupRule: vi.fn().mockResolvedValue(complete),

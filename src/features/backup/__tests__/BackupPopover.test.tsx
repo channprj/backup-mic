@@ -48,6 +48,7 @@ function commandR(target: Window | HTMLElement = window) {
 function renderPopover(snapshot = complete) {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
+    cancelBackup: vi.fn().mockResolvedValue(undefined),
     chooseDestination: vi.fn().mockResolvedValue(snapshot),
     completeInitialSetup: vi.fn().mockResolvedValue(snapshot),
     saveBackupRule: vi.fn().mockResolvedValue(snapshot),
@@ -146,6 +147,38 @@ describe("BackupPopover", () => {
 
     expect(event.defaultPrevented).toBe(true);
     expect(actions.backupNow).not.toHaveBeenCalled();
+  });
+
+  it("cancels an active scan once and stays pending until the snapshot settles", async () => {
+    let finish!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const scanning = {
+      ...copying,
+      phase: "scanning" as const,
+      current_stage: null,
+    };
+    const { actions, rerender } = renderPopover(scanning);
+    actions.cancelBackup.mockReturnValue(deferred);
+
+    const cancel = screen.getByRole("button", { name: "백업 취소" });
+    expect(screen.queryByRole("button", { name: "지금 백업" })).not.toBeInTheDocument();
+    fireEvent.click(cancel);
+    fireEvent.click(cancel);
+
+    expect(actions.cancelBackup).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "백업 취소" })).toHaveTextContent("취소 중…");
+    expect(screen.getByRole("button", { name: "백업 취소" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "녹음기 다시 확인 및 백업" })).toBeDisabled();
+
+    finish();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "백업 취소" })).toHaveTextContent("취소 중…"),
+    );
+    rerender(<BackupPopover snapshot={manualIdle} actions={actions} />);
+    expect(screen.queryByRole("button", { name: "백업 취소" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "지금 백업" })).toBeEnabled();
   });
 
   it("leaves Command-R untouched while editing text", () => {

@@ -7,6 +7,7 @@ use std::{
 use time::{OffsetDateTime, UtcOffset};
 
 use crate::{
+    backup::CancellationToken,
     clock::Clock,
     error::CoreError,
     filesystem::{
@@ -75,6 +76,7 @@ struct InternalScan {
 struct Walker<'a> {
     root: &'a Path,
     rule: &'a CompiledBackupRule,
+    cancellation: &'a CancellationToken,
     local_offset: UtcOffset,
     visited: usize,
     max_depth: usize,
@@ -90,12 +92,14 @@ pub fn scan_rule_once(
     rule: &CompiledBackupRule,
     local_offset: UtcOffset,
 ) -> Result<RuleScanResult, CoreError> {
+    let cancellation = CancellationToken::default();
     let scan = scan_internal(
         root,
         rule,
         local_offset,
         MAX_SCAN_DEPTH,
         MAX_VISITED_ENTRIES,
+        &cancellation,
     )?;
     Ok(public_result(scan))
 }
@@ -105,21 +109,27 @@ pub fn scan_rule_stable(
     rule: &CompiledBackupRule,
     local_offset: UtcOffset,
     clock: &dyn Clock,
+    cancellation: &CancellationToken,
 ) -> Result<RuleScanResult, CoreError> {
+    cancellation.check()?;
     let first = scan_internal(
         root,
         rule,
         local_offset,
         MAX_SCAN_DEPTH,
         MAX_VISITED_ENTRIES,
+        cancellation,
     )?;
+    cancellation.check()?;
     clock.sleep(STABILITY_INTERVAL);
+    cancellation.check()?;
     let mut second = scan_internal(
         root,
         rule,
         local_offset,
         MAX_SCAN_DEPTH,
         MAX_VISITED_ENTRIES,
+        cancellation,
     )?;
     let first_by_path = first
         .files
@@ -143,6 +153,7 @@ pub fn scan_rule_stable(
                 observation.identity,
             ))
     });
+    cancellation.check()?;
     Ok(public_result(second))
 }
 
@@ -152,7 +163,9 @@ fn scan_internal(
     local_offset: UtcOffset,
     max_depth: usize,
     max_entries: usize,
+    cancellation: &CancellationToken,
 ) -> Result<InternalScan, CoreError> {
+    cancellation.check()?;
     let root_metadata = fs::symlink_metadata(root).map_err(CoreError::CopyFailed)?;
     if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
         return Err(CoreError::InvalidRequest);
@@ -161,6 +174,7 @@ fn scan_internal(
     let mut walker = Walker {
         root: &canonical_root,
         rule,
+        cancellation,
         local_offset,
         visited: 0,
         max_depth,
@@ -191,7 +205,9 @@ impl Walker<'_> {
         directory: &Path,
         active_session: Option<&Path>,
     ) -> Result<(), CoreError> {
+        self.cancellation.check()?;
         for entry in fs::read_dir(directory).map_err(CoreError::CopyFailed)? {
+            self.cancellation.check()?;
             let entry = entry.map_err(CoreError::CopyFailed)?;
             self.visited = self
                 .visited
@@ -398,7 +414,15 @@ mod tests {
         for name in ["one.wav", "two.wav", "three.wav"] {
             fs::write(source.path().join(name), name).unwrap();
         }
-        let error = scan_internal(source.path(), &rule(), UtcOffset::UTC, 32, 2).unwrap_err();
+        let error = scan_internal(
+            source.path(),
+            &rule(),
+            UtcOffset::UTC,
+            32,
+            2,
+            &CancellationToken::default(),
+        )
+        .unwrap_err();
         assert!(matches!(error, CoreError::RuleScanLimit));
     }
 }

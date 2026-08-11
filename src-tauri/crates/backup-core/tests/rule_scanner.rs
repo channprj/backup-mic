@@ -5,6 +5,7 @@ use std::{
 };
 
 use backup_core::{
+    backup::CancellationToken,
     clock::Clock,
     error::CoreError,
     rule::{BackupRule, DeviceConstraintProfile, FilenameProfile, RuleId, compile_rule},
@@ -133,6 +134,17 @@ struct MutatingClock {
     path: PathBuf,
 }
 
+struct CancellingClock {
+    cancellation: CancellationToken,
+}
+
+impl Clock for CancellingClock {
+    fn sleep(&self, duration: Duration) {
+        assert_eq!(duration, Duration::from_secs(2));
+        self.cancellation.cancel();
+    }
+}
+
 impl Clock for MutatingClock {
     fn sleep(&self, duration: Duration) {
         assert_eq!(duration, Duration::from_secs(2));
@@ -149,6 +161,7 @@ fn stable_scan_excludes_a_file_changed_between_observations() {
         &compile_rule(zoom_rule()).unwrap(),
         UtcOffset::UTC,
         &MutatingClock { path: wav },
+        &CancellationToken::default(),
     )
     .unwrap();
 
@@ -158,6 +171,47 @@ fn stable_scan_excludes_a_file_changed_between_observations() {
         Path::new("RECORD/FOLDER01/notes.txt")
     );
     assert_eq!(result.unsafe_session_count, 1);
+}
+
+#[test]
+fn stable_scan_stops_before_the_first_pass_when_cancelled() {
+    let source = tempdir().unwrap();
+    create_zoom_fixture(source.path());
+    let cancellation = CancellationToken::default();
+    cancellation.cancel();
+
+    let error = scan_rule_stable(
+        source.path(),
+        &compile_rule(zoom_rule()).unwrap(),
+        UtcOffset::UTC,
+        &MutatingClock {
+            path: source.path().join("unused"),
+        },
+        &cancellation,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, CoreError::Cancelled));
+}
+
+#[test]
+fn stable_scan_stops_after_cancellation_during_the_stability_wait() {
+    let source = tempdir().unwrap();
+    create_zoom_fixture(source.path());
+    let cancellation = CancellationToken::default();
+
+    let error = scan_rule_stable(
+        source.path(),
+        &compile_rule(zoom_rule()).unwrap(),
+        UtcOffset::UTC,
+        &CancellingClock {
+            cancellation: cancellation.clone(),
+        },
+        &cancellation,
+    )
+    .unwrap_err();
+
+    assert!(matches!(error, CoreError::Cancelled));
 }
 
 #[test]

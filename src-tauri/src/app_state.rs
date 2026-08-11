@@ -674,8 +674,39 @@ impl AppState {
             .insert(matched.authority.source.id.clone(), matched);
     }
 
-    pub fn cancel_active_operation(&self) {
+    pub fn cancel_active_operation(&self) -> bool {
+        let active = self.operation_is_active();
         self.cancellation.lock().cancel();
+        active
+    }
+
+    pub fn settle_cancelled_operation(&self, app: &AppHandle) -> bool {
+        let settled = {
+            let mut runtime = self.runtime.lock();
+            if !settle_cancelled_snapshot(&mut runtime.snapshot) {
+                return false;
+            }
+            clear_retirement_authority(&mut runtime);
+            publish_locked(app, &mut runtime);
+            true
+        };
+        if settled {
+            let activity = ActivityEntry {
+                occurred_at: time::OffsetDateTime::now_utc()
+                    .format(&time::format_description::well_known::Rfc3339)
+                    .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned()),
+                code: "backup_cancelled".to_owned(),
+                source_id: None,
+                source_label: None,
+                count_value: None,
+                byte_value: None,
+                severity: ActivitySeverity::Info,
+            };
+            if let Err(error) = self.record_activity(app, activity) {
+                self.report_failure("cancel_backup", "activity_persistence", &error, None, None);
+            }
+        }
+        settled
     }
 
     pub fn elapsed(&self) -> std::time::Duration {
@@ -1343,6 +1374,42 @@ fn mounted_source_phase(should_schedule: bool) -> BackupPhase {
     }
 }
 
+fn settle_cancelled_snapshot(snapshot: &mut AppSnapshotDto) -> bool {
+    let active = matches!(
+        snapshot.phase,
+        BackupPhase::Detecting
+            | BackupPhase::Scanning
+            | BackupPhase::CheckingCapacity
+            | BackupPhase::Copying
+            | BackupPhase::Verifying
+    ) || snapshot.current_stage.is_some();
+    if !active {
+        return false;
+    }
+
+    snapshot.phase = BackupPhase::Idle;
+    snapshot.message_code = "operation_cancelled".to_owned();
+    snapshot.overall_progress = ProgressDto::from(&Progress::default());
+    snapshot.current_stage = None;
+    snapshot.failure_stage = None;
+    snapshot.setting_applies_next_run = false;
+    snapshot.current_item_ordinal = None;
+    snapshot.error = None;
+    for source in &mut snapshot.sources {
+        source.phase = BackupPhase::Idle;
+        source.progress = ProgressDto::from(&Progress::default());
+        source.retirement_outcome = DeletionPhase::Inactive;
+        source.deletion_ready = false;
+    }
+    for transmitter in &mut snapshot.transmitters {
+        transmitter.phase = BackupPhase::Idle;
+        transmitter.progress = ProgressDto::from(&Progress::default());
+        transmitter.deletion_phase = DeletionPhase::Inactive;
+        transmitter.deletion_ready = false;
+    }
+    true
+}
+
 fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
     TransmitterSnapshotDto {
         transmitter,
@@ -1560,6 +1627,64 @@ mod tests {
     fn matched_mount_phase_tracks_whether_backup_is_really_scheduled() {
         assert_eq!(mounted_source_phase(false), BackupPhase::Idle);
         assert_eq!(mounted_source_phase(true), BackupPhase::Detecting);
+    }
+
+    #[test]
+    fn cancelled_snapshot_returns_every_source_to_safe_idle_state() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+        let mut snapshot = state.snapshot();
+        snapshot.phase = BackupPhase::Scanning;
+        snapshot.message_code = "scanning".to_owned();
+        snapshot.current_stage = Some(backup_core::state::CurrentStage::Copy);
+        snapshot.failure_stage = Some(backup_core::state::CurrentStage::Copy);
+        snapshot.setting_applies_next_run = true;
+        snapshot.current_item_ordinal = Some(3);
+        snapshot.error = Some(CoreError::InvalidRequest.public(None));
+        snapshot.sources.push(SourceSnapshotDto {
+            source_id: SourceId::new().as_str().to_owned(),
+            rule_name: "Zoom".to_owned(),
+            volume_name: "ZOOM".to_owned(),
+            legacy_slot: None,
+            mounted: true,
+            phase: BackupPhase::Copying,
+            progress: ProgressDto {
+                percent: 42,
+                copied_bytes: 42,
+                bytes_requiring_copy: 100,
+                verified_files: 1,
+                total_files: 2,
+            },
+            retirement_outcome: DeletionPhase::Preparing,
+            deletion_ready: true,
+        });
+
+        assert!(settle_cancelled_snapshot(&mut snapshot));
+        assert_eq!(snapshot.phase, BackupPhase::Idle);
+        assert_eq!(snapshot.message_code, "operation_cancelled");
+        assert_eq!(
+            snapshot.overall_progress,
+            ProgressDto::from(&Progress::default())
+        );
+        assert_eq!(snapshot.current_stage, None);
+        assert_eq!(snapshot.failure_stage, None);
+        assert!(!snapshot.setting_applies_next_run);
+        assert_eq!(snapshot.current_item_ordinal, None);
+        assert_eq!(snapshot.error, None);
+        assert!(snapshot.sources.iter().all(|source| {
+            source.phase == BackupPhase::Idle
+                && source.progress == ProgressDto::from(&Progress::default())
+                && !source.deletion_ready
+                && source.retirement_outcome == DeletionPhase::Inactive
+        }));
+        assert!(snapshot.transmitters.iter().all(|transmitter| {
+            transmitter.phase == BackupPhase::Idle
+                && !transmitter.deletion_ready
+                && transmitter.deletion_phase == DeletionPhase::Inactive
+        }));
+        assert!(!settle_cancelled_snapshot(&mut snapshot));
     }
 
     #[test]
