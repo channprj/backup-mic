@@ -579,6 +579,7 @@ button:not(:disabled):active {
   min-height: 0;
   flex: 1 1 auto;
   align-items: center;
+  overflow-y: auto;
 }
 
 .setup-section > * {
@@ -590,6 +591,107 @@ button:not(:disabled):active {
   margin: 0;
   color: var(--muted-foreground);
   font-size: 11px;
+}
+
+.setup-section h2,
+.setup-destination strong,
+.setup-destination span,
+.setup-rule-summary strong,
+.setup-rule-summary span {
+  margin: 0;
+}
+
+.setup-section h2 {
+  font: inherit;
+}
+
+.setup-review-content,
+.setup-setting-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.setup-review-content {
+  gap: 9px;
+}
+
+.setup-destination,
+.setup-setting-row,
+.setup-rule-summary {
+  display: flex;
+  align-items: center;
+}
+
+.setup-destination,
+.setup-setting-row {
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.setup-destination {
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--muted);
+}
+
+.setup-destination > div,
+.setup-rule-summary > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.setup-destination strong,
+.setup-rule-summary strong,
+.setup-setting-row > span {
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.setup-destination span,
+.setup-rule-summary span {
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.setup-setting-list {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+}
+
+.setup-setting-row {
+  min-height: 37px;
+  padding: 6px 10px;
+  background: var(--card);
+}
+
+.setup-setting-row + .setup-setting-row {
+  border-top: 1px solid var(--border);
+}
+
+.setup-rule-summary {
+  gap: 9px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, var(--border));
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--primary) 7%, var(--card));
+}
+
+.setup-rule-summary > svg {
+  width: 17px;
+  height: 17px;
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+.setup-error {
+  margin-top: 9px;
 }
 
 .waiting-device {
@@ -851,6 +953,11 @@ button:not(:disabled):active {
   min-height: 36px;
 }
 
+.settings-destination-path {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 .settings-status-note {
   padding: 10px 14px;
   color: var(--warning);
@@ -859,6 +966,10 @@ button:not(:disabled):active {
 
 .settings-status-note.is-info {
   color: var(--primary);
+}
+
+.settings-status-note.is-success {
+  color: var(--verified);
 }
 
 .settings-shortcuts {

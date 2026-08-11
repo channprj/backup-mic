@@ -67,6 +67,7 @@
   "artifact_format": "m4a",
   "retirement_mode": "manual",
   "current_log_available": true,
+  "destination_display": "~/Documents/Backup Mic",
   "settings": { "automatic_backup": true, "m4a_conversion": true, "automatic_trash": false, "autostart": true },
   "notification_status": "granted",
   "setup_state": "ready",

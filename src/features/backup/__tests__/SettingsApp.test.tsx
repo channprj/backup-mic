@@ -10,6 +10,7 @@ function renderSettings() {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
     chooseDestination: vi.fn().mockResolvedValue(complete),
+    completeInitialSetup: vi.fn().mockResolvedValue(complete),
     saveBackupRule: vi.fn().mockResolvedValue(complete),
     archiveBackupRule: vi.fn().mockResolvedValue(complete),
     restoreDjiRule: vi.fn().mockResolvedValue(complete),
@@ -38,6 +39,36 @@ function renderSettings() {
 }
 
 describe("SettingsView", () => {
+  it("shows the current backup folder and confirms only a persisted change", async () => {
+    const { actions } = renderSettings();
+    expect(screen.getByText("~/Documents/Backup Mic")).toBeInTheDocument();
+    expect(screen.queryByText("선택한 백업 폴더")).not.toBeInTheDocument();
+
+    actions.chooseDestination.mockResolvedValueOnce({
+      ...complete,
+      revision: complete.revision + 1,
+      destination_display: "/Volumes/Archive/Backup Mic",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "변경…" }));
+
+    expect(await screen.findByText("/Volumes/Archive/Backup Mic")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("백업 폴더가 변경되었습니다");
+  });
+
+  it("keeps the current path and never reports success after cancellation or failure", async () => {
+    const { actions } = renderSettings();
+    fireEvent.click(screen.getByRole("button", { name: "변경…" }));
+    await waitFor(() => expect(actions.chooseDestination).toHaveBeenCalledOnce());
+    expect(screen.getByText("~/Documents/Backup Mic")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+
+    actions.chooseDestination.mockRejectedValueOnce({ message_code: "destination_invalid" });
+    fireEvent.click(screen.getByRole("button", { name: "변경…" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("백업 폴더");
+    expect(screen.getByText("~/Documents/Backup Mic")).toBeInTheDocument();
+    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+  });
+
   it("requires a confirmation alert before enabling automatic Trash", async () => {
     const { actions } = renderSettings();
     fireEvent.click(screen.getByRole("switch", { name: "백업 후 휴지통으로 이동" }));

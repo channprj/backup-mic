@@ -32,6 +32,7 @@ const baseSnapshot = {
   artifact_format: "m4a",
   retirement_mode: "manual",
   current_log_available: false,
+  destination_display: null,
   settings: {
     automatic_backup: true,
     m4a_conversion: true,
@@ -73,10 +74,27 @@ describe("app snapshot contract", () => {
     expect(parsed.artifact_format).toBe("m4a");
     expect(parsed.retirement_mode).toBe("manual");
     expect(parsed.current_log_available).toBe(false);
+    expect(parsed.destination_display).toBeNull();
     expect(parsed.failure_stage).toBeNull();
     expect(parsed.setting_applies_next_run).toBe(false);
     expect(parsed.settings.automatic_trash).toBe(false);
     expect(parsed.backup_rules[0].is_dji_preset).toBe(true);
+  });
+
+  test("accepts the pending settings-review state and bounds the display-only destination", () => {
+    expect(
+      appSnapshotSchema.safeParse({
+        ...baseSnapshot,
+        setup_state: "needs_settings_review",
+        destination_display: "/Volumes/Archive/Backup Mic",
+      }).success,
+    ).toBe(true);
+    expect(
+      appSnapshotSchema.safeParse({
+        ...baseSnapshot,
+        destination_display: "x".repeat(2_049),
+      }).success,
+    ).toBe(false);
   });
 
   test("rejects more activity entries than the popover contract allows", () => {

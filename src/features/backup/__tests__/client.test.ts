@@ -6,6 +6,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke }));
 
 import {
   archiveBackupRule,
+  completeInitialSetup,
   confirmTrash,
   getAppSnapshot,
   prepareTrash,
@@ -99,6 +100,12 @@ describe("typed Tauri client", () => {
     invoke.mockResolvedValue(undefined);
     await showSettings();
     expect(invoke).toHaveBeenCalledWith("show_settings");
+  });
+
+  it("completes the reviewed setup through its narrow command", async () => {
+    invoke.mockResolvedValue(completeFixture);
+    await completeInitialSetup();
+    expect(invoke).toHaveBeenCalledWith("complete_initial_setup", undefined);
   });
 
   it("passes the explicit automatic Trash acknowledgement", async () => {

@@ -88,6 +88,7 @@ export function SettingsView({
   const [viewSnapshot, setViewSnapshot] = useState(snapshot);
   const [pending, setPending] = useState<Set<SettingKey>>(new Set());
   const [destinationPending, setDestinationPending] = useState(false);
+  const [destinationStatus, setDestinationStatus] = useState<string | null>(null);
   const [actionError, setActionError] = useState<ActionError | null>(null);
   const [confirmAutomaticTrash, setConfirmAutomaticTrash] = useState(false);
   const [editorRule, setEditorRule] = useState<BackupRule | null>(null);
@@ -150,12 +151,29 @@ export function SettingsView({
 
   async function chooseDestination() {
     if (destinationPending) return;
+    const previousDisplay = viewSnapshot.destination_display;
     setDestinationPending(true);
+    setDestinationStatus(null);
     setActionError(null);
     try {
-      setViewSnapshot(await actions.chooseDestination());
+      const persisted = await actions.chooseDestination();
+      setViewSnapshot((current) => ({
+        ...persisted,
+        artifact_format: current.artifact_format,
+        retirement_mode: current.retirement_mode,
+        settings: current.settings,
+      }));
+      if (
+        persisted.destination_display &&
+        persisted.destination_display !== previousDisplay
+      ) {
+        setDestinationStatus("백업 폴더가 변경되었습니다");
+      }
     } catch (error) {
-      setActionError(commandError(error));
+      setActionError({
+        ...commandError(error),
+        title: "백업 폴더를 변경하지 못했습니다",
+      });
     } finally {
       setDestinationPending(false);
     }
@@ -303,7 +321,12 @@ export function SettingsView({
           <div className="settings-row settings-destination-row">
             <div>
               <strong>백업 폴더</strong>
-              <span>선택한 백업 폴더</span>
+              <span
+                className="settings-destination-path"
+                title={viewSnapshot.destination_display ?? undefined}
+              >
+                {viewSnapshot.destination_display ?? "설정되지 않음"}
+              </span>
             </div>
             <Button
               variant="outline"
@@ -314,6 +337,11 @@ export function SettingsView({
               변경…
             </Button>
           </div>
+          {destinationStatus ? (
+            <p className="settings-status-note is-success" role="status" aria-live="polite">
+              {destinationStatus}
+            </p>
+          ) : null}
           <SettingRow
             id="automatic-backup"
             label="자동으로 백업"

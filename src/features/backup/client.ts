@@ -31,6 +31,10 @@ export function chooseDestination(): Promise<AppSnapshot> {
   return invokeSnapshot("choose_destination");
 }
 
+export function completeInitialSetup(): Promise<AppSnapshot> {
+  return invokeSnapshot("complete_initial_setup");
+}
+
 export function saveBackupRule(draft: BackupRuleDraft): Promise<AppSnapshot> {
   return invokeSnapshot("save_backup_rule", { draft: backupRuleDraftSchema.parse(draft) });
 }
@@ -108,6 +112,7 @@ export function listenForSnapshots(
 export const backupClient = {
   backupNow,
   chooseDestination,
+  completeInitialSetup,
   saveBackupRule,
   archiveBackupRule,
   restoreDjiRule,

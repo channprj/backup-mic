@@ -49,7 +49,28 @@ function Preview() {
       };
       return {
       backupNow: async () => setSnapshot(copying),
-      chooseDestination: async () => snapshot,
+      chooseDestination: async () => {
+        const next: AppSnapshot = {
+          ...snapshot,
+          revision: snapshot.revision + 1,
+          destination_display: "~/Documents/Backup Mic",
+          setup_state:
+            snapshot.setup_state === "needs_destination"
+              ? "needs_settings_review"
+              : snapshot.setup_state,
+        };
+        setSnapshot(next);
+        return next;
+      },
+      completeInitialSetup: async () => {
+        const next: AppSnapshot = {
+          ...snapshot,
+          revision: snapshot.revision + 1,
+          setup_state: "ready",
+        };
+        setSnapshot(next);
+        return next;
+      },
       saveBackupRule: async () => snapshot,
       archiveBackupRule: async () => snapshot,
       restoreDjiRule: async () => snapshot,

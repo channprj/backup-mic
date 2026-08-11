@@ -142,9 +142,10 @@ export const appSnapshotSchema = z
     artifact_format: z.enum(["wav", "m4a"]),
     retirement_mode: z.enum(["manual", "automatic"]),
     current_log_available: z.boolean(),
+    destination_display: z.string().min(1).max(2048).nullable(),
     settings: backupSettingsSchema,
     notification_status: z.enum(["unknown", "granted", "denied"]),
-    setup_state: z.enum(["needs_destination", "ready"]),
+    setup_state: z.enum(["needs_destination", "needs_settings_review", "ready"]),
     recent_activity: z.array(activitySchema).max(8),
     error: publicErrorSchema.nullable(),
   })

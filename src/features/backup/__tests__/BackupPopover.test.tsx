@@ -14,6 +14,7 @@ function renderPopover(snapshot = complete) {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
     chooseDestination: vi.fn().mockResolvedValue(snapshot),
+    completeInitialSetup: vi.fn().mockResolvedValue(snapshot),
     saveBackupRule: vi.fn().mockResolvedValue(snapshot),
     archiveBackupRule: vi.fn().mockResolvedValue(snapshot),
     restoreDjiRule: vi.fn().mockResolvedValue(snapshot),
@@ -47,6 +48,18 @@ function renderPopover(snapshot = complete) {
 }
 
 describe("BackupPopover", () => {
+  it("blocks every backup surface except Quit until setup review is complete", () => {
+    renderPopover({ ...complete, setup_state: "needs_destination" });
+
+    expect(screen.getByRole("heading", { name: "백업 폴더를 확인해 주세요" })).toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: /녹음기 연결됨/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Settings…" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "지금 백업" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "백업 폴더" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "로그 열기" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "앱 종료" })).toBeEnabled();
+  });
+
   it("renders zero, one, and three recorder sources without a fixed denominator", () => {
     const zero = renderPopover({
       ...complete,

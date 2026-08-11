@@ -74,6 +74,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const [proposal, setProposal] = useState<TrashProposalSummary | null>(null);
   const [actionError, setActionError] = useState<ActionError | null>(null);
   const pendingRef = useRef<string | null>(null);
+  const setupComplete = snapshot.setup_state === "ready";
   const active = activePhases.has(snapshot.phase) || snapshot.current_stage !== null;
   const failed = snapshot.phase === "error" || snapshot.phase === "partial_failure";
   const mountedCount = snapshot.sources.filter(({ mounted }) => mounted).length;
@@ -145,25 +146,27 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
             <p>로컬 · SHA-256 검증</p>
           </div>
         </div>
-        <div className="header-actions">
-          <div
-            className="connection-summary"
-            role="status"
-            aria-label={`${mountedCount}개 녹음기 연결됨`}
-          >
-            <span className={mountedCount > 0 ? "status-dot is-connected" : "status-dot"} />
-            {mountedCount}개
+        {setupComplete ? (
+          <div className="header-actions">
+            <div
+              className="connection-summary"
+              role="status"
+              aria-label={`${mountedCount}개 녹음기 연결됨`}
+            >
+              <span className={mountedCount > 0 ? "status-dot is-connected" : "status-dot"} />
+              {mountedCount}개
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={pending !== null}
+              onClick={() => void run("settings", actions.showSettings).catch(() => undefined)}
+            >
+              <SettingsIcon data-icon="inline-start" />
+              Settings…
+            </Button>
           </div>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={pending !== null}
-            onClick={() => void run("settings", actions.showSettings).catch(() => undefined)}
-          >
-            <SettingsIcon data-icon="inline-start" />
-            Settings…
-          </Button>
-        </div>
+        ) : null}
       </header>
 
       <Separator />
@@ -172,14 +175,8 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
         <section className="setup-section" aria-label="초기 설정">
           <SetupFlow
             snapshot={snapshot}
+            actions={actions}
             busy={pending !== null}
-            onChooseDestination={async () => {
-              try {
-                await run("destination", actions.chooseDestination);
-              } catch {
-                // The inline error already describes the retry path.
-              }
-            }}
           />
         </section>
       ) : (
@@ -245,38 +242,42 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
 
       <footer className="app-footer">
         <div className="utility-actions">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={active || pending !== null}
-            onClick={() => void run("backup", actions.backupNow).catch(() => undefined)}
-          >
-            {pending === "backup" ? (
-              <Spinner data-icon="inline-start" />
-            ) : (
-              <RefreshCwIcon data-icon="inline-start" />
-            )}
-            지금 백업
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={pending !== null}
-            onClick={() => void run("open", actions.openDestination).catch(() => undefined)}
-          >
-            <FolderOpenIcon data-icon="inline-start" />
-            백업 폴더
-          </Button>
-          <Button
-            variant="ghost"
-            size="sm"
-            aria-label="로그 열기"
-            disabled={!snapshot.current_log_available || pending !== null}
-            onClick={() => void run("logs", actions.openLogs).catch(() => undefined)}
-          >
-            <FileTextIcon data-icon="inline-start" />
-            로그
-          </Button>
+          {setupComplete ? (
+            <>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={active || pending !== null}
+                onClick={() => void run("backup", actions.backupNow).catch(() => undefined)}
+              >
+                {pending === "backup" ? (
+                  <Spinner data-icon="inline-start" />
+                ) : (
+                  <RefreshCwIcon data-icon="inline-start" />
+                )}
+                지금 백업
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={pending !== null}
+                onClick={() => void run("open", actions.openDestination).catch(() => undefined)}
+              >
+                <FolderOpenIcon data-icon="inline-start" />
+                백업 폴더
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                aria-label="로그 열기"
+                disabled={!snapshot.current_log_available || pending !== null}
+                onClick={() => void run("logs", actions.openLogs).catch(() => undefined)}
+              >
+                <FileTextIcon data-icon="inline-start" />
+                로그
+              </Button>
+            </>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"
