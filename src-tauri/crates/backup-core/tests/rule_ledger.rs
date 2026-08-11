@@ -252,3 +252,29 @@ fn evidence_locked_archive_directory_cannot_be_changed() {
         Err(CoreError::InvalidRule)
     ));
 }
+
+#[test]
+fn evidence_locked_rule_can_be_renamed_without_changing_its_archive_directory() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let mut ledger = Ledger::open(&path).unwrap();
+    let saved = ledger
+        .save_backup_rule(zoom_draft("Locked"), "2026-08-10T01:00:00Z")
+        .unwrap();
+    ledger
+        .lock_rule_archive_directory(&saved.id, &saved.archive_directory_name)
+        .unwrap();
+
+    let locked = ledger.backup_rule(&saved.id).unwrap().unwrap();
+    let mut edit = editable_draft(&locked);
+    edit.name = "Renamed".to_owned();
+    edit.filename_prefix = "renamed-".to_owned();
+    let updated = ledger
+        .save_backup_rule(edit, "2026-08-10T01:01:00Z")
+        .unwrap();
+
+    assert_eq!(updated.name, "Renamed");
+    assert_eq!(updated.archive_directory_name, "Locked");
+    assert_eq!(updated.filename_prefix, "renamed-");
+    assert!(updated.archive_directory_locked);
+}

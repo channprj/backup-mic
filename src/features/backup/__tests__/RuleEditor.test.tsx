@@ -1,6 +1,23 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RuleEditor } from "../RuleEditor";
+import type { BackupRule } from "../contracts";
+
+const lockedDjiRule: BackupRule = {
+  id: "6d784c99-8b0e-4a32-a0a2-d7730f68cf28",
+  name: "DJI Mic Mini 2S",
+  archive_directory_name: "DJI Mic Mini 2S",
+  enabled: true,
+  volume_name_glob: "*",
+  required_path_globs: [],
+  backup_file_globs: ["*.WAV", "TX_MIC*/*.WAV"],
+  session_directory_globs: ["TX_MIC*"],
+  filename_prefix: "",
+  filename_suffix: "",
+  archive_directory_locked: true,
+  is_dji_preset: true,
+  archived: false,
+};
 
 function renderEditor() {
   const onSave = vi.fn().mockResolvedValue(undefined);
@@ -45,6 +62,31 @@ function fillValidRule() {
 }
 
 describe("RuleEditor", () => {
+  it("keeps an evidence-locked archive directory when renaming a rule", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <RuleEditor
+        rule={lockedDjiRule}
+        connectedVolumeNames={[]}
+        busy={false}
+        onCancel={vi.fn()}
+        onSave={onSave}
+        onTest={vi.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("규칙 이름"), {
+      target: { value: "내 DJI 마이크" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "규칙 저장" }));
+
+    await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
+    expect(onSave.mock.calls[0][0]).toMatchObject({
+      name: "내 DJI 마이크",
+      archive_directory_name: "DJI Mic Mini 2S",
+    });
+  });
+
   it("previews and saves ordered repeatable patterns", async () => {
     const { onSave, onTest } = renderEditor();
     fillValidRule();

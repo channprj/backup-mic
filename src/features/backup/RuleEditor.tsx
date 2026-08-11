@@ -173,8 +173,9 @@ export function RuleEditor({
     setDraft((current) => {
       if (key === "name") {
         const syncArchive =
-          current.archive_directory_name.length === 0 ||
-          current.archive_directory_name === current.name;
+          !rule?.archive_directory_locked &&
+          (current.archive_directory_name.length === 0 ||
+            current.archive_directory_name === current.name);
         return {
           ...current,
           name: value,
