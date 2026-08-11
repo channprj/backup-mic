@@ -1,6 +1,6 @@
 [package]
 name = "backup-mic"
-version = "0.260811.0"
+version = "0.260811.1"
 description = "Safe local backups for removable audio recorders"
 authors = ["channprj"]
 edition = "2024"
