@@ -23,6 +23,15 @@ if [[ ! "$expected_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]];
 fi
 
 cd "$PROJECT_ROOT"
+if [[ -d "$BUNDLE_ROOT" ]]; then
+  if [[ -L "$PROJECT_ROOT/src-tauri/target" || -L "$BUNDLE_ROOT" \
+    || "$(cd "$BUNDLE_ROOT" && pwd -P)" != "$BUNDLE_ROOT" \
+    || -L "$BUNDLE_ROOT/macos" || -L "$BUNDLE_ROOT/dmg" ]]; then
+    echo "Refusing to clean an unexpected or linked bundle directory." >&2
+    exit 1
+  fi
+  rm -rf -- "$BUNDLE_ROOT/macos" "$BUNDLE_ROOT/dmg"
+fi
 pnpm tauri build --bundles app,dmg --ci
 
 apps=("$BUNDLE_ROOT"/macos/*.app)
@@ -44,12 +53,21 @@ if [[ "$app" != "$BUNDLE_ROOT/macos/Backup Mic.app" ]]; then
   echo "Unexpected app bundle name: $(basename "$app")" >&2
   exit 1
 fi
-if [[ "$(basename "$dmg")" != "Backup Mic_"* ]]; then
+if [[ "$(basename "$dmg")" != "Backup Mic_${expected_version}_aarch64.dmg" ]]; then
   echo "Unexpected DMG name: $(basename "$dmg")" >&2
+  exit 1
+fi
+if [[ ! -f "$executable" || -L "$executable" || ! -x "$executable" ]]; then
+  echo "Expected release executable is unavailable or unsafe." >&2
   exit 1
 fi
 
 codesign --verify --deep --strict --verbose=2 "$app"
+codesign_details="$(codesign -d --verbose=4 "$app" 2>&1)"
+if [[ "$codesign_details" != *"Signature=adhoc"* ]]; then
+  echo "Local release app does not have the expected ad-hoc signature." >&2
+  exit 1
+fi
 identifier="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
 bundle_version="$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")"
 minimum_system="$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist")"
@@ -81,5 +99,6 @@ echo "Identifier: $identifier"
 echo "Version: $bundle_version"
 echo "Minimum macOS: $minimum_system"
 echo "Architectures: $architectures"
+echo "Signature: ad-hoc (deep strict verified)"
 echo "Executable SHA-256: $executable_hash"
 echo "DMG SHA-256: $dmg_hash"

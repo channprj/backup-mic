@@ -63,7 +63,7 @@ headatever init 0 --push
 open -a "/Users/channprj/Applications/Backup Mic.app"
 ```
 
-`VERSION`은 직접 만들거나 수정하지 않고 Headatever가 생성합니다. Headatever 릴리스 커밋과 annotated tag를 먼저 일반 push한 뒤에만 패키징합니다. 패키징 스크립트는 앱과 DMG의 번들 식별자, `CFBundleShortVersionString`, 최소 macOS 버전, arm64 아키텍처, deep strict 코드 서명, DMG와 SHA-256을 검사합니다.
+`VERSION`은 직접 만들거나 수정하지 않고 Headatever가 생성합니다. Headatever 릴리스 커밋과 annotated tag를 먼저 일반 push한 뒤에만 패키징합니다. 패키징 스크립트는 앱과 DMG의 번들 식별자, `CFBundleShortVersionString`, 최소 macOS 버전, arm64 아키텍처, deep strict ad-hoc 코드 서명, DMG와 SHA-256을 검사합니다. 이전 빌드 산출물은 정확한 `target/release/bundle/macos`·`dmg` 디렉터리만 비운 뒤 새 앱과 DMG가 각각 하나인지 확인합니다.
 
 설치 스크립트는 새 앱을 `/Users/channprj/Applications` 안의 권한이 제한된 임시 디렉터리에 먼저 복사해 검증합니다. 실행 중인 앱에 종료를 요청한 뒤 기존의 정확한 앱 번들을 임시 롤백 위치로 옮기고 새 앱을 원자적으로 설치합니다. 설치 후 검증이나 실행 파일 해시 비교가 실패하면 이전 앱을 복원합니다. 성공하면 이전 앱은 영구 삭제하지 않고 macOS 휴지통으로 이동합니다.
 
@@ -126,11 +126,14 @@ open -a "/Users/channprj/Applications/Backup Mic.app"
 ```bash
 pnpm install --frozen-lockfile
 ./scripts/check.sh
+./scripts/accept-rule-fixtures.sh
 ./scripts/accept-deletion-fixture.sh
 pnpm tauri dev
 ```
 
 `check.sh`는 Rust 포맷/테스트/Clippy, frontend 테스트/typecheck/build와 함께 128kbps 명령, 전체 복사 배리어, 변환-off 원본 유지, fallback 로그, 동시 설정 저장, 독립 검증기, 영구 원본 삭제, 셸 기반 오디오 실행, 임의 settings IPC, `.Trashes` 직접 조작을 검사합니다.
+
+`accept-rule-fixtures.sh`는 새 64 MiB MS-DOS FAT32 이미지 두 개를 정확히 `/Volumes/ZOOM_RULETEST`와 `/Volumes/SONY_RULETEST`로 마운트합니다. 각 이미지의 이름, 용량, 외부·쓰기 가능 속성, sentinel과 PCM WAV를 확인한 뒤 생산 `DeviceRegistry`, glob 규칙 매처, 안정 스캔, 복사·SHA-256 검증, Apple M4A 변환과 독립 배치 배리어를 실행합니다. Zoom과 Sony의 서로 다른 경로, 보관 폴더, 프리픽스·서픽스가 섞이지 않는지도 확인합니다. 같은 이름의 기존 마운트나 연결된 DJI 볼륨은 사용하지 않으며, 종료 시 기록해 둔 디스크 이미지 장치만 분리합니다. 이 검사는 실제 USB 녹음기나 실제 Disk Arbitration 연결 세션의 증거로 간주하지 않습니다.
 
 `accept-deletion-fixture.sh`는 새 64 MiB MS-DOS FAT32 이미지를 정확히 `/Volumes/DJI-DELTEST`로 마운트하고 sentinel을 기록한 뒤에만 실행됩니다. 테스트는 두 PCM WAV, 외부 M4A, 명시적·FAT32 생성 AppleDouble을 모두 백업한 상태에서 한 `TX_MIC…` 세션이 source 위치에서 사라지고 복구 가능 Trash에 폴더 전체로 존재하는지 확인합니다. 생산 Apple 도구로 FAT32 위에서 128kbps M4A를 만들고 검사하며, raw 추가 파일과 destination이 유지되고 ledger 증거가 있는 빈 세션 폴더도 휴지통으로 이동하는지 증명합니다. 이미 같은 이름의 마운트가 있으면 실행을 거부하고, 연결된 `DJI-MIC-1/2`는 대상으로 허용하지 않습니다.
 

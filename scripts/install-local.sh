@@ -38,9 +38,11 @@ release_app="$(cd "$(dirname "$release_app")" && pwd -P)/$(basename "$release_ap
 
 verify_app() {
   local app="$1"
-  local identifier bundle_version minimum_system executable architectures
+  local identifier bundle_version minimum_system executable architectures codesign_details
   [[ -d "$app" && ! -L "$app" ]] || return 1
   codesign --verify --deep --strict --verbose=2 "$app"
+  codesign_details="$(codesign -d --verbose=4 "$app" 2>&1)"
+  [[ "$codesign_details" == *"Signature=adhoc"* ]] || return 1
   identifier="$(plutil -extract CFBundleIdentifier raw -o - "$app/Contents/Info.plist")"
   bundle_version="$(plutil -extract CFBundleShortVersionString raw -o - "$app/Contents/Info.plist")"
   minimum_system="$(plutil -extract LSMinimumSystemVersion raw -o - "$app/Contents/Info.plist")"
@@ -160,6 +162,10 @@ verify_app "$TARGET_APP"
 installed_hash="$(shasum -a 256 "$TARGET_APP/Contents/MacOS/$EXPECTED_EXECUTABLE" | awk '{print $1}')"
 if [[ "$installed_hash" != "$release_hash" ]]; then
   echo "Installed executable does not match the verified release executable." >&2
+  exit 1
+fi
+if [[ -e "$LEGACY_TARGET_APP" ]]; then
+  echo "The exact legacy app bundle is still present after installation." >&2
   exit 1
 fi
 

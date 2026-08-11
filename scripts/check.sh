@@ -60,6 +60,24 @@ cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic \
 cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic \
   --test verify_backup_script -- --exact \
   independent_verifier_checks_complete_cohort_raw_extras_and_privacy_safe_failures
+rule_fixture_guard="$(mktemp -t backup-mic-rule-fixture-guard)"
+if env -u BACKUP_MIC_ZOOM_RULE_FIXTURE -u BACKUP_MIC_SONY_RULE_FIXTURE \
+  cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic \
+  --test rule_volume_acceptance -- --ignored --exact \
+  backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline \
+  >"$rule_fixture_guard" 2>&1; then
+  rm -f -- "$rule_fixture_guard"
+  echo "Rule fixture acceptance unexpectedly ran without disposable mounts." >&2
+  exit 1
+fi
+if ! rg -q \
+  'BACKUP_MIC_RULE_FIXTURES_REQUIRED: run scripts/accept-rule-fixtures.sh' \
+  "$rule_fixture_guard"; then
+  rm -f -- "$rule_fixture_guard"
+  echo "Rule fixture missing-environment guard failed." >&2
+  exit 1
+fi
+rm -f -- "$rule_fixture_guard"
 cargo test --manifest-path src-tauri/Cargo.toml --workspace --all-targets
 cargo clippy --manifest-path src-tauri/Cargo.toml --workspace --all-targets -- -D warnings
 pnpm test
