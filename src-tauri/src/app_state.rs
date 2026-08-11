@@ -835,25 +835,29 @@ impl AppState {
             Ok(RuleVolumeMatch::Matched(matched)) => {
                 let matched = *matched;
                 let source_id = matched.authority.source.id.clone();
-                upsert_source_snapshot(
-                    &mut runtime.snapshot,
-                    &matched.authority.source,
-                    &matched.rule,
-                    true,
-                    BackupPhase::Detecting,
-                );
-                if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
+                let source = matched.authority.source.clone();
+                let rule = matched.rule.clone();
+                let transmitter = legacy_transmitter(&source);
+                runtime.matched.insert(source_id.clone(), matched);
+                let should_schedule = runtime.preferences.automatic_backup
+                    && backup_requirements_met(
+                        runtime.destination_configured,
+                        runtime.snapshot.setup_state,
+                        runtime.matched.len(),
+                    );
+                let source_phase = mounted_source_phase(should_schedule);
+                upsert_source_snapshot(&mut runtime.snapshot, &source, &rule, true, source_phase);
+                if let Some(transmitter) = transmitter {
                     runtime.mounted.insert(transmitter, mounted);
                     update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
                         snapshot.mounted = true;
-                        snapshot.phase = BackupPhase::Detecting;
+                        snapshot.phase = source_phase;
                         snapshot.deletion_ready = false;
                     });
                 }
-                runtime.matched.insert(source_id.clone(), matched);
-                runtime.snapshot.phase = BackupPhase::Detecting;
+                runtime.snapshot.phase = source_phase;
                 runtime.snapshot.message_code = "device_detected".to_owned();
-                Some(source_id)
+                Some((source_id, should_schedule))
             }
             Ok(RuleVolumeMatch::Conflict { .. }) => {
                 let mut error = CoreError::InvalidRule.public(None);
@@ -882,20 +886,15 @@ impl AppState {
             }
         };
         sync_pairing_snapshot(&mut runtime);
-        let should_schedule = matched_source.clone().filter(|_| {
-            runtime.preferences.automatic_backup
-                && backup_requirements_met(
-                    runtime.destination_configured,
-                    runtime.snapshot.setup_state,
-                    runtime.matched.len(),
-                )
-        });
+        let should_schedule = matched_source
+            .as_ref()
+            .and_then(|(source_id, should_schedule)| should_schedule.then(|| source_id.clone()));
         publish_locked(app, &mut runtime);
         drop(runtime);
         if let Some(error) = rejected_error {
             self.report_public_failure("device_lifecycle", "identity_validation", &error, None);
         }
-        if let Some(source_id) = matched_source {
+        if let Some((source_id, _)) = matched_source {
             let transmitter = runtime_legacy_transmitter(self, &source_id);
             if let Err(error) = self.record_activity(
                 app,
@@ -1335,6 +1334,14 @@ fn backup_requirements_met(
     destination_configured && setup_state == SetupStateDto::Ready && mounted_devices > 0
 }
 
+fn mounted_source_phase(should_schedule: bool) -> BackupPhase {
+    if should_schedule {
+        BackupPhase::Detecting
+    } else {
+        BackupPhase::Idle
+    }
+}
+
 fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
     TransmitterSnapshotDto {
         transmitter,
@@ -1546,6 +1553,12 @@ mod tests {
         assert!(!backup_requirements_met(true, SetupStateDto::Ready, 0));
         assert!(backup_requirements_met(true, SetupStateDto::Ready, 1));
         assert!(backup_requirements_met(true, SetupStateDto::Ready, 2));
+    }
+
+    #[test]
+    fn matched_mount_phase_tracks_whether_backup_is_really_scheduled() {
+        assert_eq!(mounted_source_phase(false), BackupPhase::Idle);
+        assert_eq!(mounted_source_phase(true), BackupPhase::Detecting);
     }
 
     #[test]
