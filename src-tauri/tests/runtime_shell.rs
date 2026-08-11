@@ -1,4 +1,9 @@
-use std::{fs, os::unix::fs::PermissionsExt, process::Command};
+use std::{
+    fs,
+    os::unix::fs::PermissionsExt,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 use serde_json::Value;
 use tempfile::tempdir;
@@ -40,6 +45,50 @@ fn legacy_identity_is_confined_to_migration_and_exact_installer_transition() {
     assert!(migration.contains("com.channprj.DJIMicBackup"));
     assert!(installer.contains("DJI Mic Backup.app"));
     assert!(installer.contains("com.channprj.DJIMicBackup"));
+}
+
+#[test]
+fn installer_stop_helper_bounds_an_unresponsive_quit_request_with_exact_process_termination() {
+    let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+    let pid = child.id().to_string();
+    let process = Command::new("/bin/ps")
+        .args(["-p", &pid, "-o", "command="])
+        .output()
+        .unwrap();
+    let expected_command = String::from_utf8(process.stdout).unwrap().trim().to_owned();
+    assert!(!expected_command.is_empty());
+
+    let started = Instant::now();
+    let output = Command::new("/bin/bash")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../scripts/stop-local-apps.sh"
+        ))
+        .args([
+            "com.channprj.BackupMic.TestFixture",
+            "com.channprj.DJIMicBackup.TestFixture",
+            &expected_command,
+            "/nonexistent/legacy-backup-mic-fixture",
+        ])
+        .output()
+        .unwrap();
+    let elapsed = started.elapsed();
+    let child_status = child.try_wait().unwrap();
+    if child_status.is_none() {
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    assert!(
+        output.status.success(),
+        "stop helper failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(child_status.is_some(), "the exact fixture process must exit");
+    assert!(
+        elapsed < Duration::from_secs(10),
+        "the stop helper must not inherit an unbounded quit wait: {elapsed:?}"
+    );
 }
 
 #[test]

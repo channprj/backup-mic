@@ -54,16 +54,6 @@ verify_app() {
   [[ " $architectures " == *" arm64 "* ]] || return 1
 }
 
-running_pids() {
-  local pid command
-  while read -r pid command; do
-    if [[ "$command" == "$TARGET_APP/Contents/MacOS/$EXPECTED_EXECUTABLE" \
-      || "$command" == "$LEGACY_TARGET_APP/Contents/MacOS/$LEGACY_EXECUTABLE" ]]; then
-      echo "$pid"
-    fi
-  done < <(ps -axo pid=,command=)
-}
-
 move_to_trash() {
   local path="$1"
   /usr/bin/osascript -l JavaScript \
@@ -125,18 +115,11 @@ if [[ "$release_hash" != "$staged_hash" ]]; then
   exit 1
 fi
 
-/usr/bin/osascript -e "tell application id \"$EXPECTED_IDENTIFIER\" to quit" >/dev/null 2>&1 || true
-/usr/bin/osascript -e "tell application id \"$LEGACY_IDENTIFIER\" to quit" >/dev/null 2>&1 || true
-if [[ -n "$(running_pids)" ]]; then
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    [[ -z "$(running_pids)" ]] && break
-    sleep 1
-  done
-  if [[ -n "$(running_pids)" ]]; then
-    echo "A running Backup Mic app did not quit; installation was not started." >&2
-    exit 1
-  fi
-fi
+"$PROJECT_ROOT/scripts/stop-local-apps.sh" \
+  "$EXPECTED_IDENTIFIER" \
+  "$LEGACY_IDENTIFIER" \
+  "$TARGET_APP/Contents/MacOS/$EXPECTED_EXECUTABLE" \
+  "$LEGACY_TARGET_APP/Contents/MacOS/$LEGACY_EXECUTABLE"
 
 if [[ -e "$TARGET_APP" ]]; then
   [[ -d "$TARGET_APP" && ! -L "$TARGET_APP" ]] || {
