@@ -15,6 +15,7 @@ use crate::{
     device::PairedDevice,
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
+    initial_setup::{DESTINATION_SETTING, INITIAL_SETUP_SETTING, InitialSetupMarker},
     preferences::{BackupPreferences, PreferenceKey, decode_bool},
     preset::{DJI_PRESET_KIND, DJI_PRESET_REVISION, dji_mic_mini_2s_preset},
     recovery::DELETION_DISABLED_REINDEX_REQUIRED,
@@ -636,6 +637,64 @@ impl Ledger {
             )
             .optional()
             .map_err(CoreError::Ledger)
+    }
+
+    pub fn initial_setup_marker(&self) -> Result<Option<InitialSetupMarker>, CoreError> {
+        InitialSetupMarker::decode(self.setting(INITIAL_SETUP_SETTING)?)
+    }
+
+    pub fn persist_destination(
+        &mut self,
+        destination_json: &str,
+        require_settings_review: bool,
+        updated_at: &str,
+    ) -> Result<(), CoreError> {
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        transaction
+            .execute(
+                r#"INSERT INTO settings(key, value_json, updated_at) VALUES (?1, ?2, ?3)
+                   ON CONFLICT(key) DO UPDATE SET
+                     value_json = excluded.value_json,
+                     updated_at = excluded.updated_at"#,
+                params![DESTINATION_SETTING, destination_json, updated_at],
+            )
+            .map_err(CoreError::Ledger)?;
+        if require_settings_review {
+            transaction
+                .execute(
+                    r#"INSERT INTO settings(key, value_json, updated_at) VALUES (?1, ?2, ?3)
+                       ON CONFLICT(key) DO UPDATE SET
+                         value_json = excluded.value_json,
+                         updated_at = excluded.updated_at"#,
+                    params![
+                        INITIAL_SETUP_SETTING,
+                        InitialSetupMarker::SettingsReviewPending.encode(),
+                        updated_at
+                    ],
+                )
+                .map_err(CoreError::Ledger)?;
+        }
+        transaction.commit().map_err(CoreError::Ledger)
+    }
+
+    pub fn complete_initial_setup(&mut self, updated_at: &str) -> Result<(), CoreError> {
+        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
+        let changed = transaction
+            .execute(
+                r#"UPDATE settings SET value_json = ?1, updated_at = ?2
+                   WHERE key = ?3 AND value_json = ?4"#,
+                params![
+                    InitialSetupMarker::Complete.encode(),
+                    updated_at,
+                    INITIAL_SETUP_SETTING,
+                    InitialSetupMarker::SettingsReviewPending.encode()
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        transaction.commit().map_err(CoreError::Ledger)
     }
 
     pub fn read_preferences(&self) -> Result<BackupPreferences, CoreError> {

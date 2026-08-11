@@ -13,6 +13,7 @@ pub mod error;
 pub mod events;
 pub mod filesystem;
 pub mod hash;
+pub mod initial_setup;
 pub mod layout;
 pub mod ledger;
 pub mod preferences;
