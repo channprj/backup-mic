@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   CheckCircle2Icon,
   CircleAlertIcon,
@@ -69,6 +69,13 @@ function commandError(error: unknown): ActionError {
   return { messageCode, ...errorCopy(messageCode) };
 }
 
+function isEditableTarget(target: EventTarget | null) {
+  return (
+    target instanceof HTMLElement &&
+    (target.matches("input, textarea, select") || target.isContentEditable)
+  );
+}
+
 export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const [pending, setPending] = useState<string | null>(null);
   const [proposal, setProposal] = useState<TrashProposalSummary | null>(null);
@@ -98,7 +105,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
     return () => window.clearTimeout(timeout);
   }, [proposal]);
 
-  async function run(key: string, operation: () => Promise<unknown>) {
+  const run = useCallback(async (key: string, operation: () => Promise<unknown>) => {
     if (pendingRef.current) return;
     pendingRef.current = key;
     setPending(key);
@@ -112,7 +119,29 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
       pendingRef.current = null;
       setPending(null);
     }
-  }
+  }, []);
+
+  const refreshAndBackup = useCallback(async () => {
+    try {
+      await run("backup", actions.backupNow);
+    } catch {
+      // The inline error already describes the retry path.
+    }
+  }, [actions.backupNow, run]);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (!event.metaKey || event.key.toLowerCase() !== "r" || isEditableTarget(event.target)) {
+        return;
+      }
+      event.preventDefault();
+      if (!setupComplete || active || pendingRef.current) return;
+      void refreshAndBackup();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [active, refreshAndBackup, setupComplete]);
 
   async function prepare(sourceId: string) {
     try {
@@ -157,6 +186,17 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
               {mountedCount}개
             </div>
             <Button
+              className="header-refresh"
+              variant="ghost"
+              size="icon"
+              aria-label="녹음기 다시 확인 및 백업"
+              title="녹음기 다시 확인 및 백업 (⌘R)"
+              disabled={active || pending !== null}
+              onClick={() => void refreshAndBackup()}
+            >
+              {pending === "backup" ? <Spinner /> : <RefreshCwIcon />}
+            </Button>
+            <Button
               variant="ghost"
               size="sm"
               disabled={pending !== null}
@@ -184,7 +224,12 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
           <section className="status-section" aria-live="polite">
             {active ? <ActiveStatus snapshot={snapshot} /> : null}
             {!active && !failed ? (
-              <SettledStatus snapshot={snapshot} onPrepare={prepare} pending={pending} />
+              <SettledStatus
+                snapshot={snapshot}
+                mountedCount={mountedCount}
+                onPrepare={prepare}
+                pending={pending}
+              />
             ) : null}
             {failed ? (
               <FailureStatus
@@ -247,8 +292,9 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
               <Button
                 variant="ghost"
                 size="sm"
+                aria-label="지금 백업"
                 disabled={active || pending !== null}
-                onClick={() => void run("backup", actions.backupNow).catch(() => undefined)}
+                onClick={() => void refreshAndBackup()}
               >
                 {pending === "backup" ? (
                   <Spinner data-icon="inline-start" />
@@ -394,21 +440,32 @@ function StageSequence({ snapshot }: { snapshot: AppSnapshot }) {
 
 function SettledStatus({
   snapshot,
+  mountedCount,
   onPrepare,
   pending,
 }: {
   snapshot: AppSnapshot;
+  mountedCount: number;
   onPrepare: (sourceId: string) => Promise<void>;
   pending: string | null;
 }) {
   const complete = snapshot.phase === "completed_deletion_pending";
   const nothingNew = snapshot.phase === "nothing_new";
-  const title = complete ? "백업 검증 완료" : nothingNew ? "새 녹음 없음" : "연결 대기 중";
+  const mountedIdle = snapshot.phase === "idle" && mountedCount > 0;
+  const title = complete
+    ? "백업 검증 완료"
+    : nothingNew
+      ? "새 녹음 없음"
+      : mountedIdle
+        ? "녹음기 연결됨"
+        : "연결 대기 중";
   const description = complete
     ? "모든 파일의 크기와 SHA-256이 일치합니다"
     : nothingNew
       ? "기존 백업도 다시 검증했습니다"
-      : "케이스를 연결하면 자동으로 백업합니다";
+      : mountedIdle
+        ? "다시 확인 및 백업을 눌러 새 녹음을 확인하세요"
+        : "케이스를 연결하면 자동으로 백업합니다";
   const deletable = (complete || nothingNew) && !snapshot.error;
   return (
     <Card className="status-card is-settled">

@@ -168,6 +168,11 @@ button:not(:disabled):active {
   padding-inline: 8px;
 }
 
+.header-actions .header-refresh {
+  width: 32px;
+  padding-inline: 0;
+}
+
 .app-header,
 .status-title-row,
 .progress-meta,

@@ -9,6 +9,41 @@ import { appSnapshotSchema, type TrashProposalSummary } from "../contracts";
 const complete = appSnapshotSchema.parse(completeFixture);
 const copying = appSnapshotSchema.parse(copyingFixture);
 const error = appSnapshotSchema.parse(errorFixture);
+const emptyProgress = {
+  percent: 0,
+  copied_bytes: 0,
+  bytes_requiring_copy: 0,
+  verified_files: 0,
+  total_files: 0,
+};
+const manualIdle = appSnapshotSchema.parse({
+  ...complete,
+  phase: "idle",
+  message_code: "device_detected",
+  overall_progress: emptyProgress,
+  current_stage: null,
+  failure_stage: null,
+  settings: { ...complete.settings, automatic_backup: false },
+  sources: complete.sources.map((source) => ({
+    ...source,
+    phase: "idle",
+    progress: emptyProgress,
+    retirement_outcome: "inactive",
+    deletion_ready: false,
+  })),
+  error: null,
+});
+
+function commandR(target: Window | HTMLElement = window) {
+  const event = new KeyboardEvent("keydown", {
+    key: "r",
+    metaKey: true,
+    bubbles: true,
+    cancelable: true,
+  });
+  target.dispatchEvent(event);
+  return event;
+}
 
 function renderPopover(snapshot = complete) {
   const actions = {
@@ -58,6 +93,83 @@ describe("BackupPopover", () => {
     expect(screen.queryByRole("button", { name: "백업 폴더" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "로그 열기" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "앱 종료" })).toBeEnabled();
+  });
+
+  it("shows a mounted recorder as ready for a manual rescan", () => {
+    renderPopover(manualIdle);
+
+    expect(screen.getByText("녹음기 연결됨")).toBeInTheDocument();
+    expect(screen.getByText("다시 확인 및 백업을 눌러 새 녹음을 확인하세요")).toBeInTheDocument();
+    expect(screen.queryByText("녹음기를 확인하는 중")).not.toBeInTheDocument();
+  });
+
+  it("rescans and backs up from the header refresh button", async () => {
+    const { actions } = renderPopover(manualIdle);
+
+    fireEvent.click(screen.getByRole("button", { name: "녹음기 다시 확인 및 백업" }));
+
+    await waitFor(() => expect(actions.backupNow).toHaveBeenCalledOnce());
+  });
+
+  it("captures Command-R and starts one manual rescan", async () => {
+    const { actions } = renderPopover(manualIdle);
+
+    const event = commandR();
+
+    expect(event.defaultPrevented).toBe(true);
+    await waitFor(() => expect(actions.backupNow).toHaveBeenCalledOnce());
+  });
+
+  it("serializes header, footer, and shortcut rescan requests", async () => {
+    let finish!: () => void;
+    const deferred = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const { actions } = renderPopover(manualIdle);
+    actions.backupNow.mockReturnValue(deferred);
+
+    fireEvent.click(screen.getByRole("button", { name: "녹음기 다시 확인 및 백업" }));
+    commandR();
+    fireEvent.click(screen.getByRole("button", { name: "지금 백업" }));
+
+    expect(actions.backupNow).toHaveBeenCalledTimes(1);
+    finish();
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "녹음기 다시 확인 및 백업" })).toBeEnabled(),
+    );
+  });
+
+  it("prevents Command-R reload without starting a duplicate active backup", () => {
+    const { actions } = renderPopover(copying);
+
+    const event = commandR();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(actions.backupNow).not.toHaveBeenCalled();
+  });
+
+  it("leaves Command-R untouched while editing text", () => {
+    const { actions } = renderPopover(manualIdle);
+    const input = document.createElement("input");
+    document.body.append(input);
+
+    const event = commandR(input);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(actions.backupNow).not.toHaveBeenCalled();
+    input.remove();
+  });
+
+  it("prevents setup-time Command-R reload without starting backup", () => {
+    const { actions } = renderPopover({
+      ...complete,
+      setup_state: "needs_destination",
+    });
+
+    const event = commandR();
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(actions.backupNow).not.toHaveBeenCalled();
   });
 
   it("renders zero, one, and three recorder sources without a fixed denominator", () => {
