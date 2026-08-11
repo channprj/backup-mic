@@ -156,6 +156,7 @@ impl Fixture {
                     session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
                     filename_prefix: format!("{}-", name.to_ascii_lowercase()),
                     filename_suffix: String::new(),
+                    date_folder_layout: Default::default(),
                 },
                 "2026-08-10T00:00:00Z",
             )

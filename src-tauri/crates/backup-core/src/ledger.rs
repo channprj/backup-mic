@@ -20,8 +20,8 @@ use crate::{
     preset::{DJI_PRESET_KIND, DJI_PRESET_REVISION, dji_mic_mini_2s_preset},
     recovery::DELETION_DISABLED_REINDEX_REQUIRED,
     rule::{
-        BackupRule, BackupRuleDraft, DeviceConstraintProfile, FilenameProfile, RuleId,
-        normalized_rule_name, validate_rule,
+        BackupRule, BackupRuleDraft, DateFolderLayout, DeviceConstraintProfile, FilenameProfile,
+        RuleId, normalized_rule_name, validate_rule,
     },
     source::{SourceId, SourceRecord, validate_source},
     state::Transmitter,
@@ -233,8 +233,8 @@ impl Ledger {
                     r#"UPDATE backup_rules SET
                          name = ?1, normalized_name = ?2, archive_directory_name = ?3,
                          enabled = ?4, volume_name_glob = ?5, filename_prefix = ?6,
-                         filename_suffix = ?7, updated_at = ?8
-                       WHERE id = ?9"#,
+                         filename_suffix = ?7, date_folder_layout = ?8, updated_at = ?9
+                       WHERE id = ?10"#,
                     params![
                         draft.name,
                         normalized_name,
@@ -243,6 +243,7 @@ impl Ledger {
                         draft.volume_name_glob,
                         draft.filename_prefix,
                         draft.filename_suffix,
+                        draft.date_folder_layout.storage_name(),
                         updated_at,
                         id.as_str(),
                     ],
@@ -254,13 +255,13 @@ impl Ledger {
                 .execute(
                     r#"INSERT INTO backup_rules(
                          id, name, normalized_name, archive_directory_name, enabled,
-                         volume_name_glob, filename_prefix, filename_suffix,
+                         volume_name_glob, filename_prefix, filename_suffix, date_folder_layout,
                          filename_profile, device_constraint_profile, preset_kind,
                          preset_revision, archive_directory_locked, archived_at,
                          created_at, updated_at
                        ) VALUES (
-                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10,
-                         NULL, NULL, 0, NULL, ?11, ?11
+                         ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11,
+                         NULL, NULL, 0, NULL, ?12, ?12
                        )"#,
                     params![
                         id.as_str(),
@@ -271,6 +272,7 @@ impl Ledger {
                         draft.volume_name_glob,
                         draft.filename_prefix,
                         draft.filename_suffix,
+                        draft.date_folder_layout.storage_name(),
                         FilenameProfile::Preserve.storage_name(),
                         DeviceConstraintProfile::GenericExternal.storage_name(),
                         updated_at,
@@ -351,10 +353,10 @@ impl Ledger {
                 r#"UPDATE backup_rules SET
                      name = ?1, normalized_name = ?2, archive_directory_name = ?3,
                      enabled = 1, volume_name_glob = ?4, filename_prefix = ?5,
-                     filename_suffix = ?6, filename_profile = ?7,
-                     device_constraint_profile = ?8, preset_revision = ?9,
-                     archived_at = NULL, updated_at = ?10
-                   WHERE id = ?11 AND preset_kind = ?12"#,
+                     filename_suffix = ?6, date_folder_layout = ?7, filename_profile = ?8,
+                     device_constraint_profile = ?9, preset_revision = ?10,
+                     archived_at = NULL, updated_at = ?11
+                   WHERE id = ?12 AND preset_kind = ?13"#,
                 params![
                     defaults.name,
                     normalized_name,
@@ -362,6 +364,7 @@ impl Ledger {
                     defaults.volume_name_glob,
                     defaults.filename_prefix,
                     defaults.filename_suffix,
+                    defaults.date_folder_layout.storage_name(),
                     FilenameProfile::DjiTxShort.storage_name(),
                     DeviceConstraintProfile::DjiMicMini2s.storage_name(),
                     i64::from(DJI_PRESET_REVISION),
@@ -2299,7 +2302,7 @@ impl Ledger {
 }
 
 const RULE_COLUMNS: &str = r#"id, name, archive_directory_name, enabled,
-    volume_name_glob, filename_prefix, filename_suffix, filename_profile,
+    volume_name_glob, filename_prefix, filename_suffix, date_folder_layout, filename_profile,
     device_constraint_profile, preset_kind, preset_revision,
     archive_directory_locked, archived_at, created_at, updated_at"#;
 
@@ -2311,6 +2314,7 @@ struct StoredRuleRow {
     volume_name_glob: String,
     filename_prefix: String,
     filename_suffix: String,
+    date_folder_layout: String,
     filename_profile: String,
     device_constraint_profile: String,
     preset_kind: Option<String>,
@@ -2330,14 +2334,15 @@ fn row_to_stored_rule(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredRuleRow
         volume_name_glob: row.get(4)?,
         filename_prefix: row.get(5)?,
         filename_suffix: row.get(6)?,
-        filename_profile: row.get(7)?,
-        device_constraint_profile: row.get(8)?,
-        preset_kind: row.get(9)?,
-        preset_revision: row.get(10)?,
-        archive_directory_locked: row.get(11)?,
-        archived_at: row.get(12)?,
-        created_at: row.get(13)?,
-        updated_at: row.get(14)?,
+        date_folder_layout: row.get(7)?,
+        filename_profile: row.get(8)?,
+        device_constraint_profile: row.get(9)?,
+        preset_kind: row.get(10)?,
+        preset_revision: row.get(11)?,
+        archive_directory_locked: row.get(12)?,
+        archived_at: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
     })
 }
 
@@ -2353,6 +2358,7 @@ fn hydrate_rule(connection: &Connection, stored: StoredRuleRow) -> Result<Backup
         session_directory_globs: Vec::new(),
         filename_prefix: stored.filename_prefix,
         filename_suffix: stored.filename_suffix,
+        date_folder_layout: DateFolderLayout::parse_storage(&stored.date_folder_layout)?,
         filename_profile: FilenameProfile::parse_storage(&stored.filename_profile)?,
         device_constraint_profile: DeviceConstraintProfile::parse_storage(
             &stored.device_constraint_profile,
@@ -2405,6 +2411,7 @@ fn hydrate_rule(connection: &Connection, stored: StoredRuleRow) -> Result<Backup
         session_directory_globs: rule.session_directory_globs.clone(),
         filename_prefix: rule.filename_prefix.clone(),
         filename_suffix: rule.filename_suffix.clone(),
+        date_folder_layout: rule.date_folder_layout,
     })
     .map_err(|_| CoreError::LedgerCorrupt)?;
 
@@ -2588,6 +2595,20 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
     if !version_six_applied {
         connection
             .execute_batch(include_str!("../migrations/0006_dynamic_sources.sql"))
+            .map_err(CoreError::Ledger)?;
+    }
+    let version_seven_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 7)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_seven_applied {
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0007_rule_date_folder_layout.sql"
+            ))
             .map_err(CoreError::Ledger)?;
     }
     Ok(())

@@ -3,7 +3,7 @@ use std::path::Path;
 use backup_core::{
     error::PublicError,
     events::ActivityEntry,
-    rule::BackupRule,
+    rule::{BackupRule, DateFolderLayout},
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
 };
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,7 @@ pub struct BackupRuleDto {
     pub session_directory_globs: Vec<String>,
     pub filename_prefix: String,
     pub filename_suffix: String,
+    pub date_folder_layout: DateFolderLayout,
     pub is_dji_preset: bool,
     pub archived: bool,
 }
@@ -51,6 +52,7 @@ impl From<&BackupRule> for BackupRuleDto {
             session_directory_globs: rule.session_directory_globs.clone(),
             filename_prefix: rule.filename_prefix.clone(),
             filename_suffix: rule.filename_suffix.clone(),
+            date_folder_layout: rule.date_folder_layout,
             is_dji_preset: rule.preset_kind.is_some(),
             archived: rule.archived_at.is_some(),
         }

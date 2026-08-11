@@ -19,6 +19,7 @@ fn zoom_draft() -> BackupRuleDraft {
         session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: "-field".to_owned(),
+        date_folder_layout: Default::default(),
     }
 }
 
@@ -34,6 +35,7 @@ fn stored_rule(draft: BackupRuleDraft, filename_profile: FilenameProfile) -> Bac
         session_directory_globs: draft.session_directory_globs,
         filename_prefix: draft.filename_prefix,
         filename_suffix: draft.filename_suffix,
+        date_folder_layout: draft.date_folder_layout,
         filename_profile,
         device_constraint_profile: DeviceConstraintProfile::GenericExternal,
         preset_kind: None,

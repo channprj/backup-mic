@@ -24,6 +24,7 @@ fn draft(name: &str, volume_glob: &str, root: &str) -> BackupRuleDraft {
         session_directory_globs: Vec::new(),
         filename_prefix: String::new(),
         filename_suffix: String::new(),
+        date_folder_layout: Default::default(),
     }
 }
 

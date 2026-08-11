@@ -236,5 +236,6 @@ fn rule(
         session_directory_globs: vec![session_glob.to_owned()],
         filename_prefix: prefix.to_owned(),
         filename_suffix: suffix.to_owned(),
+        date_folder_layout: Default::default(),
     }
 }

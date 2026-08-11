@@ -4,7 +4,7 @@ use backup_core::{
     artifact::{OutputFormat, VerifiedArtifact},
     destination::{DestinationDisposition, plan_rule_file},
     hash::hash_file,
-    rule::{BackupRule, DeviceConstraintProfile, FilenameProfile, RuleId},
+    rule::{BackupRule, DateFolderLayout, DeviceConstraintProfile, FilenameProfile, RuleId},
     rule_scanner::{RuleFileObservation, SelectedFileKind},
     source::SourceId,
 };
@@ -23,6 +23,7 @@ fn zoom_rule() -> BackupRule {
         session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: "-field".to_owned(),
+        date_folder_layout: DateFolderLayout::YearMonth,
         filename_profile: FilenameProfile::Preserve,
         device_constraint_profile: DeviceConstraintProfile::GenericExternal,
         preset_kind: None,
@@ -31,6 +32,97 @@ fn zoom_rule() -> BackupRule {
         archived_at: None,
         created_at: "2026-08-10T00:00:00Z".to_owned(),
         updated_at: "2026-08-10T00:00:00Z".to_owned(),
+    }
+}
+
+#[test]
+fn recording_names_support_the_three_approved_date_folder_layouts() {
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    fs::create_dir_all(source.path().join("RECORD/FOLDER01")).unwrap();
+    fs::write(
+        source.path().join("RECORD/FOLDER01/ZOOM0001.WAV"),
+        b"zoom audio",
+    )
+    .unwrap();
+    let observation = observed(
+        "RECORD/FOLDER01/ZOOM0001.WAV",
+        SelectedFileKind::RecordingWav,
+        10,
+    );
+
+    for (layout, expected) in [
+        (
+            DateFolderLayout::YearMonthDay,
+            "Zoom H1n/2026/08/10/260810-zoom-ZOOM0001-field.wav",
+        ),
+        (
+            DateFolderLayout::YearMonth,
+            "Zoom H1n/2026/08/260810-zoom-ZOOM0001-field.wav",
+        ),
+        (
+            DateFolderLayout::CompactDate,
+            "Zoom H1n/260810/260810-zoom-ZOOM0001-field.wav",
+        ),
+    ] {
+        let mut rule = zoom_rule();
+        rule.date_folder_layout = layout;
+        let plan = plan_rule_file(
+            source.path(),
+            destination.path(),
+            &rule,
+            &SourceId::new(),
+            observation.clone(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(plan.relative_destination, Path::new(expected));
+    }
+}
+
+#[test]
+fn dji_profile_prefix_and_suffix_are_preserved_for_every_date_layout() {
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    fs::create_dir_all(source.path().join("RECORD/FOLDER01")).unwrap();
+    fs::write(
+        source
+            .path()
+            .join("RECORD/FOLDER01/TX01_MIC001_20260810_120000.WAV"),
+        b"zoom audio",
+    )
+    .unwrap();
+    let observation = observed(
+        "RECORD/FOLDER01/TX01_MIC001_20260810_120000.WAV",
+        SelectedFileKind::RecordingWav,
+        10,
+    );
+
+    for layout in [
+        DateFolderLayout::YearMonthDay,
+        DateFolderLayout::YearMonth,
+        DateFolderLayout::CompactDate,
+    ] {
+        let mut rule = zoom_rule();
+        rule.filename_prefix = "mic-".to_owned();
+        rule.filename_suffix = "-backup".to_owned();
+        rule.filename_profile = FilenameProfile::DjiTxShort;
+        rule.date_folder_layout = layout;
+        let plan = plan_rule_file(
+            source.path(),
+            destination.path(),
+            &rule,
+            &SourceId::new(),
+            observation.clone(),
+            None,
+        )
+        .unwrap();
+
+        assert!(
+            plan.relative_destination
+                .ends_with("260810-mic-T01_MIC001_20260810_120000-backup.wav")
+        );
     }
 }
 

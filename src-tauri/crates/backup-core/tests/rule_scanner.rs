@@ -25,6 +25,7 @@ fn zoom_rule() -> BackupRule {
         session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: "-field".to_owned(),
+        date_folder_layout: Default::default(),
         filename_profile: FilenameProfile::Preserve,
         device_constraint_profile: DeviceConstraintProfile::GenericExternal,
         preset_kind: None,

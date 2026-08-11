@@ -3,7 +3,10 @@ use backup_core::{
     ledger::Ledger,
     preferences::{BackupPreferences, PreferenceKey},
     preset::{DJI_PRESET_KIND, DJI_PRESET_REVISION},
-    rule::{BackupRule, BackupRuleDraft, DeviceConstraintProfile, FilenameProfile, RuleId},
+    rule::{
+        BackupRule, BackupRuleDraft, DateFolderLayout, DeviceConstraintProfile, FilenameProfile,
+        RuleId,
+    },
 };
 use rusqlite::{Connection, params};
 use tempfile::tempdir;
@@ -20,6 +23,7 @@ fn zoom_draft(name: &str) -> BackupRuleDraft {
         session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: "-field".to_owned(),
+        date_folder_layout: Default::default(),
     }
 }
 
@@ -35,6 +39,7 @@ fn editable_draft(rule: &BackupRule) -> BackupRuleDraft {
         session_directory_globs: rule.session_directory_globs.clone(),
         filename_prefix: rule.filename_prefix.clone(),
         filename_suffix: rule.filename_suffix.clone(),
+        date_folder_layout: rule.date_folder_layout,
     }
 }
 
@@ -89,6 +94,7 @@ fn new_ledger_seeds_the_editable_dji_preset_and_round_trips_user_rules() {
     );
     assert_eq!(dji.session_directory_globs, ["TX_MIC*".to_owned()]);
     assert_eq!(dji.filename_profile, FilenameProfile::DjiTxShort);
+    assert_eq!(dji.date_folder_layout, DateFolderLayout::YearMonth);
     assert_eq!(
         dji.device_constraint_profile,
         DeviceConstraintProfile::DjiMicMini2s
@@ -121,6 +127,103 @@ fn new_ledger_seeds_the_editable_dji_preset_and_round_trips_user_rules() {
 }
 
 #[test]
+fn date_folder_layouts_round_trip_through_create_and_update() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let mut ledger = Ledger::open(&path).unwrap();
+
+    for (index, layout) in [
+        DateFolderLayout::YearMonthDay,
+        DateFolderLayout::YearMonth,
+        DateFolderLayout::CompactDate,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut draft = zoom_draft(&format!("Zoom {index}"));
+        draft.date_folder_layout = layout;
+        let saved = ledger
+            .save_backup_rule(draft, "2026-08-12T00:00:00Z")
+            .unwrap();
+        assert_eq!(saved.date_folder_layout, layout);
+
+        let mut edit = editable_draft(&saved);
+        edit.date_folder_layout = match layout {
+            DateFolderLayout::YearMonthDay => DateFolderLayout::CompactDate,
+            DateFolderLayout::YearMonth | DateFolderLayout::CompactDate => {
+                DateFolderLayout::YearMonthDay
+            }
+        };
+        let expected = edit.date_folder_layout;
+        let updated = ledger
+            .save_backup_rule(edit, "2026-08-12T00:01:00Z")
+            .unwrap();
+        assert_eq!(updated.date_folder_layout, expected);
+    }
+
+    drop(ledger);
+    let reopened = Ledger::open(&path).unwrap();
+    assert_eq!(
+        reopened
+            .backup_rules(false)
+            .unwrap()
+            .into_iter()
+            .filter(|rule| rule.preset_kind.is_none())
+            .count(),
+        3
+    );
+}
+
+#[test]
+fn version_six_rules_migrate_to_year_month_layout() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0001_initial.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0002_artifacts_and_preferences.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0003_batch_manifests.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!(
+            "../migrations/0004_durable_superseded_wav_evidence.sql"
+        ))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0005_backup_rules.sql"))
+        .unwrap();
+    connection
+        .execute_batch(include_str!("../migrations/0006_dynamic_sources.sql"))
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    assert_eq!(
+        ledger.dji_rule().unwrap().date_folder_layout,
+        DateFolderLayout::YearMonth
+    );
+    drop(ledger);
+
+    let connection = Connection::open(&path).unwrap();
+    assert_eq!(
+        connection
+            .query_row(
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 7",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+        1
+    );
+}
+
+#[test]
 fn normalized_active_rule_names_are_unique() {
     let directory = tempdir().unwrap();
     let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
@@ -150,6 +253,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
         .unwrap();
     let mut edited = editable_draft(&original);
     edited.filename_prefix = "custom-".to_owned();
+    edited.date_folder_layout = DateFolderLayout::CompactDate;
     ledger
         .save_backup_rule(edited, "2026-08-10T01:01:00Z")
         .unwrap();
@@ -168,6 +272,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
     assert_eq!(restored.id, original.id);
     assert!(restored.enabled);
     assert_eq!(restored.filename_prefix, "");
+    assert_eq!(restored.date_folder_layout, DateFolderLayout::YearMonth);
     assert_eq!(restored.preset_revision, Some(DJI_PRESET_REVISION));
     assert_eq!(restored.archived_at, None);
     assert_eq!(

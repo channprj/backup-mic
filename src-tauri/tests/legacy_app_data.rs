@@ -23,6 +23,7 @@ fn zoom_rule() -> BackupRuleDraft {
         session_directory_globs: vec![],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: "-field".to_owned(),
+        date_folder_layout: Default::default(),
     }
 }
 

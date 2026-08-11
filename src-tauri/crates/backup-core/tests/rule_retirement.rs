@@ -398,6 +398,7 @@ fn fixture(session: bool) -> Fixture {
                 },
                 filename_prefix: String::new(),
                 filename_suffix: String::new(),
+                date_folder_layout: Default::default(),
             },
             "2026-08-10T00:00:00Z",
         )

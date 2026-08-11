@@ -25,6 +25,7 @@ fn zoom_draft() -> BackupRuleDraft {
         session_directory_globs: vec!["RECORD/*".to_owned()],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: "-field".to_owned(),
+        date_folder_layout: Default::default(),
     }
 }
 

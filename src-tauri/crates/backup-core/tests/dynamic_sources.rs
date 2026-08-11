@@ -18,6 +18,7 @@ fn zoom_draft() -> BackupRuleDraft {
         session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
         filename_prefix: "zoom-".to_owned(),
         filename_suffix: String::new(),
+        date_folder_layout: Default::default(),
     }
 }
 

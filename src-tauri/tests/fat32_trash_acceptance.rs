@@ -164,6 +164,7 @@ fn foundation_moves_only_the_requested_generic_session_on_the_isolated_fat32_fix
                 session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
                 filename_prefix: "zoom-".to_owned(),
                 filename_suffix: String::new(),
+                date_folder_layout: Default::default(),
             },
             "2026-08-10T00:00:00Z",
         )

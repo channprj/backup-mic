@@ -42,6 +42,34 @@ pub enum FilenameProfile {
     DjiTxShort,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DateFolderLayout {
+    YearMonthDay,
+    #[default]
+    YearMonth,
+    CompactDate,
+}
+
+impl DateFolderLayout {
+    pub(crate) fn storage_name(self) -> &'static str {
+        match self {
+            Self::YearMonthDay => "year_month_day",
+            Self::YearMonth => "year_month",
+            Self::CompactDate => "compact_date",
+        }
+    }
+
+    pub(crate) fn parse_storage(value: &str) -> Result<Self, CoreError> {
+        match value {
+            "year_month_day" => Ok(Self::YearMonthDay),
+            "year_month" => Ok(Self::YearMonth),
+            "compact_date" => Ok(Self::CompactDate),
+            _ => Err(CoreError::LedgerCorrupt),
+        }
+    }
+}
+
 impl FilenameProfile {
     pub(crate) fn storage_name(self) -> &'static str {
         match self {
@@ -96,6 +124,8 @@ pub struct BackupRuleDraft {
     pub session_directory_globs: Vec<String>,
     pub filename_prefix: String,
     pub filename_suffix: String,
+    #[serde(default)]
+    pub date_folder_layout: DateFolderLayout,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -110,6 +140,8 @@ pub struct BackupRule {
     pub session_directory_globs: Vec<String>,
     pub filename_prefix: String,
     pub filename_suffix: String,
+    #[serde(default)]
+    pub date_folder_layout: DateFolderLayout,
     pub filename_profile: FilenameProfile,
     pub device_constraint_profile: DeviceConstraintProfile,
     pub preset_kind: Option<String>,
@@ -189,6 +221,7 @@ pub fn compile_rule(rule: BackupRule) -> Result<CompiledBackupRule, CoreError> {
         session_directory_globs: rule.session_directory_globs.clone(),
         filename_prefix: rule.filename_prefix.clone(),
         filename_suffix: rule.filename_suffix.clone(),
+        date_folder_layout: rule.date_folder_layout,
     })?;
 
     Ok(CompiledBackupRule {

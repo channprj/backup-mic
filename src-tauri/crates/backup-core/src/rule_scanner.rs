@@ -379,6 +379,7 @@ mod tests {
             session_directory_globs: Vec::new(),
             filename_prefix: String::new(),
             filename_suffix: String::new(),
+            date_folder_layout: Default::default(),
             filename_profile: FilenameProfile::Preserve,
             device_constraint_profile: DeviceConstraintProfile::GenericExternal,
             preset_kind: None,

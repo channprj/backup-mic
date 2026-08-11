@@ -157,6 +157,7 @@ impl Fixture {
             session_directory_globs: vec!["RECORD/FOLDER*".to_owned()],
             filename_prefix: prefix.to_owned(),
             filename_suffix: String::new(),
+            date_folder_layout: Default::default(),
         };
         let rule = self
             .state
@@ -528,5 +529,6 @@ fn draft_from_rule(rule: &BackupRule) -> BackupRuleDraft {
         session_directory_globs: rule.session_directory_globs.clone(),
         filename_prefix: rule.filename_prefix.clone(),
         filename_suffix: rule.filename_suffix.clone(),
+        date_folder_layout: rule.date_folder_layout,
     }
 }

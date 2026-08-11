@@ -581,6 +581,7 @@ impl AppState {
             session_directory_globs: draft.session_directory_globs,
             filename_prefix: draft.filename_prefix,
             filename_suffix: draft.filename_suffix,
+            date_folder_layout: draft.date_folder_layout,
             filename_profile: FilenameProfile::Preserve,
             device_constraint_profile: DeviceConstraintProfile::GenericExternal,
             preset_kind: None,
