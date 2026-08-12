@@ -1,4 +1,7 @@
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path};
+
+#[cfg(feature = "recovery-tool")]
+use std::process::Command;
 
 use backup_core::{
     artifact::{
@@ -68,7 +71,7 @@ impl AudioTools for FakeAudioTools {
 }
 
 struct Fixture {
-    state: TempDir,
+    _state: TempDir,
     source: TempDir,
     destination: TempDir,
     ledger: Ledger,
@@ -136,7 +139,7 @@ impl Fixture {
             })
             .unwrap();
         Self {
-            state,
+            _state: state,
             source,
             destination,
             ledger,
@@ -154,7 +157,7 @@ fn command_defaults_to_dry_run_and_reports_counts_only() {
         .args([
             "--ledger",
             fixture
-                .state
+                ._state
                 .path()
                 .join("ledger.sqlite3")
                 .to_str()
