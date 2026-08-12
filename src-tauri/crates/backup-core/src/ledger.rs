@@ -1470,6 +1470,72 @@ impl Ledger {
         Ok(id)
     }
 
+    pub fn replace_verified_recording_for_recovery(
+        &mut self,
+        expected: &VerifiedRecording,
+        recording: &VerifiedRecording,
+    ) -> Result<(), CoreError> {
+        validate_verified_recording(expected)?;
+        validate_verified_recording(recording)?;
+        if recording.id != expected.id
+            || recording.source_id != expected.source_id
+            || recording.source_relative_path != expected.source_relative_path
+            || recording.source_size != expected.source_size
+            || recording.source_mtime_ns != expected.source_mtime_ns
+            || recording.source_sha256 != expected.source_sha256
+            || recording.backup_run_id != expected.backup_run_id
+            || recording.retirement_status != expected.retirement_status
+            || recording.retired_session_relative_path != expected.retired_session_relative_path
+            || recording.artifact.format != OutputFormat::Wav
+            || recording.artifact.audio.is_some()
+            || recording.conversion_status != ConversionStatus::NotRequired
+            || recording.conversion_error_code.is_some()
+        {
+            return Err(CoreError::InvalidRequest);
+        }
+
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE recordings
+                   SET destination_relative_path = ?1, destination_size = ?2,
+                       destination_sha256 = ?3, verified_at = ?4,
+                       artifact_format = 'wav', artifact_codec = NULL,
+                       artifact_sample_rate_hz = NULL, artifact_channel_count = NULL,
+                       artifact_valid_frames = NULL, artifact_duration_micros = NULL,
+                       conversion_status = 'not_required', conversion_error_code = NULL,
+                       superseded_wav_relative_path = NULL, superseded_wav_size = NULL,
+                       superseded_wav_sha256 = NULL, superseded_wav_retirement_status = 'none'
+                   WHERE id = ?5 AND source_id = ?6 AND source_relative_path = ?7
+                     AND source_size = ?8 AND source_mtime_ns = ?9
+                     AND source_sha256 = ?10 AND destination_relative_path = ?11
+                     AND destination_size = ?12 AND destination_sha256 = ?13
+                     AND artifact_format = ?14 AND retirement_status = ?15"#,
+                params![
+                    path_text(&recording.artifact.relative_path)?,
+                    to_i64(recording.artifact.byte_count)?,
+                    recording.artifact.sha256,
+                    recording.verified_at,
+                    expected.id,
+                    expected.source_id.as_str(),
+                    path_text(&expected.source_relative_path)?,
+                    to_i64(expected.source_size)?,
+                    expected.source_mtime_ns.to_string(),
+                    expected.source_sha256,
+                    path_text(&expected.artifact.relative_path)?,
+                    to_i64(expected.artifact.byte_count)?,
+                    expected.artifact.sha256,
+                    output_format_name(expected.artifact.format),
+                    retirement_status_name(expected.retirement_status),
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        Ok(())
+    }
+
     pub fn replace_verified_artifact_with_superseded_wav(
         &mut self,
         recording: &VerifiedRecording,

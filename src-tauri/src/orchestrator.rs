@@ -1381,7 +1381,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     }
     for outcome in &outcomes {
         if let Some(error) = &outcome.error {
-            state.report_public_failure("backup_run", "source_pipeline", error, None);
+            state.report_public_failure("backup_run", source_failure_stage(outcome), error, None);
         }
         let (code, severity) = match outcome.phase {
             BackupPhase::PartialFailure | BackupPhase::Error => {
@@ -1996,4 +1996,35 @@ fn source_label(state: &AppState, source_id: &SourceId) -> Option<String> {
         .matched
         .get(source_id)
         .map(|matched| matched.authority.source.display_name.clone())
+}
+
+fn source_failure_stage(outcome: &SourceRunOutcome) -> &'static str {
+    if outcome.batch_run_id.is_empty() {
+        "source_preparation"
+    } else {
+        "source_pipeline"
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn failures_without_a_run_are_reported_as_source_preparation() {
+        let preparation = SourceRunOutcome {
+            source_id: SourceId::new(),
+            batch_run_id: String::new(),
+            phase: BackupPhase::PartialFailure,
+            verified_files: 0,
+            deletion_ready: false,
+            error: Some(CoreError::InvalidRule.public(None)),
+            deletion_evidence: None,
+        };
+        let mut pipeline = preparation.clone();
+        pipeline.batch_run_id = "run".to_owned();
+
+        assert_eq!(source_failure_stage(&preparation), "source_preparation");
+        assert_eq!(source_failure_stage(&pipeline), "source_pipeline");
+    }
 }

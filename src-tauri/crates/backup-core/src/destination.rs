@@ -67,6 +67,34 @@ pub fn plan_rule_file(
     if source_digest.size != source.size {
         return Err(CoreError::SourceChanged);
     }
+    plan_rule_file_with_digest(
+        destination_root,
+        rule,
+        source_id,
+        source,
+        source_digest,
+        existing,
+    )
+}
+
+pub fn plan_rule_file_with_digest(
+    destination_root: &Path,
+    rule: &BackupRule,
+    source_id: &SourceId,
+    source: RuleFileObservation,
+    source_digest: FileDigest,
+    existing: Option<&VerifiedArtifact>,
+) -> Result<RuleDestinationPlan, CoreError> {
+    validate_rule_observation(&source)?;
+    if source_digest.size != source.size
+        || source_digest.sha256.len() != 64
+        || !source_digest
+            .sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(CoreError::SourceChanged);
+    }
     if let Some(existing) = existing
         && let Some(relative_destination) =
             reusable_rule_artifact(destination_root, source.kind, &source_digest, existing)?
@@ -78,16 +106,7 @@ pub fn plan_rule_file(
             disposition: DestinationDisposition::Reuse,
         });
     }
-    let default_relative = match source.kind {
-        SelectedFileKind::RecordingWav => recording_rule_destination(rule, &source)?,
-        SelectedFileKind::Companion => PathBuf::from(&rule.archive_directory_name)
-            .join("source-extras")
-            .join(source_evidence_key(source_id))
-            .join(&source.relative_path),
-    };
-    if !is_safe_additional_relative_path(&default_relative) {
-        return Err(CoreError::InvalidRequest);
-    }
+    let default_relative = default_rule_destination(rule, source_id, &source)?;
     let (relative_destination, disposition) =
         choose_available_name(destination_root, &default_relative, &source_digest)?;
     Ok(RuleDestinationPlan {

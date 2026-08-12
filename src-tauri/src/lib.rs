@@ -10,6 +10,7 @@ pub mod lifecycle;
 pub mod orchestrator;
 pub mod pairing;
 pub mod platform;
+pub mod recovery_tool;
 pub mod rescan;
 pub mod rule_runtime;
 pub mod tray;
