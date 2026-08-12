@@ -68,13 +68,8 @@ pub fn plan_rule_file(
         return Err(CoreError::SourceChanged);
     }
     if let Some(existing) = existing
-        && let Some(relative_destination) = reusable_rule_artifact(
-            destination_root,
-            rule,
-            source.kind,
-            &source_digest,
-            existing,
-        )?
+        && let Some(relative_destination) =
+            reusable_rule_artifact(destination_root, source.kind, &source_digest, existing)?
     {
         return Ok(RuleDestinationPlan {
             source,
@@ -176,16 +171,11 @@ fn source_evidence_key(source_id: &SourceId) -> String {
 
 fn reusable_rule_artifact(
     destination_root: &Path,
-    rule: &BackupRule,
     kind: SelectedFileKind,
     source_digest: &FileDigest,
     existing: &VerifiedArtifact,
 ) -> Result<Option<PathBuf>, CoreError> {
-    if !is_safe_relative_path(&existing.relative_path)
-        || !existing
-            .relative_path
-            .starts_with(Path::new(&rule.archive_directory_name))
-    {
+    if !is_safe_relative_path(&existing.relative_path) {
         return Err(CoreError::InvalidRequest);
     }
     if (kind == SelectedFileKind::Companion || existing.format == OutputFormat::Wav)

@@ -252,6 +252,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
         .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-10T01:00:00Z")
         .unwrap();
     let mut edited = editable_draft(&original);
+    edited.archive_directory_name = "My DJI Archive".to_owned();
     edited.filename_prefix = "custom-".to_owned();
     edited.date_folder_layout = DateFolderLayout::CompactDate;
     ledger
@@ -272,6 +273,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
     assert_eq!(restored.id, original.id);
     assert!(restored.enabled);
     assert_eq!(restored.filename_prefix, "");
+    assert_eq!(restored.archive_directory_name, "My DJI Archive");
     assert_eq!(restored.date_folder_layout, DateFolderLayout::YearMonth);
     assert_eq!(restored.preset_revision, Some(DJI_PRESET_REVISION));
     assert_eq!(restored.archived_at, None);
@@ -324,7 +326,7 @@ fn archive_deletes_unused_rules_but_retains_referenced_rules_as_evidence() {
 }
 
 #[test]
-fn evidence_locked_archive_directory_cannot_be_changed() {
+fn evidence_locked_archive_directory_can_change_for_future_backups() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("ledger.sqlite3");
     let mut ledger = Ledger::open(&path).unwrap();
@@ -352,10 +354,12 @@ fn evidence_locked_archive_directory_cannot_be_changed() {
             .unwrap(),
     );
     edit.archive_directory_name = "Different".to_owned();
-    assert!(matches!(
-        ledger.save_backup_rule(edit, "2026-08-10T01:01:00Z"),
-        Err(CoreError::InvalidRule)
-    ));
+    let updated = ledger
+        .save_backup_rule(edit, "2026-08-10T01:01:00Z")
+        .unwrap();
+
+    assert_eq!(updated.archive_directory_name, "Different");
+    assert!(updated.archive_directory_locked);
 }
 
 #[test]

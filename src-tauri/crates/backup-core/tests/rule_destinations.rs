@@ -220,6 +220,46 @@ fn verified_m4a_evidence_reuses_the_calendar_name() {
 }
 
 #[test]
+fn verified_m4a_evidence_reuses_its_exact_path_after_archive_rename() {
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    fs::create_dir_all(source.path().join("RECORD/FOLDER01")).unwrap();
+    fs::write(
+        source.path().join("RECORD/FOLDER01/ZOOM0001.WAV"),
+        b"zoom audio",
+    )
+    .unwrap();
+    let relative = Path::new("Previous Archive/2026/08/260810-ZOOM0001.m4a");
+    fs::create_dir_all(destination.path().join(relative).parent().unwrap()).unwrap();
+    fs::write(destination.path().join(relative), b"converted m4a").unwrap();
+    let digest = hash_file(&destination.path().join(relative)).unwrap();
+    let existing = VerifiedArtifact {
+        relative_path: relative.to_path_buf(),
+        format: OutputFormat::M4a,
+        byte_count: digest.size,
+        sha256: digest.sha256,
+        audio: None,
+    };
+
+    let plan = plan_rule_file(
+        source.path(),
+        destination.path(),
+        &zoom_rule(),
+        &SourceId::new(),
+        observed(
+            "RECORD/FOLDER01/ZOOM0001.WAV",
+            SelectedFileKind::RecordingWav,
+            10,
+        ),
+        Some(&existing),
+    )
+    .unwrap();
+
+    assert_eq!(plan.disposition, DestinationDisposition::Reuse);
+    assert_eq!(plan.relative_destination, relative);
+}
+
+#[test]
 fn companion_paths_hide_source_ids_and_reuse_equal_content() {
     let source = tempdir().unwrap();
     let destination = tempdir().unwrap();

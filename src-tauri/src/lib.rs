@@ -15,7 +15,7 @@ pub mod rule_runtime;
 pub mod tray;
 pub mod window;
 
-use backup_core::{backup::CancellationToken, error::CoreError, ledger::Ledger};
+use backup_core::{error::CoreError, ledger::Ledger};
 use commands::{DESTINATION_SETTING, persisted_destination};
 use failure_reporter::{FailureEvent, FailureReporter};
 use legacy_app_data::{LEGACY_BUNDLE_IDENTIFIER, prepare_app_data};
@@ -102,12 +102,6 @@ pub fn run() {
                 failure_root,
             )
             .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
-            state
-                .migrate_legacy_layout(
-                    &platform::macos::trash::MacTrash,
-                    &CancellationToken::default(),
-                )
-                .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             let notification_status = match app.notification().permission_state() {
                 Ok(PermissionState::Granted) => dto::NotificationStatusDto::Granted,
                 Ok(PermissionState::Denied) => dto::NotificationStatusDto::Denied,

@@ -17,10 +17,6 @@ use backup_core::{
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     initial_setup::InitialSetupMarker,
-    layout::{
-        LayoutMigration, flatten_verified_recording_layout_resilient,
-        migrate_legacy_rule_layout_resilient,
-    },
     ledger::Ledger,
     preferences::{BackupPreferences, PreferenceKey},
     rule::{
@@ -211,57 +207,6 @@ impl AppState {
 
     pub fn destination(&self) -> PathBuf {
         self.runtime.lock().destination.clone()
-    }
-
-    pub(crate) fn migrate_legacy_layout(
-        &self,
-        trash: &dyn backup_core::deletion::TrashAdapter,
-        cancellation: &CancellationToken,
-    ) -> Result<Vec<LayoutMigration>, CoreError> {
-        let (destination, configured) = {
-            let runtime = self.runtime.lock();
-            (runtime.destination.clone(), runtime.destination_configured)
-        };
-        if !configured || !destination.is_dir() {
-            return Ok(Vec::new());
-        }
-
-        let mut ledger = self.ledger.lock();
-        let mut report_failure = |error: &CoreError| {
-            self.report_failure(
-                "startup_layout_migration",
-                "artifact_relocation",
-                error,
-                None,
-                None,
-            );
-        };
-        let mut migrations = flatten_verified_recording_layout_resilient(
-            &destination,
-            &mut ledger,
-            trash,
-            cancellation,
-            &mut report_failure,
-        )?;
-        let dji_rule = ledger.dji_rule()?;
-        migrations.extend(migrate_legacy_rule_layout_resilient(
-            &destination,
-            &mut ledger,
-            &dji_rule,
-            trash,
-            cancellation,
-            &mut report_failure,
-        )?);
-        let backup_rules = ledger
-            .backup_rules(true)?
-            .iter()
-            .map(BackupRuleDto::from)
-            .collect();
-        drop(ledger);
-        let mut runtime = self.runtime.lock();
-        runtime.snapshot.backup_rules = backup_rules;
-        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
-        Ok(migrations)
     }
 
     pub fn append_audit(

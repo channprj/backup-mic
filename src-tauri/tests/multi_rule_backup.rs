@@ -439,6 +439,79 @@ fn rule_edits_are_frozen_for_the_current_run_and_apply_to_only_new_files_next_ru
 }
 
 #[test]
+fn archive_and_layout_changes_leave_existing_artifacts_in_place() {
+    let fixture = Fixture::new();
+    let (zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Original Archive",
+        "zoom-",
+        "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    );
+
+    run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&zoom),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &InstantClock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    let first = fixture.recordings().pop().unwrap();
+    let first_path = first.artifact.relative_path.clone();
+    let first_bytes = fs::read(fixture._destination.path().join(&first_path)).unwrap();
+
+    let mut edited = draft_from_rule(&zoom.rule);
+    edited.archive_directory_name = "Future Archive".to_owned();
+    edited.date_folder_layout = backup_core::rule::DateFolderLayout::CompactDate;
+    fixture
+        .state
+        .save_backup_rule_for_state(edited, "2026-08-10T00:01:00Z")
+        .unwrap();
+    write_pcm_wav(&zoom_root.path().join("RECORD/FOLDER01/REC0002.WAV"), 29);
+
+    run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&zoom),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &InstantClock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    let recordings = fixture.recordings();
+    let unchanged = recordings
+        .iter()
+        .find(|recording| recording.source_relative_path.ends_with("REC0001.WAV"))
+        .unwrap();
+    let new = recordings
+        .iter()
+        .find(|recording| recording.source_relative_path.ends_with("REC0002.WAV"))
+        .unwrap();
+    assert_eq!(unchanged.artifact.relative_path, first_path);
+    assert_eq!(
+        fs::read(fixture._destination.path().join(&first_path)).unwrap(),
+        first_bytes
+    );
+    let components = new
+        .artifact
+        .relative_path
+        .components()
+        .map(|component| component.as_os_str().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        components.first().map(String::as_str),
+        Some("Future Archive")
+    );
+    assert!(
+        components.get(1).is_some_and(|date| {
+            date.len() == 6 && date.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    );
+}
+
+#[test]
 fn companion_only_rule_completes_a_source_barrier_without_starting_conversion() {
     let fixture = Fixture::new();
     let (source_root, source) = fixture.add_source(

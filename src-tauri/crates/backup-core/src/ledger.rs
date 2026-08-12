@@ -210,13 +210,6 @@ impl Ledger {
         if draft.id.is_some() && existing.is_none() {
             return Err(CoreError::InvalidRule);
         }
-        if existing.as_ref().is_some_and(|rule| {
-            rule.archive_directory_locked
-                && rule.archive_directory_name != draft.archive_directory_name
-        }) {
-            return Err(CoreError::InvalidRule);
-        }
-
         let id = draft.id.clone().unwrap_or_default();
         let archived_at = existing
             .as_ref()
@@ -339,9 +332,7 @@ impl Ledger {
         let current = self.dji_rule()?;
         let mut defaults = validate_rule(dji_mic_mini_2s_preset())?;
         defaults.id = Some(current.id.clone());
-        if current.archive_directory_locked {
-            defaults.archive_directory_name = current.archive_directory_name;
-        }
+        defaults.archive_directory_name = current.archive_directory_name;
         let normalized_name = normalized_rule_name(&defaults.name);
         if self.active_rule_name_conflicts(&normalized_name, Some(&current.id))? {
             return Err(CoreError::InvalidRule);
