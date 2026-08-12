@@ -5,6 +5,19 @@ description = "Safe local backups for removable audio recorders"
 authors = ["channprj"]
 edition = "2024"
 rust-version = "1.97"
+default-run = "backup-mic"
+
+[features]
+recovery-tool = []
+
+[[bin]]
+name = "backup-mic"
+path = "src/main.rs"
+
+[[bin]]
+name = "recover_verified_recordings"
+path = "src/bin/recover_verified_recordings.rs"
+required-features = ["recovery-tool"]
 
 [lib]
 name = "backup_mic_lib"

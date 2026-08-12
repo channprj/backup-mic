@@ -246,7 +246,7 @@ Cover source size/hash mismatch, unsafe source root, existing divergent destinat
 - [ ] **Step 2: Run tests and verify the binary is absent**
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic --test recovery_tool
+cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic --features recovery-tool --test recovery_tool
 ```
 
 Expected: FAIL until the binary/shared recovery interface exists.
@@ -262,7 +262,7 @@ Default to `--dry-run`; require `--apply` for changes. Report selected/recoverab
 - [ ] **Step 5: Run focused recovery and artifact tests**
 
 ```bash
-cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic --test recovery_tool
+cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic --features recovery-tool --test recovery_tool
 cargo test --manifest-path src-tauri/Cargo.toml -p backup-mic --test artifact_pipeline
 ```
 

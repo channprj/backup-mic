@@ -143,6 +143,14 @@ fn package_cleanup_compares_only_canonical_physical_paths() {
 }
 
 #[test]
+fn recovery_cli_is_opt_in_and_cannot_replace_the_packaged_app_binary() {
+    let manifest = include_str!("../Cargo.toml");
+    assert!(manifest.contains("default-run = \"backup-mic\""));
+    assert!(manifest.contains("name = \"recover_verified_recordings\""));
+    assert!(manifest.contains("required-features = [\"recovery-tool\"]"));
+}
+
+#[test]
 fn deletion_fixture_refuses_connected_dji_before_creating_an_image() {
     let fixture = tempdir().unwrap();
     let bin = fixture.path().join("bin");

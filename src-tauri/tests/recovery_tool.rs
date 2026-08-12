@@ -146,6 +146,7 @@ impl Fixture {
     }
 }
 
+#[cfg(feature = "recovery-tool")]
 #[test]
 fn command_defaults_to_dry_run_and_reports_counts_only() {
     let fixture = Fixture::new();
