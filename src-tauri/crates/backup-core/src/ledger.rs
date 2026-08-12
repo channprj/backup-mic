@@ -1351,6 +1351,45 @@ impl Ledger {
             .map_err(CoreError::Ledger)
     }
 
+    pub fn verified_recording_candidate_for_source(
+        &self,
+        source_id: &SourceId,
+        source_relative_path: &Path,
+        source_size: u64,
+        source_mtime_ns: i128,
+    ) -> Result<Option<VerifiedRecording>, CoreError> {
+        if !crate::filesystem::is_safe_relative_path(source_relative_path) {
+            return Err(CoreError::InvalidRequest);
+        }
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, destination_relative_path, destination_size,
+                          destination_sha256, verified_at, backup_run_id, artifact_format,
+                          artifact_codec, artifact_sample_rate_hz, artifact_channel_count,
+                          artifact_valid_frames, artifact_duration_micros, conversion_status,
+                          conversion_error_code, retirement_status,
+                          retired_session_relative_path
+                   FROM recordings
+                   WHERE source_id = ?1 AND source_relative_path = ?2
+                     AND source_size = ?3 AND source_mtime_ns = ?4"#,
+                params![
+                    source_id.as_str(),
+                    path_text(source_relative_path)?,
+                    to_i64(source_size)?,
+                    source_mtime_ns.to_string(),
+                ],
+                row_to_verified_recording,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        if let Some(recording) = &row {
+            validate_verified_recording(recording).map_err(|_| CoreError::LedgerCorrupt)?;
+        }
+        Ok(row)
+    }
+
     pub fn replace_verified_artifact(
         &mut self,
         recording: &VerifiedRecording,
@@ -1812,6 +1851,41 @@ impl Ledger {
                     to_i64(source_size)?,
                     source_mtime_ns.to_string(),
                     source_sha256,
+                ],
+                row_to_verified_additional_file,
+            )
+            .optional()
+            .map_err(CoreError::Ledger)?;
+        if let Some(file) = &row {
+            validate_verified_additional_file(file).map_err(|_| CoreError::LedgerCorrupt)?;
+        }
+        Ok(row)
+    }
+
+    pub fn verified_additional_file_candidate_for_source(
+        &self,
+        source_id: &SourceId,
+        source_relative_path: &Path,
+        source_size: u64,
+        source_mtime_ns: i128,
+    ) -> Result<Option<VerifiedAdditionalFile>, CoreError> {
+        if !crate::filesystem::is_safe_additional_relative_path(source_relative_path) {
+            return Err(CoreError::InvalidRequest);
+        }
+        let row = self
+            .connection
+            .query_row(
+                r#"SELECT id, source_id, source_relative_path, source_size, source_mtime_ns,
+                          source_sha256, artifact_relative_path, artifact_size,
+                          artifact_sha256, classification, backup_run_id
+                   FROM additional_files
+                   WHERE source_id = ?1 AND source_relative_path = ?2
+                     AND source_size = ?3 AND source_mtime_ns = ?4"#,
+                params![
+                    source_id.as_str(),
+                    path_text(source_relative_path)?,
+                    to_i64(source_size)?,
+                    source_mtime_ns.to_string(),
                 ],
                 row_to_verified_additional_file,
             )

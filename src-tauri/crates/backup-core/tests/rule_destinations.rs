@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use backup_core::{
     artifact::{OutputFormat, VerifiedArtifact},
-    destination::{DestinationDisposition, plan_rule_file},
+    destination::{DestinationDisposition, plan_rule_file, plan_rule_file_from_metadata},
     hash::hash_file,
     rule::{BackupRule, DateFolderLayout, DeviceConstraintProfile, FilenameProfile, RuleId},
     rule_scanner::{RuleFileObservation, SelectedFileKind},
@@ -179,6 +179,39 @@ fn recording_names_use_rule_directory_calendar_prefix_and_suffix() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn empty_destination_plans_from_metadata_without_reading_source_content() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    fs::create_dir_all(source.path().join("RECORD/FOLDER01")).unwrap();
+    let source_path = source.path().join("RECORD/FOLDER01/ZOOM0001.WAV");
+    fs::write(&source_path, b"zoom audio").unwrap();
+    let metadata = fs::metadata(&source_path).unwrap();
+    let mut observation = observed(
+        "RECORD/FOLDER01/ZOOM0001.WAV",
+        SelectedFileKind::RecordingWav,
+        10,
+    );
+    observation.modified_nanos = backup_core::filesystem::modified_nanos(&metadata).unwrap();
+    fs::set_permissions(&source_path, fs::Permissions::from_mode(0o000)).unwrap();
+
+    let plan = plan_rule_file_from_metadata(
+        source.path(),
+        destination.path(),
+        &zoom_rule(),
+        &SourceId::new(),
+        observation,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(plan.disposition, DestinationDisposition::Copy);
+    assert_eq!(plan.source_sha256, None);
+}
+
 #[test]
 fn verified_m4a_evidence_reuses_the_calendar_name() {
     let source = tempdir().unwrap();
@@ -252,6 +285,51 @@ fn verified_m4a_evidence_reuses_its_exact_path_after_archive_rename() {
             10,
         ),
         Some(&existing),
+    )
+    .unwrap();
+
+    assert_eq!(plan.disposition, DestinationDisposition::Reuse);
+    assert_eq!(plan.relative_destination, relative);
+}
+
+#[cfg(unix)]
+#[test]
+fn verified_m4a_metadata_plan_does_not_read_artifact_content() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    fs::create_dir_all(source.path().join("RECORD/FOLDER01")).unwrap();
+    let source_path = source.path().join("RECORD/FOLDER01/ZOOM0001.WAV");
+    fs::write(&source_path, b"zoom audio").unwrap();
+    let source_metadata = fs::metadata(&source_path).unwrap();
+    let mut observation = observed(
+        "RECORD/FOLDER01/ZOOM0001.WAV",
+        SelectedFileKind::RecordingWav,
+        source_metadata.len(),
+    );
+    observation.modified_nanos = backup_core::filesystem::modified_nanos(&source_metadata).unwrap();
+    let relative = Path::new("Previous Archive/2026/08/260810-ZOOM0001.m4a");
+    fs::create_dir_all(destination.path().join(relative).parent().unwrap()).unwrap();
+    let artifact_path = destination.path().join(relative);
+    fs::write(&artifact_path, b"converted m4a").unwrap();
+    let digest = hash_file(&artifact_path).unwrap();
+    fs::set_permissions(&artifact_path, fs::Permissions::from_mode(0o000)).unwrap();
+    let existing = VerifiedArtifact {
+        relative_path: relative.to_path_buf(),
+        format: OutputFormat::M4a,
+        byte_count: digest.size,
+        sha256: digest.sha256,
+        audio: None,
+    };
+
+    let plan = plan_rule_file_from_metadata(
+        source.path(),
+        destination.path(),
+        &zoom_rule(),
+        &SourceId::new(),
+        observation,
+        Some((&existing, &"a".repeat(64))),
     )
     .unwrap();
 

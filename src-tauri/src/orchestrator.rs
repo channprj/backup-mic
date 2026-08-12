@@ -25,14 +25,18 @@ use backup_core::{
     },
     destination::{
         AdditionalFilePlan, DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition,
-        DestinationPlan, RuleDestinationPlan, plan_rule_file,
+        DestinationPlan, RuleDestinationPlan, plan_rule_file_from_metadata,
     },
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
     ledger::VerifiedRecording,
     recording::{AdditionalFileObservation, ParsedRecordingName, RecordingObservation},
     rule::{BackupRule, compile_rule},
-    rule_scanner::{RuleScanResult, SelectedFileKind, scan_rule_once, scan_rule_stable},
+    rule_scanner::{
+        RuleScanResult, SelectedFileKind, begin_rule_stable_scan, finish_rule_stable_scan,
+        scan_rule_once,
+    },
+    scanner::STABILITY_INTERVAL,
     source::{MountedSourceAuthority, SourceId},
     state::{BackupPhase, CurrentStage, DeletionPhase, Transmitter},
 };
@@ -184,18 +188,49 @@ pub fn run_matched_sources_with_adapters(
         }
     }
 
-    let mut prepared = Vec::new();
+    let mut scan_snapshots = Vec::new();
     for matched in eligible_sources {
-        match prepare_matched_source(
-            state,
-            matched.clone(),
-            &destination,
-            destination_generation,
-            preferences,
+        let first = compile_rule(matched.rule.clone()).and_then(|compiled| {
+            begin_rule_stable_scan(
+                &matched.authority.descriptor.mount_root,
+                &compiled,
+                local_offset,
+                cancellation,
+            )
+            .map(|snapshot| (compiled, snapshot))
+        });
+        match first {
+            Ok((compiled, snapshot)) => scan_snapshots.push((matched, compiled, snapshot)),
+            Err(error) if source_failure_is_process_wide(&error) => return Err(error),
+            Err(error) => outcomes.push(failed_without_run(matched.authority.source.id, error)),
+        }
+    }
+    if !scan_snapshots.is_empty() {
+        cancellation.check()?;
+        clock.sleep(STABILITY_INTERVAL);
+        cancellation.check()?;
+    }
+
+    let mut prepared = Vec::new();
+    for (matched, compiled, first) in scan_snapshots {
+        let scan = finish_rule_stable_scan(
+            &matched.authority.descriptor.mount_root,
+            &compiled,
             local_offset,
-            clock,
+            first,
             cancellation,
-        ) {
+        );
+        match scan.and_then(|scan| {
+            prepare_matched_source(
+                state,
+                matched.clone(),
+                scan,
+                &destination,
+                destination_generation,
+                preferences,
+                cancellation,
+            )
+        }) {
             Ok(source) => prepared.push(source),
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
             Err(error) => outcomes.push(failed_without_run(matched.authority.source.id, error)),
@@ -269,16 +304,14 @@ fn install_rule_deletion_evidence(
 fn prepare_matched_source(
     state: &AppState,
     matched: MatchedSource,
+    scan: RuleScanResult,
     destination: &std::path::Path,
     destination_generation: u64,
     preferences: backup_core::batch::FrozenPreferences,
-    local_offset: UtcOffset,
-    clock: &dyn Clock,
     cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<PreparedSource, CoreError> {
-    let compiled = compile_rule(matched.rule.clone())?;
     let source_root = matched.authority.descriptor.mount_root.clone();
-    let scan = scan_rule_stable(&source_root, &compiled, local_offset, clock, cancellation)?;
+    cancellation.check()?;
     if !state.destination_snapshot_is_current(destination, destination_generation) {
         return Err(CoreError::DestinationUnavailable);
     }
@@ -296,39 +329,27 @@ fn prepare_matched_source(
     let mut expected = BTreeSet::new();
 
     for observation in scan.files.iter().cloned() {
-        let initial = plan_rule_file(
-            &source_root,
-            destination,
-            &matched.rule,
-            &matched.authority.source.id,
-            observation.clone(),
-            None,
-        )?;
         match observation.kind {
             SelectedFileKind::RecordingWav => {
-                let existing = state.ledger.lock().verified_recording_for_source(
-                    &matched.authority.source.id,
-                    &observation.relative_path,
-                    observation.size,
-                    observation.modified_nanos,
-                    &initial.source_sha256,
-                )?;
-                let planned = if let Some(existing) = &existing {
-                    plan_rule_file(
-                        &source_root,
-                        destination,
-                        &matched.rule,
+                let existing = state
+                    .ledger
+                    .lock()
+                    .verified_recording_candidate_for_source(
                         &matched.authority.source.id,
-                        observation,
-                        Some(&existing.artifact),
-                    )?
-                } else {
-                    initial
-                };
-                let replace_existing_m4a = existing.as_ref().is_some_and(|existing| {
-                    existing.artifact.format == OutputFormat::M4a
-                        && planned.disposition == DestinationDisposition::Copy
-                });
+                        &observation.relative_path,
+                        observation.size,
+                        observation.modified_nanos,
+                    )?;
+                let planned = plan_rule_file_from_metadata(
+                    &source_root,
+                    destination,
+                    &matched.rule,
+                    &matched.authority.source.id,
+                    observation,
+                    existing
+                        .as_ref()
+                        .map(|existing| (&existing.artifact, existing.source_sha256.as_str())),
+                )?;
                 expected.insert(BatchItemKey::Recording {
                     source_id: matched.authority.source.id.clone(),
                     relative_path: planned.source.relative_path.clone(),
@@ -336,17 +357,19 @@ fn prepare_matched_source(
                 recording_plans.push(PreparedRuleRecording {
                     plan: destination_plan_from_rule(planned),
                     existing,
-                    replace_existing_m4a,
+                    replace_existing_m4a: false,
                 });
             }
             SelectedFileKind::Companion => {
-                let existing = state.ledger.lock().verified_additional_file_for_source(
-                    &matched.authority.source.id,
-                    &observation.relative_path,
-                    observation.size,
-                    observation.modified_nanos,
-                    &initial.source_sha256,
-                )?;
+                let existing = state
+                    .ledger
+                    .lock()
+                    .verified_additional_file_candidate_for_source(
+                        &matched.authority.source.id,
+                        &observation.relative_path,
+                        observation.size,
+                        observation.modified_nanos,
+                    )?;
                 let existing_artifact =
                     existing
                         .as_ref()
@@ -357,18 +380,18 @@ fn prepare_matched_source(
                             sha256: existing.artifact_sha256.clone(),
                             audio: None,
                         });
-                let planned = if let Some(existing) = existing_artifact.as_ref() {
-                    plan_rule_file(
-                        &source_root,
-                        destination,
-                        &matched.rule,
-                        &matched.authority.source.id,
-                        observation,
-                        Some(existing),
-                    )?
-                } else {
-                    initial
-                };
+                let planned = plan_rule_file_from_metadata(
+                    &source_root,
+                    destination,
+                    &matched.rule,
+                    &matched.authority.source.id,
+                    observation,
+                    existing_artifact.as_ref().zip(
+                        existing
+                            .as_ref()
+                            .map(|existing| existing.source_sha256.as_str()),
+                    ),
+                )?;
                 expected.insert(BatchItemKey::Additional {
                     source_id: matched.authority.source.id.clone(),
                     relative_path: planned.source.relative_path.clone(),
@@ -555,7 +578,11 @@ fn process_prepared_source(
                     cancellation,
                 )
                 .and_then(|file| {
-                    if file.source_sha256 != plan.source_sha256 {
+                    if plan
+                        .source_sha256
+                        .as_ref()
+                        .is_some_and(|expected| file.source_sha256 != *expected)
+                    {
                         return Err(CoreError::HashMismatch);
                     }
                     state.ledger.lock().commit_verified_additional_file(&file)?;

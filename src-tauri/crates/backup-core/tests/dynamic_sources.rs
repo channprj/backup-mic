@@ -101,6 +101,17 @@ fn two_same_named_volumes_keep_distinct_source_evidence() {
     assert_eq!(ledger.sources_for_rule(&rule.id).unwrap().len(), 2);
     assert_eq!(
         ledger
+            .verified_recording_candidate_for_source(
+                &first.id,
+                &first_recording.source_relative_path,
+                first_recording.source_size,
+                first_recording.source_mtime_ns,
+            )
+            .unwrap(),
+        Some(first_recording.clone())
+    );
+    assert_eq!(
+        ledger
             .verified_recording_for_source(
                 &first.id,
                 &first_recording.source_relative_path,

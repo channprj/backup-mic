@@ -415,7 +415,11 @@ fn copy_and_verify(
         size: copied,
         sha256: digest_hex(hasher.finalize()),
     };
-    if source_digest.sha256 != plan.source_sha256 {
+    if plan
+        .source_sha256
+        .as_ref()
+        .is_some_and(|expected| source_digest.sha256 != *expected)
+    {
         return Err(CoreError::SourceChanged);
     }
     faults.check(CopyFaultPoint::DestinationHash)?;
@@ -485,7 +489,7 @@ fn verify_reused(
     if !final_metadata.file_type().is_file()
         || final_metadata.len() != plan.source.size
         || modified_nanos(&final_metadata)? != plan.source.modified_nanos
-        || source_digest.sha256 != plan.source_sha256
+        || plan.source_sha256.as_deref() != Some(source_digest.sha256.as_str())
     {
         return Err(CoreError::SourceChanged);
     }

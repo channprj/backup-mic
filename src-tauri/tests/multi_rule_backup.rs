@@ -1,7 +1,7 @@
 use std::{
     fs,
     path::Path,
-    sync::atomic::{AtomicBool, Ordering},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::Duration,
 };
 
@@ -34,6 +34,17 @@ struct InstantClock;
 
 impl Clock for InstantClock {
     fn sleep(&self, _duration: Duration) {}
+}
+
+#[derive(Default)]
+struct CountingClock {
+    sleeps: AtomicUsize,
+}
+
+impl Clock for CountingClock {
+    fn sleep(&self, _duration: Duration) {
+        self.sleeps.fetch_add(1, Ordering::SeqCst);
+    }
 }
 
 struct FakeAudioTools;
@@ -306,6 +317,37 @@ fn two_rules_with_equal_source_names_complete_independent_m4a_barriers() {
             BatchPhase::M4aCohortVerified
         );
     }
+}
+
+#[test]
+fn two_sources_share_one_stability_interval() {
+    let fixture = Fixture::new();
+    let (_zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Zoom H1n",
+        "zoom-",
+        "abababab-abab-4bab-8bab-abababababab",
+    );
+    let (_sony_root, sony) = fixture.add_source(
+        "SONY",
+        "Sony PCM",
+        "sony-",
+        "cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd",
+    );
+    let clock = CountingClock::default();
+
+    let outcomes = run_matched_sources_with_adapters(
+        &fixture.state,
+        &[zoom, sony],
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &clock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    assert_eq!(outcomes.len(), 2);
+    assert_eq!(clock.sleeps.load(Ordering::SeqCst), 1);
 }
 
 #[test]

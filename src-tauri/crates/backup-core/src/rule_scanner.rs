@@ -73,6 +73,9 @@ struct InternalScan {
     unsafe_session_count: u64,
 }
 
+#[derive(Debug)]
+pub struct RuleScanSnapshot(InternalScan);
+
 struct Walker<'a> {
     root: &'a Path,
     rule: &'a CompiledBackupRule,
@@ -111,17 +114,38 @@ pub fn scan_rule_stable(
     clock: &dyn Clock,
     cancellation: &CancellationToken,
 ) -> Result<RuleScanResult, CoreError> {
+    let first = begin_rule_stable_scan(root, rule, local_offset, cancellation)?;
     cancellation.check()?;
-    let first = scan_internal(
+    clock.sleep(STABILITY_INTERVAL);
+    cancellation.check()?;
+    finish_rule_stable_scan(root, rule, local_offset, first, cancellation)
+}
+
+pub fn begin_rule_stable_scan(
+    root: &Path,
+    rule: &CompiledBackupRule,
+    local_offset: UtcOffset,
+    cancellation: &CancellationToken,
+) -> Result<RuleScanSnapshot, CoreError> {
+    cancellation.check()?;
+    scan_internal(
         root,
         rule,
         local_offset,
         MAX_SCAN_DEPTH,
         MAX_VISITED_ENTRIES,
         cancellation,
-    )?;
-    cancellation.check()?;
-    clock.sleep(STABILITY_INTERVAL);
+    )
+    .map(RuleScanSnapshot)
+}
+
+pub fn finish_rule_stable_scan(
+    root: &Path,
+    rule: &CompiledBackupRule,
+    local_offset: UtcOffset,
+    first: RuleScanSnapshot,
+    cancellation: &CancellationToken,
+) -> Result<RuleScanResult, CoreError> {
     cancellation.check()?;
     let mut second = scan_internal(
         root,
@@ -132,6 +156,7 @@ pub fn scan_rule_stable(
         cancellation,
     )?;
     let first_by_path = first
+        .0
         .files
         .into_iter()
         .map(|observation| {

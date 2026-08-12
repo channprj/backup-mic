@@ -11,7 +11,7 @@ use crate::{
     error::CoreError,
     filesystem::{
         canonical_regular_file, is_recognized_session_name, is_safe_additional_relative_path,
-        is_safe_relative_path,
+        is_safe_relative_path, modified_nanos,
     },
     hash::{FileDigest, hash_file},
     recording::{AdditionalFileObservation, RecordingObservation},
@@ -32,7 +32,7 @@ pub enum DestinationDisposition {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DestinationPlan {
     pub source: RecordingObservation,
-    pub source_sha256: String,
+    pub source_sha256: Option<String>,
     pub relative_destination: PathBuf,
     pub disposition: DestinationDisposition,
 }
@@ -40,7 +40,7 @@ pub struct DestinationPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AdditionalFilePlan {
     pub source: AdditionalFileObservation,
-    pub source_sha256: String,
+    pub source_sha256: Option<String>,
     pub relative_destination: PathBuf,
     pub disposition: DestinationDisposition,
 }
@@ -48,7 +48,7 @@ pub struct AdditionalFilePlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuleDestinationPlan {
     pub source: RuleFileObservation,
-    pub source_sha256: String,
+    pub source_sha256: Option<String>,
     pub relative_destination: PathBuf,
     pub disposition: DestinationDisposition,
 }
@@ -73,7 +73,7 @@ pub fn plan_rule_file(
     {
         return Ok(RuleDestinationPlan {
             source,
-            source_sha256: source_digest.sha256,
+            source_sha256: Some(source_digest.sha256),
             relative_destination,
             disposition: DestinationDisposition::Reuse,
         });
@@ -92,10 +92,74 @@ pub fn plan_rule_file(
         choose_available_name(destination_root, &default_relative, &source_digest)?;
     Ok(RuleDestinationPlan {
         source,
-        source_sha256: source_digest.sha256,
+        source_sha256: Some(source_digest.sha256),
         relative_destination,
         disposition,
     })
+}
+
+pub fn plan_rule_file_from_metadata(
+    source_root: &Path,
+    destination_root: &Path,
+    rule: &BackupRule,
+    source_id: &SourceId,
+    source: RuleFileObservation,
+    existing: Option<(&VerifiedArtifact, &str)>,
+) -> Result<RuleDestinationPlan, CoreError> {
+    validate_rule_observation(&source)?;
+    let source_path = canonical_regular_file(source_root, &source.relative_path)?;
+    let metadata = fs::symlink_metadata(&source_path).map_err(CoreError::CopyFailed)?;
+    if metadata.len() != source.size || modified_nanos(&metadata)? != source.modified_nanos {
+        return Err(CoreError::SourceChanged);
+    }
+    if let Some((artifact, source_sha256)) = existing {
+        if source_sha256.len() != 64 || !source_sha256.bytes().all(|byte| byte.is_ascii_hexdigit())
+        {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        let relative_destination = reusable_rule_artifact_from_metadata(
+            destination_root,
+            source.kind,
+            source.size,
+            artifact,
+        )?;
+        return Ok(RuleDestinationPlan {
+            source,
+            source_sha256: Some(source_sha256.to_owned()),
+            relative_destination,
+            disposition: DestinationDisposition::Reuse,
+        });
+    }
+
+    let default_relative = default_rule_destination(rule, source_id, &source)?;
+    match fs::symlink_metadata(destination_root.join(&default_relative)) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(RuleDestinationPlan {
+            source,
+            source_sha256: None,
+            relative_destination: default_relative,
+            disposition: DestinationDisposition::Copy,
+        }),
+        Err(error) => Err(CoreError::CopyFailed(error)),
+        Ok(_) => plan_rule_file(source_root, destination_root, rule, source_id, source, None),
+    }
+}
+
+fn default_rule_destination(
+    rule: &BackupRule,
+    source_id: &SourceId,
+    source: &RuleFileObservation,
+) -> Result<PathBuf, CoreError> {
+    let relative = match source.kind {
+        SelectedFileKind::RecordingWav => recording_rule_destination(rule, source)?,
+        SelectedFileKind::Companion => PathBuf::from(&rule.archive_directory_name)
+            .join("source-extras")
+            .join(source_evidence_key(source_id))
+            .join(&source.relative_path),
+    };
+    if !is_safe_additional_relative_path(&relative) {
+        return Err(CoreError::InvalidRequest);
+    }
+    Ok(relative)
 }
 
 fn validate_rule_observation(source: &RuleFileObservation) -> Result<(), CoreError> {
@@ -196,6 +260,29 @@ fn reusable_rule_artifact(
     Ok((disposition == DestinationDisposition::Reuse).then(|| existing.relative_path.clone()))
 }
 
+fn reusable_rule_artifact_from_metadata(
+    destination_root: &Path,
+    kind: SelectedFileKind,
+    source_size: u64,
+    existing: &VerifiedArtifact,
+) -> Result<PathBuf, CoreError> {
+    if !is_safe_relative_path(&existing.relative_path)
+        || ((kind == SelectedFileKind::Companion || existing.format == OutputFormat::Wav)
+            && existing.byte_count != source_size)
+    {
+        return Err(CoreError::InvalidRequest);
+    }
+    let metadata = fs::symlink_metadata(destination_root.join(&existing.relative_path))
+        .map_err(|_| CoreError::DestinationUnavailable)?;
+    if metadata.file_type().is_symlink()
+        || !metadata.file_type().is_file()
+        || metadata.len() != existing.byte_count
+    {
+        return Err(CoreError::DestinationUnavailable);
+    }
+    Ok(existing.relative_path.clone())
+}
+
 pub fn plan_additional_file(
     source_root: &Path,
     destination_root: &Path,
@@ -239,7 +326,7 @@ pub fn plan_additional_file(
         choose_available_name(destination_root, &default_relative, &source_digest)?;
     Ok(AdditionalFilePlan {
         source,
-        source_sha256: source_digest.sha256,
+        source_sha256: Some(source_digest.sha256),
         relative_destination,
         disposition,
     })
@@ -276,7 +363,7 @@ pub fn plan_recording(
         choose_available_name(destination_root, &default_relative, &source_digest)?;
     Ok(DestinationPlan {
         source,
-        source_sha256: source_digest.sha256,
+        source_sha256: Some(source_digest.sha256),
         relative_destination,
         disposition,
     })
