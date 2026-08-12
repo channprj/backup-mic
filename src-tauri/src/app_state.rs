@@ -1077,7 +1077,7 @@ impl AppState {
         let mut runtime = self.runtime.lock();
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = public.message_code.clone();
-        runtime.snapshot.error = Some(public);
+        runtime.snapshot.error = Some(public.clone());
         runtime.snapshot.failure_stage = runtime.snapshot.current_stage;
         runtime.snapshot.current_stage = None;
         runtime.snapshot.setting_applies_next_run = false;
@@ -1085,6 +1085,7 @@ impl AppState {
             snapshot.phase = BackupPhase::Error;
             snapshot.retirement_outcome = DeletionPhase::Refused;
             snapshot.deletion_ready = false;
+            snapshot.error = Some(public.clone());
         });
         publish_locked(app, &mut runtime);
     }
@@ -1345,6 +1346,7 @@ fn settle_cancelled_snapshot(snapshot: &mut AppSnapshotDto) -> bool {
         source.progress = ProgressDto::from(&Progress::default());
         source.retirement_outcome = DeletionPhase::Inactive;
         source.deletion_ready = false;
+        source.error = None;
     }
     for transmitter in &mut snapshot.transmitters {
         transmitter.phase = BackupPhase::Idle;
@@ -1604,6 +1606,7 @@ mod tests {
             },
             retirement_outcome: DeletionPhase::Preparing,
             deletion_ready: true,
+            error: Some(CoreError::InvalidRequest.public(None)),
         });
 
         assert!(settle_cancelled_snapshot(&mut snapshot));
@@ -1623,6 +1626,7 @@ mod tests {
                 && source.progress == ProgressDto::from(&Progress::default())
                 && !source.deletion_ready
                 && source.retirement_outcome == DeletionPhase::Inactive
+                && source.error.is_none()
         }));
         assert!(snapshot.transmitters.iter().all(|transmitter| {
             transmitter.phase == BackupPhase::Idle

@@ -91,20 +91,6 @@ export const backupRuleSchema = backupRuleDraftSchema
   })
   .strict();
 
-export const sourceSnapshotSchema = z
-  .object({
-    source_id: opaqueIdSchema,
-    rule_name: ruleTextSchema,
-    volume_name: safeLabelSchema,
-    legacy_slot: z.string().max(64).nullable(),
-    mounted: z.boolean(),
-    phase: backupPhaseSchema,
-    progress: progressSchema,
-    retirement_outcome: retirementOutcomeSchema,
-    deletion_ready: z.boolean(),
-  })
-  .strict();
-
 export const ruleTestResultSchema = z
   .object({
     matched_volumes: z.array(safeLabelSchema).max(128),
@@ -131,6 +117,21 @@ export const publicErrorSchema = z
     retryable: z.boolean(),
     source_id: opaqueIdSchema.nullable(),
     source_label: safeLabelSchema.nullable(),
+  })
+  .strict();
+
+export const sourceSnapshotSchema = z
+  .object({
+    source_id: opaqueIdSchema,
+    rule_name: ruleTextSchema,
+    volume_name: safeLabelSchema,
+    legacy_slot: z.string().max(64).nullable(),
+    mounted: z.boolean(),
+    phase: backupPhaseSchema,
+    progress: progressSchema,
+    retirement_outcome: retirementOutcomeSchema,
+    deletion_ready: z.boolean(),
+    error: publicErrorSchema.nullable(),
   })
   .strict();
 

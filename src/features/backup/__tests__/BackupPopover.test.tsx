@@ -292,6 +292,40 @@ describe("BackupPopover", () => {
     expect(screen.getByRole("button", { name: "오류 로그 열기" })).toBeEnabled();
   });
 
+  it("identifies the recorder that failed even when another source completed", () => {
+    renderPopover({
+      ...complete,
+      phase: "partial_failure",
+      message_code: "partial_failure",
+      sources: complete.sources.map((source, index) =>
+        index === 0
+          ? {
+              ...source,
+              phase: "partial_failure" as const,
+              error: {
+                code: "source_changed",
+                message_code: "source_changed",
+                retryable: true,
+                source_id: source.source_id,
+                source_label: source.volume_name,
+              },
+            }
+          : source,
+      ),
+      error: {
+        code: "source_changed",
+        message_code: "source_changed",
+        retryable: true,
+        source_id: complete.sources[0].source_id,
+        source_label: complete.sources[0].volume_name,
+      },
+    });
+
+    expect(screen.getByText("MIC_TX")).toBeInTheDocument();
+    expect(screen.getByText(/녹음이 변경됐습니다 · 오류 코드: source_changed/)).toBeInTheDocument();
+    expect(screen.getByText(/Zoom H1n · 검증 완료/)).toBeInTheDocument();
+  });
+
   it("opens Settings and the current log through narrow commands", async () => {
     const { actions } = renderPopover();
     fireEvent.click(screen.getByRole("button", { name: "Settings…" }));

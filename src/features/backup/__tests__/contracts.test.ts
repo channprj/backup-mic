@@ -94,6 +94,18 @@ describe("app snapshot contract", () => {
     expect(parsed.backup_rules[0].date_folder_layout).toBe("year_month");
   });
 
+  test("requires an explicit nullable error for every recorder source", () => {
+    const source = backupComplete.sources[0];
+    expect(appSnapshotSchema.safeParse(backupComplete).success).toBe(true);
+    const { error: _error, ...withoutError } = source;
+    expect(
+      appSnapshotSchema.safeParse({
+        ...backupComplete,
+        sources: [withoutError],
+      }).success,
+    ).toBe(false);
+  });
+
   test("accepts only the three date folder layouts and defaults legacy drafts", () => {
     const draft = {
       id: null,

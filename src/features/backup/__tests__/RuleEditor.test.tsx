@@ -80,7 +80,7 @@ function fillValidRule() {
 }
 
 describe("RuleEditor", () => {
-  it("keeps an evidence-locked archive directory when renaming a rule", async () => {
+  it("allows an evidence-backed rule to choose a future archive directory", async () => {
     const onSave = vi.fn().mockResolvedValue(undefined);
     render(
       <RuleEditor
@@ -94,15 +94,22 @@ describe("RuleEditor", () => {
       />,
     );
 
-    fireEvent.change(screen.getByLabelText("규칙 이름"), {
+    const archive = screen.getByLabelText("보관 폴더 이름");
+    expect(archive).toBeEnabled();
+    expect(
+      screen.getByText(
+        "새 백업부터 적용됩니다. 검증된 기존 파일은 현재 위치에 유지됩니다.",
+      ),
+    ).toBeInTheDocument();
+    fireEvent.change(archive, {
       target: { value: "내 DJI 마이크" },
     });
     fireEvent.click(screen.getByRole("button", { name: "규칙 저장" }));
 
     await waitFor(() => expect(onSave).toHaveBeenCalledOnce());
     expect(onSave.mock.calls[0][0]).toMatchObject({
-      name: "내 DJI 마이크",
-      archive_directory_name: "DJI Mic Mini 2S",
+      name: "DJI Mic Mini 2S",
+      archive_directory_name: "내 DJI 마이크",
     });
   });
 

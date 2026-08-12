@@ -13,7 +13,8 @@
       "phase": "copying",
       "progress": { "percent": 42, "copied_bytes": 52428800, "bytes_requiring_copy": 104857600, "verified_files": 2, "total_files": 6 },
       "retirement_outcome": "inactive",
-      "deletion_ready": false
+      "deletion_ready": false,
+      "error": null
     }
   ],
   "backup_rules": [

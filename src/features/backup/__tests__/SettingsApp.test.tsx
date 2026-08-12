@@ -206,9 +206,14 @@ describe("SettingsView", () => {
     );
   });
 
-  it("locks the archive directory after evidence exists", () => {
+  it("keeps the archive directory editable after evidence exists", () => {
     renderSettings();
     fireEvent.click(screen.getByRole("button", { name: "DJI Mic Mini 2S 편집" }));
-    expect(screen.getByLabelText("보관 폴더 이름")).toBeDisabled();
+    expect(screen.getByLabelText("보관 폴더 이름")).toBeEnabled();
+    expect(
+      screen.getByText(
+        "새 백업부터 적용됩니다. 검증된 기존 파일은 현재 위치에 유지됩니다.",
+      ),
+    ).toBeInTheDocument();
   });
 });

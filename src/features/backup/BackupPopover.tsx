@@ -632,6 +632,9 @@ function ChannelRow({
         : active
           ? `${snapshot.progress.percent}%`
           : "연결됨";
+  const sourceError = snapshot.error
+    ? errorCopy(snapshot.error.message_code)
+    : null;
   return (
     <div className="channel-row">
       <div className="channel-label">
@@ -646,6 +649,11 @@ function ChannelRow({
       <span className="channel-count">
         {snapshot.progress.verified_files}/{snapshot.progress.total_files}
       </span>
+      {sourceError ? (
+        <span className="channel-error" role="alert">
+          {sourceError.title} · 오류 코드: {snapshot.error?.message_code}
+        </span>
+      ) : null}
     </div>
   );
 }

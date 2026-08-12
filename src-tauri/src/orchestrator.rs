@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -1200,6 +1200,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                     snapshot.phase = BackupPhase::Scanning;
                     snapshot.deletion_ready = false;
                     snapshot.retirement_outcome = DeletionPhase::Inactive;
+                    snapshot.error = None;
                 },
             );
         }
@@ -1258,6 +1259,33 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             })
         })
         .or_else(|| automatic_retirement_failed.then(|| CoreError::TrashFailed.public(None)));
+    let source_errors = matched
+        .iter()
+        .filter_map(|matched_source| {
+            let source_id = &matched_source.authority.source.id;
+            let error = outcomes
+                .iter()
+                .find(|outcome| outcome.source_id == *source_id)
+                .and_then(|outcome| outcome.error.clone())
+                .or_else(|| {
+                    automatic_retirements
+                        .iter()
+                        .find(|retirement| retirement.source_id == *source_id)
+                        .and_then(|retirement| {
+                            retirement.error.clone().or_else(|| {
+                                retirement.report.as_ref().and_then(|report| {
+                                    (report.outcome != DeletionOutcome::Deleted)
+                                        .then(|| CoreError::TrashFailed.public(None))
+                                })
+                            })
+                        })
+                })?;
+            Some((
+                source_id.clone(),
+                state.public_error_for_source(error, source_id),
+            ))
+        })
+        .collect::<HashMap<_, _>>();
     {
         let mut runtime = state.runtime.lock();
         runtime.snapshot.phase = phase;
@@ -1314,6 +1342,9 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 .iter()
                 .find(|outcome| outcome.source_id == matched_source.authority.source.id)
                 .map_or(0, |outcome| outcome.verified_files);
+            let source_error = source_errors
+                .get(&matched_source.authority.source.id)
+                .cloned();
             update_source(
                 &mut runtime.snapshot,
                 &matched_source.authority.source.id,
@@ -1335,6 +1366,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                     };
                     snapshot.deletion_ready = deletion_ready;
                     snapshot.retirement_outcome = deletion_phase;
+                    snapshot.error = source_error;
                 },
             );
             if let Some(transmitter) = matched_legacy_transmitter(matched_source) {

@@ -13,7 +13,8 @@
       "phase": "completed_deletion_pending",
       "progress": { "percent": 100, "copied_bytes": 100663296, "bytes_requiring_copy": 100663296, "verified_files": 9, "total_files": 9 },
       "retirement_outcome": "inactive",
-      "deletion_ready": true
+      "deletion_ready": true,
+      "error": null
     },
     {
       "source_id": "22222222-2222-4222-8222-222222222222",
@@ -24,7 +25,8 @@
       "phase": "completed_deletion_pending",
       "progress": { "percent": 100, "copied_bytes": 14680064, "bytes_requiring_copy": 14680064, "verified_files": 2, "total_files": 2 },
       "retirement_outcome": "inactive",
-      "deletion_ready": true
+      "deletion_ready": true,
+      "error": null
     }
   ],
   "backup_rules": [

@@ -447,6 +447,12 @@ button:not(:disabled):active {
   gap: 9px;
 }
 
+.channel-error {
+  grid-column: 1 / -1;
+  color: var(--destructive);
+  font-size: 9px;
+}
+
 .channel-label {
   min-width: 0;
   gap: 6px;
@@ -1030,6 +1036,12 @@ button:not(:disabled):active {
 .rule-preview span,
 .rule-field-error {
   margin: 0;
+}
+
+.rule-field-hint {
+  color: var(--muted-foreground);
+  font-size: 9px;
+  line-height: 1.35;
 }
 
 .rule-list-toolbar p,

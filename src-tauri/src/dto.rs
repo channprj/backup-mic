@@ -72,6 +72,7 @@ pub struct SourceSnapshotDto {
     pub progress: ProgressDto,
     pub retirement_outcome: DeletionPhase,
     pub deletion_ready: bool,
+    pub error: Option<PublicError>,
 }
 
 impl SourceSnapshotDto {
@@ -91,6 +92,7 @@ impl SourceSnapshotDto {
             progress: ProgressDto::from(&Progress::default()),
             retirement_outcome: DeletionPhase::Inactive,
             deletion_ready: false,
+            error: None,
         }
     }
 }

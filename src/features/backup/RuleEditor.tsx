@@ -220,7 +220,6 @@ export function RuleEditor({
     setDraft((current) => {
       if (key === "name") {
         const syncArchive =
-          !rule?.archive_directory_locked &&
           (current.archive_directory_name.length === 0 ||
             current.archive_directory_name === current.name);
         return {
@@ -320,7 +319,12 @@ export function RuleEditor({
           label="보관 폴더 이름"
           value={draft.archive_directory_name}
           error={errors.archive_directory_name}
-          disabled={busy || Boolean(rule?.archive_directory_locked)}
+          disabled={busy}
+          hint={
+            rule?.archive_directory_locked
+              ? "새 백업부터 적용됩니다. 검증된 기존 파일은 현재 위치에 유지됩니다."
+              : undefined
+          }
           onChange={(value) => updateText("archive_directory_name", value)}
         />
         <label className="rule-input">
@@ -504,6 +508,7 @@ function RuleInput({
   value,
   error,
   disabled,
+  hint,
   list,
   onChange,
 }: {
@@ -511,6 +516,7 @@ function RuleInput({
   value: string;
   error?: string;
   disabled: boolean;
+  hint?: string;
   list?: string;
   onChange: (value: string) => void;
 }) {
@@ -525,6 +531,7 @@ function RuleInput({
         aria-invalid={Boolean(error)}
         onChange={(event) => onChange(event.currentTarget.value)}
       />
+      {hint && !error ? <small className="rule-field-hint">{hint}</small> : null}
       {error ? <small className="rule-field-error">{error}</small> : null}
     </label>
   );
