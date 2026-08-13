@@ -51,7 +51,8 @@ use crate::{
         update_transmitter,
     },
     artifact_pipeline::{
-        finalize_prepared_m4a, order_conversion_cohort, prepare_m4a, verify_published_artifact,
+        finalize_prepared_m4a, order_conversion_cohort, prepare_m4a,
+        retire_superseded_wavs_for_source, verify_published_artifact,
     },
     dto::{ProgressDto, TrashProposalSummaryDto},
     platform::{
@@ -141,6 +142,7 @@ pub fn run_matched_sources_with_adapters(
     matched_sources: &[MatchedSource],
     audio_tools: &dyn AudioTools,
     source_faults: &dyn SourceCopyFaults,
+    destination_trash: &dyn TrashAdapter,
     clock: &dyn Clock,
     cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<Vec<SourceRunOutcome>, CoreError> {
@@ -262,6 +264,7 @@ pub fn run_matched_sources_with_adapters(
             preferences,
             audio_tools,
             source_faults,
+            destination_trash,
             cancellation,
         )?);
     }
@@ -508,6 +511,7 @@ fn process_prepared_source(
     preferences: backup_core::batch::FrozenPreferences,
     audio_tools: &dyn AudioTools,
     source_faults: &dyn SourceCopyFaults,
+    destination_trash: &dyn TrashAdapter,
     cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<SourceRunOutcome, CoreError> {
     if source.authority.source.id != source.source_id
@@ -751,6 +755,20 @@ fn process_prepared_source(
                 converted_files = converted_files.saturating_add(1);
             }
             state.ledger.lock().commit_m4a_barrier(&run_id)?;
+        }
+        let retirement = {
+            let mut ledger = state.ledger.lock();
+            retire_superseded_wavs_for_source(
+                destination,
+                &mut ledger,
+                &source.source_id,
+                audio_tools,
+                destination_trash,
+                cancellation,
+            )
+        };
+        if let Err(error) = retirement {
+            return finish_source_failure(state, source, run_id, error);
         }
     }
 
@@ -1209,6 +1227,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         &matched,
         &AppleAudioTools,
         &NoSourceCopyFaults,
+        &MacTrash,
         &SystemClock,
         &guard.cancellation,
     )?;

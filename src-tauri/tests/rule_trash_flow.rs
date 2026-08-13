@@ -34,6 +34,22 @@ use time::{OffsetDateTime, UtcOffset};
 
 struct InstantClock;
 
+struct BackupTrash;
+
+impl TrashAdapter for BackupTrash {
+    fn move_to_trash(&self, absolute_path: &Path) -> Result<(), CoreError> {
+        fs::remove_file(absolute_path).map_err(CoreError::CopyFailed)
+    }
+}
+
+struct RefuseBackupTrash;
+
+impl TrashAdapter for RefuseBackupTrash {
+    fn move_to_trash(&self, _absolute_path: &Path) -> Result<(), CoreError> {
+        Err(CoreError::TrashFailed)
+    }
+}
+
 impl Clock for InstantClock {
     fn sleep(&self, _duration: Duration) {}
 }
@@ -215,6 +231,7 @@ fn generic_manual_trash_uses_the_frozen_source_id_and_moves_one_complete_session
         std::slice::from_ref(&source),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -242,6 +259,51 @@ fn generic_manual_trash_uses_the_frozen_source_id_and_moves_one_complete_session
 }
 
 #[test]
+fn backup_wav_trash_failure_never_authorizes_source_retirement() {
+    let fixture = Fixture::new();
+    let (source_root, source) = fixture.add_source("ZOOM", "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
+
+    let outcomes = run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&source),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &RefuseBackupTrash,
+        &InstantClock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].error.is_some());
+    assert!(!outcomes[0].deletion_ready);
+    assert!(outcomes[0].deletion_evidence.is_none());
+    assert!(
+        source_root
+            .path()
+            .join("RECORD/FOLDER01/REC0001.wav")
+            .is_file()
+    );
+    assert!(
+        fixture
+            .destination
+            .path()
+            .join("ZOOM Archive")
+            .read_dir()
+            .unwrap()
+            .any(|entry| entry.unwrap().path().is_dir())
+    );
+    assert_eq!(
+        Ledger::open(fixture._state_root.path().join("ledger.sqlite3"))
+            .unwrap()
+            .pending_superseded_wavs()
+            .unwrap()
+            .len(),
+        1
+    );
+}
+
+#[test]
 fn automatic_trash_refusal_for_one_source_does_not_block_another_source() {
     let fixture = Fixture::new();
     fixture
@@ -255,6 +317,7 @@ fn automatic_trash_refusal_for_one_source_does_not_block_another_source() {
         &[zoom.clone(), sony.clone()],
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -316,6 +379,7 @@ fn cancellation_before_automatic_retirement_keeps_source_files_in_place() {
         std::slice::from_ref(&source),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -354,6 +418,7 @@ fn wav_only_backup_never_creates_source_retirement_authority() {
         std::slice::from_ref(&source),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )

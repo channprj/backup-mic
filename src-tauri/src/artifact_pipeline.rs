@@ -1,6 +1,7 @@
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs::{self, OpenOptions},
+    io,
     io::Write,
     path::{Path, PathBuf},
 };
@@ -8,10 +9,12 @@ use std::{
 use backup_core::{
     artifact::{ConversionStatus, OutputFormat, VerifiedArtifact, validate_m4a_artifact},
     backup::CancellationToken,
+    deletion::TrashAdapter,
     error::CoreError,
     filesystem::{is_safe_relative_path, modified_nanos},
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
+    source::SourceId,
     state::CurrentStage,
 };
 use tempfile::TempPath;
@@ -30,6 +33,138 @@ pub struct PreparedM4aArtifact {
     pub superseded_wav_size: u64,
     pub superseded_wav_sha256: String,
     recovery_marker: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SupersededWavRetirementReport {
+    pub moved_to_trash: u64,
+    pub already_absent: u64,
+}
+
+pub fn retire_superseded_wavs_for_source(
+    destination_root: &Path,
+    ledger: &mut Ledger,
+    source_id: &SourceId,
+    tools: &dyn AudioTools,
+    trash: &dyn TrashAdapter,
+    cancellation: &CancellationToken,
+) -> Result<SupersededWavRetirementReport, CoreError> {
+    cancellation.check()?;
+    let canonical_root =
+        fs::canonicalize(destination_root).map_err(|_| CoreError::DestinationUnavailable)?;
+    let pending = ledger
+        .pending_superseded_wavs()?
+        .into_iter()
+        .filter(|evidence| evidence.source_id == *source_id)
+        .collect::<Vec<_>>();
+    let mut evidence_by_path = HashMap::new();
+    for evidence in &pending {
+        if evidence_by_path
+            .insert(
+                evidence.relative_path.clone(),
+                (evidence.byte_count, evidence.sha256.clone()),
+            )
+            .is_some_and(|previous| previous != (evidence.byte_count, evidence.sha256.clone()))
+        {
+            return Err(CoreError::LedgerCorrupt);
+        }
+    }
+
+    let mut report = SupersededWavRetirementReport {
+        moved_to_trash: 0,
+        already_absent: 0,
+    };
+    for evidence in pending {
+        cancellation.check()?;
+        let wav_path = canonical_root.join(&evidence.relative_path);
+        let metadata = match fs::symlink_metadata(&wav_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {
+                ledger.mark_superseded_wav_absent_after_conversion(&evidence.recording_id)?;
+                report.already_absent = report.already_absent.saturating_add(1);
+                continue;
+            }
+            Err(error) => return Err(CoreError::CopyFailed(error)),
+        };
+        let recording = ledger
+            .verified_recording(&evidence.recording_id)?
+            .ok_or(CoreError::LedgerCorrupt)?;
+        if recording.source_id != *source_id
+            || recording.artifact.format != OutputFormat::M4a
+            || recording.conversion_status != ConversionStatus::Complete
+            || recording.artifact.audio.is_none()
+        {
+            return Err(CoreError::LedgerCorrupt);
+        }
+        let artifact_audio = verify_recorded_m4a(&canonical_root, &recording, tools)?;
+        if !metadata.file_type().is_file()
+            || metadata.file_type().is_symlink()
+            || metadata.len() != evidence.byte_count
+        {
+            return Err(CoreError::HashMismatch);
+        }
+        let canonical_wav =
+            fs::canonicalize(&wav_path).map_err(|_| CoreError::DestinationUnavailable)?;
+        if !canonical_wav.starts_with(&canonical_root) {
+            return Err(CoreError::DestinationUnavailable);
+        }
+        let wav_digest = hash_file(&canonical_wav)?;
+        if wav_digest.size != evidence.byte_count || wav_digest.sha256 != evidence.sha256 {
+            return Err(CoreError::HashMismatch);
+        }
+        let source_audio = tools.inspect(&canonical_wav)?;
+        let verified = validate_m4a_artifact(&source_audio, &artifact_audio)?;
+        if recording.artifact.audio.as_ref() != Some(&verified) {
+            return Err(CoreError::ArtifactInvalid);
+        }
+        cancellation.check()?;
+        let final_digest = hash_file(&canonical_wav)?;
+        if final_digest != wav_digest {
+            return Err(CoreError::SourceChanged);
+        }
+        trash.move_to_trash(&canonical_wav)?;
+        ledger.mark_superseded_wav_moved_to_trash(&evidence.recording_id)?;
+        report.moved_to_trash = report.moved_to_trash.saturating_add(1);
+    }
+    Ok(report)
+}
+
+fn verify_recorded_m4a(
+    canonical_root: &Path,
+    recording: &VerifiedRecording,
+    tools: &dyn AudioTools,
+) -> Result<backup_core::artifact::AudioDescription, CoreError> {
+    let expected = recording
+        .artifact
+        .audio
+        .as_ref()
+        .ok_or(CoreError::LedgerCorrupt)?;
+    let artifact_path = resolve_regular(canonical_root, &recording.artifact.relative_path)?;
+    let artifact_digest = hash_file(&artifact_path)?;
+    if artifact_digest.size != recording.artifact.byte_count
+        || artifact_digest.sha256 != recording.artifact.sha256
+    {
+        return Err(CoreError::HashMismatch);
+    }
+    let inspected = tools.inspect(&artifact_path)?;
+    let declared_total = inspected
+        .valid_frames
+        .checked_add(inspected.priming_frames)
+        .and_then(|frames| frames.checked_add(inspected.remainder_frames));
+    if inspected.container != "m4af"
+        || inspected.codec != expected.codec
+        || inspected.sample_rate_hz != expected.sample_rate_hz
+        || inspected.channels != expected.channel_count
+        || inspected.valid_frames != expected.valid_frames
+        || inspected.duration_micros != expected.duration_micros
+        || inspected.audio_bytes == 0
+        || inspected.packets == 0
+        || inspected.frames_per_packet == 0
+        || declared_total != Some(inspected.total_frames)
+    {
+        return Err(CoreError::ArtifactInvalid);
+    }
+    Ok(inspected)
 }
 
 pub fn order_conversion_cohort(

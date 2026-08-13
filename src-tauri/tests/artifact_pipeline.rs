@@ -5,6 +5,7 @@ use backup_core::{
         AudioDescription, ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact,
     },
     backup::CancellationToken,
+    deletion::TrashAdapter,
     filesystem::modified_nanos,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
@@ -12,10 +13,27 @@ use backup_core::{
     state::CurrentStage,
 };
 use backup_mic_lib::{
-    artifact_pipeline::{publish_m4a, verify_published_artifact},
+    artifact_pipeline::{
+        publish_m4a, retire_superseded_wavs_for_source, verify_published_artifact,
+    },
     platform::macos::audio::AudioTools,
 };
 use tempfile::tempdir;
+
+struct FakeTrash {
+    root: std::path::PathBuf,
+}
+
+impl TrashAdapter for FakeTrash {
+    fn move_to_trash(&self, absolute_path: &Path) -> Result<(), backup_core::error::CoreError> {
+        let target = self.root.join(
+            absolute_path
+                .file_name()
+                .ok_or(backup_core::error::CoreError::TrashFailed)?,
+        );
+        fs::rename(absolute_path, target).map_err(|_| backup_core::error::CoreError::TrashFailed)
+    }
+}
 
 struct FakeAudioTools {
     wrong_channels: bool,
@@ -226,6 +244,146 @@ fn publishes_an_inspected_hashed_m4a_and_retains_the_superseded_wav() {
         &CancellationToken::default(),
     )
     .unwrap();
+}
+
+#[test]
+fn verified_m4a_moves_the_superseded_backup_wav_to_trash() {
+    let destination = tempdir().unwrap();
+    let trash = tempdir().unwrap();
+    let state = tempdir().unwrap();
+    let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+    let wav = wav_recording(destination.path(), &mut ledger);
+    let result = publish_m4a(
+        destination.path(),
+        &wav,
+        &mut ledger,
+        &FakeAudioTools {
+            wrong_channels: false,
+        },
+        &CancellationToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+
+    let report = retire_superseded_wavs_for_source(
+        destination.path(),
+        &mut ledger,
+        &wav.source_id,
+        &FakeAudioTools {
+            wrong_channels: false,
+        },
+        &FakeTrash {
+            root: trash.path().to_path_buf(),
+        },
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    assert_eq!(report.moved_to_trash, 1);
+    assert_eq!(report.already_absent, 0);
+    assert!(
+        !destination
+            .path()
+            .join(&wav.artifact.relative_path)
+            .exists()
+    );
+    assert!(trash.path().join("recording.wav").is_file());
+    assert!(
+        destination
+            .path()
+            .join(&result.recording.artifact.relative_path)
+            .is_file()
+    );
+    assert!(ledger.pending_superseded_wavs().unwrap().is_empty());
+}
+
+#[test]
+fn changed_backup_wav_is_never_moved_to_trash() {
+    let destination = tempdir().unwrap();
+    let trash = tempdir().unwrap();
+    let state = tempdir().unwrap();
+    let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+    let wav = wav_recording(destination.path(), &mut ledger);
+    publish_m4a(
+        destination.path(),
+        &wav,
+        &mut ledger,
+        &FakeAudioTools {
+            wrong_channels: false,
+        },
+        &CancellationToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    fs::write(
+        destination.path().join(&wav.artifact.relative_path),
+        b"changed",
+    )
+    .unwrap();
+
+    assert!(matches!(
+        retire_superseded_wavs_for_source(
+            destination.path(),
+            &mut ledger,
+            &wav.source_id,
+            &FakeAudioTools {
+                wrong_channels: false,
+            },
+            &FakeTrash {
+                root: trash.path().to_path_buf(),
+            },
+            &CancellationToken::default(),
+        ),
+        Err(backup_core::error::CoreError::HashMismatch)
+    ));
+    assert!(
+        destination
+            .path()
+            .join(&wav.artifact.relative_path)
+            .is_file()
+    );
+    assert!(trash.path().read_dir().unwrap().next().is_none());
+    assert_eq!(ledger.pending_superseded_wavs().unwrap().len(), 1);
+}
+
+#[test]
+fn missing_superseded_wav_is_settled_without_a_destructive_action() {
+    let destination = tempdir().unwrap();
+    let trash = tempdir().unwrap();
+    let state = tempdir().unwrap();
+    let mut ledger = Ledger::open(state.path().join("ledger.sqlite3")).unwrap();
+    let wav = wav_recording(destination.path(), &mut ledger);
+    publish_m4a(
+        destination.path(),
+        &wav,
+        &mut ledger,
+        &FakeAudioTools {
+            wrong_channels: false,
+        },
+        &CancellationToken::default(),
+        &mut |_| {},
+    )
+    .unwrap();
+    fs::remove_file(destination.path().join(&wav.artifact.relative_path)).unwrap();
+
+    let report = retire_superseded_wavs_for_source(
+        destination.path(),
+        &mut ledger,
+        &wav.source_id,
+        &FakeAudioTools {
+            wrong_channels: false,
+        },
+        &FakeTrash {
+            root: trash.path().to_path_buf(),
+        },
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    assert_eq!(report.moved_to_trash, 0);
+    assert_eq!(report.already_absent, 1);
+    assert!(trash.path().read_dir().unwrap().next().is_none());
+    assert!(ledger.pending_superseded_wavs().unwrap().is_empty());
 }
 
 #[test]

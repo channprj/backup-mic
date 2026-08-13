@@ -6,7 +6,8 @@ use std::{
 
 use backup_core::{
     artifact::OutputFormat, backup::CancellationToken, batch::BatchPhase, clock::Clock,
-    hash::hash_file, ledger::Ledger, rule::BackupRuleDraft, state::BackupPhase,
+    deletion::TrashAdapter, error::CoreError, hash::hash_file, ledger::Ledger,
+    rule::BackupRuleDraft, state::BackupPhase,
 };
 use backup_mic_lib::{
     app_state::AppState,
@@ -27,6 +28,14 @@ const MISSING_FIXTURES: &str =
 const SENTINEL: &str = ".backup-mic-rule-fixture";
 
 struct InstantClock;
+
+struct BackupTrash;
+
+impl TrashAdapter for BackupTrash {
+    fn move_to_trash(&self, absolute_path: &Path) -> Result<(), CoreError> {
+        fs::remove_file(absolute_path).map_err(CoreError::CopyFailed)
+    }
+}
 
 impl Clock for InstantClock {
     fn sleep(&self, _duration: Duration) {}
@@ -118,6 +127,7 @@ fn backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline() {
         &matched_sources,
         &AppleAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )

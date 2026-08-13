@@ -10,6 +10,7 @@ use backup_core::{
     backup::{CancellationToken, CopyFaultPoint},
     batch::BatchPhase,
     clock::Clock,
+    deletion::TrashAdapter,
     error::CoreError,
     hash::hash_file,
     ledger::Ledger,
@@ -31,6 +32,14 @@ use tempfile::{TempDir, tempdir};
 use time::UtcOffset;
 
 struct InstantClock;
+
+struct BackupTrash;
+
+impl TrashAdapter for BackupTrash {
+    fn move_to_trash(&self, absolute_path: &Path) -> Result<(), CoreError> {
+        fs::remove_file(absolute_path).map_err(CoreError::CopyFailed)
+    }
+}
 
 impl Clock for InstantClock {
     fn sleep(&self, _duration: Duration) {}
@@ -247,6 +256,7 @@ fn two_rules_with_equal_source_names_complete_independent_m4a_barriers() {
         &[zoom.clone(), sony.clone()],
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -264,6 +274,20 @@ fn two_rules_with_equal_source_names_complete_independent_m4a_barriers() {
     );
     let recordings = fixture.recordings();
     assert_eq!(recordings.len(), 2);
+    assert!(recordings.iter().all(|recording| {
+        !fixture
+            ._destination
+            .path()
+            .join(recording.artifact.relative_path.with_extension("wav"))
+            .exists()
+    }));
+    assert!(
+        Ledger::open(&fixture.ledger_path)
+            .unwrap()
+            .pending_superseded_wavs()
+            .unwrap()
+            .is_empty()
+    );
     for (matched, root, archive, prefix) in [
         (&zoom, &zoom_root, "Zoom H1n", "zoom-"),
         (&sony, &sony_root, "Sony PCM", "sony-"),
@@ -341,6 +365,7 @@ fn two_sources_share_one_stability_interval() {
         &[zoom, sony],
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &clock,
         &CancellationToken::default(),
     )
@@ -373,6 +398,7 @@ fn one_source_copy_failure_does_not_block_the_other_source_cohort() {
         &FailSource {
             source_id: sony.authority.source.id.clone(),
         },
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -435,6 +461,7 @@ fn rule_edits_are_frozen_for_the_current_run_and_apply_to_only_new_files_next_ru
         std::slice::from_ref(&zoom),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &edit_clock,
         &CancellationToken::default(),
     )
@@ -458,6 +485,7 @@ fn rule_edits_are_frozen_for_the_current_run_and_apply_to_only_new_files_next_ru
         std::slice::from_ref(&zoom),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -495,6 +523,7 @@ fn archive_and_layout_changes_leave_existing_artifacts_in_place() {
         std::slice::from_ref(&zoom),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -517,6 +546,7 @@ fn archive_and_layout_changes_leave_existing_artifacts_in_place() {
         std::slice::from_ref(&zoom),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
@@ -577,6 +607,7 @@ fn companion_only_rule_completes_a_source_barrier_without_starting_conversion() 
         std::slice::from_ref(&source),
         &FakeAudioTools,
         &NoSourceCopyFaults,
+        &BackupTrash,
         &InstantClock,
         &CancellationToken::default(),
     )
