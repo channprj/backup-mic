@@ -279,6 +279,10 @@ impl AppState {
     }
 
     pub fn backup_is_ready(&self) -> bool {
+        self.backup_start_preflight().is_ok()
+    }
+
+    pub(crate) fn backup_start_preflight(&self) -> Result<(), CoreError> {
         let (destination_configured, setup_state, mounted_count, destination, source_roots) = {
             let runtime = self.runtime.lock();
             (
@@ -294,8 +298,16 @@ impl AppState {
             )
         };
 
-        backup_requirements_met(destination_configured, setup_state, mounted_count)
-            && canonical_destination_is_separate(&destination, &source_roots)
+        if !destination_configured || setup_state != SetupStateDto::Ready {
+            return Err(CoreError::InvalidRequest);
+        }
+        if mounted_count == 0 {
+            return Err(CoreError::DeviceRemoved);
+        }
+        if !canonical_destination_is_separate(&destination, &source_roots) {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
     }
 
     pub(crate) fn destination_is_separate_from_mounted_sources(&self, destination: &Path) -> bool {
@@ -1568,6 +1580,21 @@ mod tests {
         assert!(!backup_requirements_met(true, SetupStateDto::Ready, 0));
         assert!(backup_requirements_met(true, SetupStateDto::Ready, 1));
         assert!(backup_requirements_met(true, SetupStateDto::Ready, 2));
+    }
+
+    #[test]
+    fn manual_backup_reports_a_missing_recorder_instead_of_an_invalid_request() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        let error = state.backup_start_preflight().unwrap_err();
+        let public = error.public(None);
+
+        assert_eq!(error.diagnostic_code(), "device_removed");
+        assert_eq!(public.message_code, "device_removed");
+        assert!(public.retryable);
     }
 
     #[test]

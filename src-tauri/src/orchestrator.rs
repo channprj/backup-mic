@@ -1155,9 +1155,7 @@ impl Drop for DeviceOrchestrator {
 }
 
 pub fn start_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
-    if !state.backup_is_ready() {
-        return Err(CoreError::InvalidRequest);
-    }
+    state.backup_start_preflight()?;
     let guard = state.begin_operation()?;
     state
         .proposals
