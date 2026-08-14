@@ -1,7 +1,7 @@
 # DJI Mic Calendar Archive Layout Design
 
 **Date:** 2026-08-10
-**Status:** Design approved; written specification awaiting user review
+**Status:** Approved for implementation on 2026-08-14
 **Target platform:** macOS 13 or newer
 **Product:** DJI Mic Backup
 **Relationship to the existing design:** This document replaces the visible recording-artifact path rules in the existing DJI Mic Backup specifications. Device identity, stable scanning, source-equal WAV copy, SHA-256 verification, AAC-LC 128 kbps conversion, SQLite evidence, collision safety, and recoverable macOS Trash behavior remain unchanged.
