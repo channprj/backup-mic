@@ -35,7 +35,14 @@ export function formatCompactTime(value: string | null) {
   return `${date.getMonth() + 1}/${date.getDate()} ${hours}:${minutes}`;
 }
 
+export function isWaitingForDevice(snapshot: AppSnapshot) {
+  return snapshot.phase === "detecting" && snapshot.message_code === "waiting_for_device";
+}
+
 export function stageLabel(snapshot: AppSnapshot) {
+  if (isWaitingForDevice(snapshot)) {
+    return "녹음기를 연결하면 백업을 자동으로 시작합니다.";
+  }
   if (snapshot.phase === "scanning") {
     return "연결된 녹음기에서 백업할 WAV 파일을 확인하고 있습니다";
   }
@@ -67,6 +74,7 @@ export function stageLabel(snapshot: AppSnapshot) {
 }
 
 export function activeTitle(snapshot: AppSnapshot) {
+  if (isWaitingForDevice(snapshot)) return "녹음기 연결을 기다리는 중";
   if (snapshot.phase === "scanning") return "백업할 파일을 찾는 중";
   if (snapshot.phase === "checking_capacity") return "저장 공간을 확인하는 중";
   if (snapshot.current_stage === "copy") return "WAV 파일을 복사하는 중";
@@ -129,7 +137,7 @@ export function errorCopy(messageCode: string) {
     },
     device_removed: {
       title: "녹음기 연결이 끊겼습니다",
-      detail: "원본은 변경되지 않았습니다. 녹음기를 다시 연결해 주세요.",
+      detail: "녹음기를 다시 연결해 주세요.",
     },
     source_changed: {
       title: "녹음이 변경됐습니다",

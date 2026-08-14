@@ -37,6 +37,7 @@ import {
   formatBytes,
   formatCompactTime,
   formatTime,
+  isWaitingForDevice,
   retirementOutcomeLabel,
   stageLabel,
 } from "./format";
@@ -85,6 +86,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
   const pendingRef = useRef<string | null>(null);
   const setupComplete = snapshot.setup_state === "ready";
   const active = activePhases.has(snapshot.phase) || snapshot.current_stage !== null;
+  const waitingForDevice = isWaitingForDevice(snapshot);
   const failed = snapshot.phase === "error" || snapshot.phase === "partial_failure";
   const mountedCount = snapshot.sources.filter(({ mounted }) => mounted).length;
 
@@ -254,7 +256,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
                 onOpenLogs={() => void run("logs", actions.openLogs).catch(() => undefined)}
               />
             ) : null}
-            <StageSequence snapshot={snapshot} />
+            {!waitingForDevice ? <StageSequence snapshot={snapshot} /> : null}
             {actionError ? (
               <FailureAlert
                 failure={actionError}
@@ -387,6 +389,7 @@ export function BackupPopover({ snapshot, actions }: BackupPopoverProps) {
 
 function ActiveStatus({ snapshot }: { snapshot: AppSnapshot }) {
   const progress = snapshot.overall_progress;
+  const waitingForDevice = isWaitingForDevice(snapshot);
   const findingFiles = ["detecting", "scanning", "checking_capacity"].includes(snapshot.phase);
   return (
     <Card className="status-card is-active">
@@ -396,18 +399,24 @@ function ActiveStatus({ snapshot }: { snapshot: AppSnapshot }) {
             <CardTitle>{activeTitle(snapshot)}</CardTitle>
           </div>
           <strong className="hero-percent">
-            {findingFiles ? "확인 중" : `${progress.percent}%`}
+            {waitingForDevice ? "대기 중" : findingFiles ? "확인 중" : `${progress.percent}%`}
           </strong>
         </div>
       </CardHeader>
       <CardContent>
         <Progress
           value={findingFiles ? undefined : progress.percent}
-          aria-label={findingFiles ? "백업 파일 검색 상태" : "전체 백업 진행률"}
+          aria-label={
+            waitingForDevice
+              ? "녹음기 연결 대기 상태"
+              : findingFiles
+                ? "백업 파일 검색 상태"
+                : "전체 백업 진행률"
+          }
           aria-valuenow={findingFiles ? undefined : progress.percent}
         />
         <div className="progress-meta">
-          <span>{stageLabel(snapshot)}</span>
+          {!waitingForDevice ? <span>{stageLabel(snapshot)}</span> : null}
           {!findingFiles ? (
             <span>
               {progress.verified_files}/{progress.total_files}개 · {formatBytes(progress.copied_bytes)}
@@ -417,7 +426,9 @@ function ActiveStatus({ snapshot }: { snapshot: AppSnapshot }) {
       </CardContent>
       <CardFooter>
         <UsbIcon aria-hidden="true" />
-        완료될 때까지 케이스를 연결해 두세요
+        {waitingForDevice
+          ? "녹음기를 연결하면 백업을 자동으로 시작합니다."
+          : "완료될 때까지 케이스를 연결해 두세요"}
       </CardFooter>
     </Card>
   );

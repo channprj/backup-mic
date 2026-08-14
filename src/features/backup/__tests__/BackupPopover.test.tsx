@@ -264,6 +264,31 @@ describe("BackupPopover", () => {
     expect(screen.queryByText("원본은 그대로 유지됩니다")).not.toBeInTheDocument();
   });
 
+  it("presents a disconnected manual request as cancellable waiting instead of an error", () => {
+    renderPopover({
+      ...manualIdle,
+      phase: "detecting",
+      message_code: "waiting_for_device",
+      sources: manualIdle.sources.map((source) => ({
+        ...source,
+        mounted: false,
+      })),
+    });
+
+    expect(screen.getByText("녹음기 연결을 기다리는 중")).toBeInTheDocument();
+    expect(screen.getByText("대기 중")).toBeInTheDocument();
+    expect(
+      screen.getByText("녹음기를 연결하면 백업을 자동으로 시작합니다."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("progressbar", { name: "녹음기 연결 대기 상태" })).not.toHaveAttribute(
+      "aria-valuenow",
+    );
+    expect(screen.getByRole("button", { name: "백업 취소" })).toBeEnabled();
+    expect(screen.queryByLabelText("백업 단계")).not.toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(screen.queryByText(/원본은 변경되지 않았습니다/)).not.toBeInTheDocument();
+  });
+
   it("explains that disabling conversion retains external-disk originals", () => {
     renderPopover({
       ...complete,
