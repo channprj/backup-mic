@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make manual and interrupted backups wait safely for recorder reconnection, and place every verified DJI recording directly under the selected destination's `YYYY/MM` hierarchy.
+**Goal:** Make manual and interrupted backups wait safely for recorder reconnection, and place every verified recording under its configured archive directory with `YYYY/MM/DD` as the default hierarchy.
 
-**Architecture:** Add a process-local retry-intent state machine beside `AppState`, then route manual commands, mount events, cancellation, and interrupted runs through it while preserving the operation guard. Specialize only DJI recording destinations and add an idempotent ledger-backed migration; generic recorder rules remain unchanged.
+**Architecture:** Add a process-local retry-intent state machine beside `AppState`, then route manual commands, mount events, cancellation, and interrupted runs through it while preserving the operation guard. Use one rule-driven destination engine for DJI and generic recorders, and add an idempotent ledger-backed migration for verified DJI artifacts.
 
 **Tech Stack:** Rust 2024, Tauri 2, SQLite/rusqlite, React 19, TypeScript 7, Vitest, macOS Foundation Trash, `/usr/bin/afconvert`, Headatever.
 
@@ -15,8 +15,8 @@
 - Expected recorder absence must not emit `operation.failed` with `device_removed`; real destination, permission, hash, conversion, ledger, and Trash failures remain errors.
 - WAV files are copied and SHA-256 verified before AAC-LC M4A conversion at 128 kbps.
 - No source or destination artifact is permanently deleted; verified superseded files move through the macOS Trash adapter.
-- DJI recording artifacts use `<destination>/YYYY/MM/YYMMDD-T01_or_T02_<remaining name>.<extension>` without archive, day, or transmitter directories.
-- Non-DJI rules retain their configured archive directory and date layout.
+- All recording artifacts use `<destination>/<archive-directory>/<configured-date-layout>/YYMMDD-<normalized name>.<extension>`.
+- `YYYY/MM/DD` is the default date layout. DJI TX01 and TX02 recordings share the same date directory without transmitter subdirectories.
 - Migration is no-clobber, regular-file-only, SHA-256 verified, ledger-backed, idempotent, and collision-safe.
 - Use red-green TDD and push every green Conventional Commit immediately.
 - Do not replace a running app while it owns an active backup or retirement operation.
@@ -215,7 +215,7 @@ git commit -m "fix(ui): show recorder reconnect waiting state"
 git push origin main
 ```
 
-### Task 4: Plan DJI Recordings Directly Under `YYYY/MM`
+### Task 4: Plan DJI Recordings Under the Configured Archive and Date Layout
 
 **Files:**
 - Modify: `src-tauri/crates/backup-core/src/destination.rs`
@@ -224,18 +224,18 @@ git push origin main
 
 **Interfaces:**
 - Consumes: DJI device constraint, `FilenameProfile::DjiTxShort`, `destination_stem`, and archive date.
-- Produces: direct-root DJI recording paths; generic and companion paths stay unchanged.
+- Produces: rule-driven DJI recording paths; generic recording and companion policies stay unchanged.
 
 - [ ] **Step 1: Write failing destination tests**
 
 ```rust
 assert_eq!(
     plan.relative_destination,
-    Path::new("2026/08/260809-rec-T01_MIC001_20260809_010203-backup.wav")
+    Path::new("dji/2026/08/09/260809-rec-T01_MIC001_20260809_010203-backup.wav")
 );
 ```
 
-Add TX02, case-insensitive prefix, M4A extension, and same-month co-location cases. Keep Zoom expectations under `Zoom H1n/2026/08`.
+Add TX02, case-insensitive prefix, M4A extension, configured archive-name, and same-day co-location cases. Keep generic recorder expectations under their configured archive and date layout.
 
 - [ ] **Step 2: Run the focused test and verify red**
 
@@ -243,9 +243,9 @@ Add TX02, case-insensitive prefix, M4A extension, and same-month co-location cas
 cargo test --manifest-path src-tauri/Cargo.toml -p backup-core --test rule_destinations dji -- --nocapture
 ```
 
-- [ ] **Step 3: Implement a DJI-only recording root policy**
+- [ ] **Step 3: Implement the shared configured recording-root policy**
 
-When both device constraint and filename profile are DJI, choose `year/month` without the stored archive directory and ignore day layout for recordings. Keep prefix/suffix and T01/T02 normalization. All other rules keep their configured layout.
+Use the stored archive directory and configured date layout for DJI recordings exactly as for other recording rules. Keep prefix/suffix and T01/T02 normalization.
 
 - [ ] **Step 4: Verify, commit, and push**
 
@@ -255,7 +255,7 @@ cargo test --manifest-path src-tauri/Cargo.toml -p backup-core --test rule_ledge
 cargo fmt --manifest-path src-tauri/Cargo.toml --all -- --check
 git diff --check
 git add src-tauri/crates/backup-core/src/destination.rs src-tauri/crates/backup-core/tests/rule_destinations.rs src-tauri/crates/backup-core/tests/rule_ledger.rs
-git commit -m "feat(archive): store DJI recordings by calendar month"
+git commit -m "fix(backup): restore archive day folder layout"
 git push origin main
 ```
 
@@ -273,7 +273,7 @@ git push origin main
 
 - [ ] **Step 1: Write failing migration tests**
 
-Seed these verified layouts and assert direct `YYYY/MM` targets:
+Seed these verified layouts and assert configured `<archive>/YYYY/MM/DD` targets:
 
 ```text
 DJI Mic Mini 2S/2026/08/14/260814-T01_MIC001_20260814_010203_edit.m4a
@@ -292,7 +292,7 @@ cargo test --manifest-path src-tauri/Cargo.toml -p backup-core --test dji_calend
 
 - [ ] **Step 3: Implement deterministic target derivation**
 
-For DJI/DjiTxShort records, take the original source stem, derive its valid encoded DJI date or the verified artifact's unambiguous date prefix/ancestors, apply `destination_stem`, retain artifact extension, and form `YYYY/MM/YYMMDD-<stem>.<extension>`. Skip records without one safe date and skip canonical targets.
+For DJI/DjiTxShort records, take the original source stem, derive its valid encoded DJI date or the verified artifact's unambiguous date prefix/ancestors, apply `destination_stem`, retain artifact extension, and form `<configured-archive>/<configured-date-layout>/YYMMDD-<stem>.<extension>`. Skip records without one safe date and skip canonical targets.
 
 - [ ] **Step 4: Reuse verified copy, Trash, and ledger primitives**
 

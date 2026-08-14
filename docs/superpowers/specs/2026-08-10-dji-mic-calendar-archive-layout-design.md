@@ -1,31 +1,31 @@
 # DJI Mic Calendar Archive Layout Design
 
 **Date:** 2026-08-10
-**Status:** Approved for implementation on 2026-08-14
+**Status:** Implemented; storage root amended on 2026-08-15
 **Target platform:** macOS 13 or newer
 **Product:** DJI Mic Backup
 **Relationship to the existing design:** This document replaces the visible recording-artifact path rules in the existing DJI Mic Backup specifications. Device identity, stable scanning, source-equal WAV copy, SHA-256 verification, AAC-LC 128 kbps conversion, SQLite evidence, collision safety, and recoverable macOS Trash behavior remain unchanged.
 
 ## Goal
 
-Store final recording backups in a compact calendar hierarchy:
+Store final recording backups under the configured archive directory and the default day-level calendar hierarchy:
 
 ```text
-YYYY/MM/YYMMDD-normalized-file-name.m4a
+<archive-directory-name>/YYYY/MM/DD/YYMMDD-normalized-file-name.m4a
 ```
 
 The required example is:
 
 ```text
-2026/08/260809-T02_MIC003_20260809_195540_edit.m4a
+dji/2026/08/09/260809-T02_MIC003_20260809_195540_edit.m4a
 ```
 
-The path is relative to the user-selected backup destination.
+The path is relative to the user-selected backup destination. For example, choosing `/Volumes/990EVO+/labs/audio-records` and setting the archive directory name to `dji` produces `/Volumes/990EVO+/labs/audio-records/dji/YYYY/MM/DD/`.
 
 ## Settled Naming Rules
 
-1. The first directory is the four-digit recording year.
-2. The second directory is the zero-padded two-digit recording month.
+1. The first directory is the configured archive directory name.
+2. The default date hierarchy is the four-digit recording year, zero-padded two-digit month, and zero-padded two-digit day.
 3. The file name begins with the recording date in `YYMMDD` form followed by `-`.
 4. A leading source transmitter prefix is normalized only as follows:
    - `TX01_` becomes `T01_`.
@@ -42,14 +42,14 @@ The destination date continues to come from a valid timestamp encoded in a DJI r
 
 ```text
 TX02_MIC003_20260809_195540_edit.wav
--> 2026/08/260809-T02_MIC003_20260809_195540_edit.wav
--> 2026/08/260809-T02_MIC003_20260809_195540_edit.m4a
+-> dji/2026/08/09/260809-T02_MIC003_20260809_195540_edit.wav
+-> dji/2026/08/09/260809-T02_MIC003_20260809_195540_edit.m4a
 
 TX01_MIC001_20260810_045047_edit.wav
--> 2026/08/260810-T01_MIC001_20260810_045047_edit.m4a
+-> dji/2026/08/10/260810-T01_MIC001_20260810_045047_edit.m4a
 
 conversation.wav, fallback date 2026-08-10
--> 2026/08/260810-conversation.m4a
+-> dji/2026/08/10/260810-conversation.m4a
 ```
 
 The WAV line in the first example is the verified destination copy created before conversion. After the complete conversion barrier succeeds, the WAV is moved to macOS Trash under the existing policy and the M4A remains as the final archive artifact.
@@ -60,7 +60,7 @@ The backup pipeline keeps its current safety order:
 
 1. Scan a stable source recording without following symlinks.
 2. Derive the calendar date and normalized archive name.
-3. Copy the WAV to an app-owned temporary file under `YYYY/MM`.
+3. Copy the WAV to an app-owned temporary file under the configured archive and date directory.
 4. Flush and independently verify source and destination size and SHA-256.
 5. Finalize the visible WAV without overwriting an existing path.
 6. Convert the verified destination WAV to AAC-LC M4A at 128 kbps when enabled.
@@ -79,7 +79,7 @@ For the requested default path:
 - If another item or different file occupies the name, append the shortest unique SHA-256 prefix to the stem:
 
 ```text
-2026/08/260809-T02_MIC003_20260809_195540_edit-1a2b3c4d.m4a
+dji/2026/08/09/260809-T02_MIC003_20260809_195540_edit-1a2b3c4d.m4a
 ```
 
 The no-clobber finalization and canonical-root checks remain mandatory.
@@ -92,6 +92,8 @@ Every ledger-verified recording artifact that is present under the current desti
 YYYY/YYYY-MM-DD/TX01/file.m4a
 YYYY/YYYY-MM-DD/TX02/file.m4a
 YYYY/YYYY-MM-DD/file.m4a
+YYYY/MM/YYMMDD-file.m4a
+<previous-archive>/YYYY/MM/YYMMDD-file.m4a
 ```
 
 Migration is performed before the next backup scan:
@@ -99,12 +101,12 @@ Migration is performed before the next backup scan:
 1. Read the verified artifact path, size, and SHA-256 from SQLite.
 2. Require the old artifact to be a regular file inside the canonical destination root.
 3. Recompute and require the recorded size and SHA-256.
-4. Derive the new `YYYY/MM/YYMMDD-...` target from the verified recording date and normalized file name.
+4. Derive the new `<configured-archive>/<configured-date-layout>/YYMMDD-...` target from the verified recording date and normalized file name.
 5. Copy through an app-owned temporary file and synchronize it.
 6. Recompute and require the target size and SHA-256.
 7. Move the previous artifact to macOS Trash.
 8. Atomically update the ledger path only after the target and Trash operations succeed.
-9. Remove empty legacy transmitter and date directories. The shared year directory remains because it owns the new month directories.
+9. Remove empty legacy transmitter, date, and obsolete archive directories without removing the selected destination root.
 
 If the old path is absent but a matching verified target already exists, the migration repairs the ledger path without moving anything. If neither path can be verified, it skips that record and preserves the ledger evidence for diagnosis. A collision follows the same hash-suffix rule as a new backup.
 
@@ -115,7 +117,7 @@ Already migrated paths are idempotent and produce no work on later runs.
 - The layout change applies to verified recording WAV and M4A artifacts.
 - Raw non-recording session files remain under the existing `source-extras` hierarchy so they cannot be confused with playable archive recordings.
 - Daily diagnostic logs already use `logs/YYYY/MM/YYMMDD-backup-mic.log` and are unchanged.
-- The selected backup destination and its validation policy are unchanged.
+- The selected backup destination and its validation policy are unchanged. The archive directory name is always honored below that destination.
 - The design does not introduce MP4 video output. The requested example and the established audio pipeline use the `.m4a` container.
 
 ## Error Handling
@@ -126,9 +128,9 @@ Any read, copy, synchronization, hash, Trash, or ledger failure aborts that arti
 
 Automated tests must prove:
 
-1. `TX02_MIC003_20260809_195540_edit.wav` plans as `2026/08/260809-T02_MIC003_20260809_195540_edit.wav`.
+1. `TX02_MIC003_20260809_195540_edit.wav` plans as `dji/2026/08/09/260809-T02_MIC003_20260809_195540_edit.wav` when the archive directory is `dji`.
 2. M4A conversion preserves the same archive stem and changes only the extension.
-3. TX01 and TX02 recordings share one year/month directory.
+3. TX01 and TX02 recordings share one configured archive/year/month/day directory.
 4. Unknown prefixes are preserved and receive only the archive-date prefix.
 5. Equal content is reused and different-content collisions receive a hash suffix.
 6. Each supported previous layout migrates to the new layout.
@@ -142,7 +144,7 @@ Installed-app verification must prove:
 1. The version was increased before packaging.
 2. The installed executable matches the packaged executable hash.
 3. Connected DJI volumes are detected by the release build.
-4. Present verified backup artifacts appear directly under `YYYY/MM` with the `YYMMDD-T01/T02_...m4a` names.
+4. Present verified backup artifacts appear under `<configured-archive>/YYYY/MM/DD` with the `YYMMDD-T01/T02_...m4a` names.
 5. File size and SHA-256 match the relocated SQLite evidence.
 6. The legacy recording directories are absent when empty.
 7. The fresh release log contains successful migration and backup completion events without a new error.
