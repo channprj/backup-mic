@@ -15,7 +15,7 @@ use crate::{
     },
     hash::{FileDigest, hash_file},
     recording::{AdditionalFileObservation, RecordingObservation},
-    rule::{BackupRule, DateFolderLayout, destination_stem},
+    rule::{BackupRule, DateFolderLayout, destination_stem, uses_root_dji_calendar_layout},
     rule_scanner::{RuleFileObservation, SelectedFileKind},
     source::SourceId,
     state::Transmitter,
@@ -223,20 +223,24 @@ fn recording_rule_destination(
         date.day()
     );
     let archive = PathBuf::from(&rule.archive_directory_name);
-    let directory = match rule.date_folder_layout {
-        DateFolderLayout::YearMonthDay => archive
-            .join(date.year().to_string())
-            .join(format!("{:02}", date.month() as u8))
-            .join(format!("{:02}", date.day())),
-        DateFolderLayout::YearMonth => archive
-            .join(date.year().to_string())
-            .join(format!("{:02}", date.month() as u8)),
-        DateFolderLayout::CompactDate => archive.join(format!(
-            "{:02}{:02}{:02}",
-            date.year().rem_euclid(100),
-            date.month() as u8,
-            date.day()
-        )),
+    let directory = if uses_root_dji_calendar_layout(rule) {
+        PathBuf::from(date.year().to_string()).join(format!("{:02}", date.month() as u8))
+    } else {
+        match rule.date_folder_layout {
+            DateFolderLayout::YearMonthDay => archive
+                .join(date.year().to_string())
+                .join(format!("{:02}", date.month() as u8))
+                .join(format!("{:02}", date.day())),
+            DateFolderLayout::YearMonth => archive
+                .join(date.year().to_string())
+                .join(format!("{:02}", date.month() as u8)),
+            DateFolderLayout::CompactDate => archive.join(format!(
+                "{:02}{:02}{:02}",
+                date.year().rem_euclid(100),
+                date.month() as u8,
+                date.day()
+            )),
+        }
     };
     Ok(directory.join(file_name))
 }

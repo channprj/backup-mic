@@ -478,6 +478,7 @@ fn dji_prefix_and_suffix_use_the_same_rule_destination_engine() {
     rule.filename_prefix = "rec-".to_owned();
     rule.filename_suffix = "-backup".to_owned();
     rule.filename_profile = FilenameProfile::DjiTxShort;
+    rule.device_constraint_profile = DeviceConstraintProfile::DjiMicMini2s;
     let mut observation = observed(
         "TX01_MIC001_20260809_010203.WAV",
         SelectedFileKind::RecordingWav,
@@ -498,6 +499,41 @@ fn dji_prefix_and_suffix_use_the_same_rule_destination_engine() {
 
     assert_eq!(
         plan.relative_destination,
-        Path::new("DJI Mic Mini 2S/2026/08/260809-rec-T01_MIC001_20260809_010203-backup.wav")
+        Path::new("2026/08/260809-rec-T01_MIC001_20260809_010203-backup.wav")
+    );
+}
+
+#[test]
+fn generic_rules_keep_their_archive_directory_even_with_dji_filename_shortening() {
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    fs::write(
+        source.path().join("TX01_MIC001_20260809_010203.WAV"),
+        b"generic audio",
+    )
+    .unwrap();
+    let mut rule = zoom_rule();
+    rule.filename_profile = FilenameProfile::DjiTxShort;
+    let mut observation = observed(
+        "TX01_MIC001_20260809_010203.WAV",
+        SelectedFileKind::RecordingWav,
+        13,
+    );
+    observation.session_relative_path = None;
+    observation.archive_date = date!(2026 - 08 - 09);
+
+    let plan = plan_rule_file(
+        source.path(),
+        destination.path(),
+        &rule,
+        &SourceId::new(),
+        observation,
+        None,
+    )
+    .unwrap();
+
+    assert_eq!(
+        plan.relative_destination,
+        Path::new("Zoom H1n/2026/08/260809-zoom-T01_MIC001_20260809_010203-field.wav")
     );
 }

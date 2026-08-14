@@ -257,6 +257,11 @@ pub fn destination_stem(rule: &BackupRule, source_stem: &str) -> Result<String, 
     Ok(stem)
 }
 
+pub fn uses_root_dji_calendar_layout(rule: &BackupRule) -> bool {
+    rule.device_constraint_profile == DeviceConstraintProfile::DjiMicMini2s
+        && rule.filename_profile == FilenameProfile::DjiTxShort
+}
+
 pub(crate) fn normalized_rule_name(value: &str) -> String {
     let lowercase = value
         .nfkc()
