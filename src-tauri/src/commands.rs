@@ -60,7 +60,7 @@ pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshotDto, Pu
 
 #[tauri::command]
 pub fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
-    orchestrator::start_backup(app, state.inner().clone()).map_err(|error| {
+    orchestrator::request_backup(app, state.inner().clone()).map_err(|error| {
         reported_core_error(state.inner(), "backup_now", "operation_start", error, None)
     })
 }
@@ -153,7 +153,11 @@ pub(crate) async fn choose_destination_for_state(
     }
     drop(guard);
     if state.automatic_backup_enabled() && state.backup_is_ready() {
-        match orchestrator::start_backup(app.clone(), state.clone()) {
+        match orchestrator::start_backup(
+            app.clone(),
+            state.clone(),
+            orchestrator::BackupTrigger::Automatic,
+        ) {
             Ok(())
             | Err(backup_core::error::CoreError::Busy)
             | Err(backup_core::error::CoreError::InvalidRequest) => {}
@@ -484,7 +488,11 @@ pub async fn complete_initial_setup(
             )
         })?;
     if state.automatic_backup_enabled() && state.backup_is_ready() {
-        match orchestrator::start_backup(app, state.inner().clone()) {
+        match orchestrator::start_backup(
+            app,
+            state.inner().clone(),
+            orchestrator::BackupTrigger::Automatic,
+        ) {
             Ok(())
             | Err(backup_core::error::CoreError::Busy)
             | Err(backup_core::error::CoreError::InvalidRequest) => {}

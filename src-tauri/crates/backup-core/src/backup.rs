@@ -61,8 +61,12 @@ impl CancellationToken {
         self.0.store(true, Ordering::SeqCst);
     }
 
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+
     pub fn check(&self) -> Result<(), CoreError> {
-        if self.0.load(Ordering::SeqCst) {
+        if self.is_cancelled() {
             return Err(CoreError::Cancelled);
         }
         Ok(())
@@ -688,6 +692,17 @@ mod tests {
     };
 
     use super::*;
+
+    #[test]
+    fn cancellation_token_reports_its_current_state() {
+        let cancellation = CancellationToken::default();
+        assert!(!cancellation.is_cancelled());
+
+        cancellation.cancel();
+
+        assert!(cancellation.is_cancelled());
+        assert!(matches!(cancellation.check(), Err(CoreError::Cancelled)));
+    }
 
     struct FailOnce(Mutex<Option<CopyFaultPoint>>);
 

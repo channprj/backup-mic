@@ -40,6 +40,7 @@ use crate::{
         TransmitterSnapshotDto, destination_display_for,
     },
     failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome},
+    manual_backup::{ManualBackupClaim, ManualBackupIntent},
     pairing::{PairingAssignment, PairingManager},
     platform::device_registry::{MountedVolume, VolumeLifecycleEvent},
     rule_runtime::{MatchedSource, RuleVolumeMatch, match_mounted_volume},
@@ -81,6 +82,7 @@ pub struct AppState {
     operation_active: Arc<AtomicBool>,
     operation_reserved: Arc<AtomicBool>,
     cancellation: Arc<Mutex<CancellationToken>>,
+    manual_backup: Arc<ManualBackupIntent>,
     failure_reporter: FailureReporter,
     started: Instant,
 }
@@ -191,6 +193,7 @@ impl AppState {
             operation_active: Arc::new(AtomicBool::new(false)),
             operation_reserved: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(Mutex::new(CancellationToken::default())),
+            manual_backup: Arc::new(ManualBackupIntent::default()),
             failure_reporter: FailureReporter::new(failure_root),
             started: Instant::now(),
         })
@@ -198,6 +201,53 @@ impl AppState {
 
     pub fn snapshot(&self) -> AppSnapshotDto {
         self.runtime.lock().snapshot.clone()
+    }
+
+    pub(crate) fn request_manual_backup(&self) {
+        self.manual_backup.request();
+    }
+
+    pub(crate) fn mark_manual_backup_waiting(&self) {
+        self.manual_backup.wait_for_device();
+    }
+
+    pub(crate) fn claim_manual_backup(&self, sources: &[SourceId]) -> Option<ManualBackupClaim> {
+        self.manual_backup.claim(sources)
+    }
+
+    pub(crate) fn manual_backup_should_start_for(&self, source_id: &SourceId) -> bool {
+        self.manual_backup.should_start_for(source_id)
+    }
+
+    pub(crate) fn manual_backup_is_waiting(&self) -> bool {
+        self.manual_backup.is_waiting()
+    }
+
+    pub(crate) fn finish_manual_backup(&self, claim: ManualBackupClaim) {
+        self.manual_backup.finish(claim);
+    }
+
+    pub(crate) fn interrupt_manual_backup<I>(&self, sources: I)
+    where
+        I: IntoIterator<Item = SourceId>,
+    {
+        self.manual_backup.interrupt(sources);
+    }
+
+    pub(crate) fn interrupt_manual_backup_claim<I>(
+        &self,
+        claim: ManualBackupClaim,
+        sources: I,
+        cancelled: bool,
+    ) where
+        I: IntoIterator<Item = SourceId>,
+    {
+        self.manual_backup
+            .interrupt_claim(claim, sources, cancelled);
+    }
+
+    pub(crate) fn cancel_manual_backup(&self) {
+        self.manual_backup.cancel();
     }
 
     pub fn snapshot_with_activity(&self) -> Result<AppSnapshotDto, CoreError> {
@@ -283,12 +333,19 @@ impl AppState {
     }
 
     pub(crate) fn backup_start_preflight(&self) -> Result<(), CoreError> {
-        let (destination_configured, setup_state, mounted_count, destination, source_roots) = {
+        self.backup_configuration_preflight()?;
+        if self.runtime.lock().matched.is_empty() {
+            return Err(CoreError::DeviceRemoved);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn backup_configuration_preflight(&self) -> Result<(), CoreError> {
+        let (destination_configured, setup_state, destination, source_roots) = {
             let runtime = self.runtime.lock();
             (
                 runtime.destination_configured,
                 runtime.snapshot.setup_state,
-                runtime.matched.len(),
                 runtime.destination.clone(),
                 runtime
                     .matched
@@ -300,9 +357,6 @@ impl AppState {
 
         if !destination_configured || setup_state != SetupStateDto::Ready {
             return Err(CoreError::InvalidRequest);
-        }
-        if mounted_count == 0 {
-            return Err(CoreError::DeviceRemoved);
         }
         if !canonical_destination_is_separate(&destination, &source_roots) {
             return Err(CoreError::InvalidRequest);
@@ -634,6 +688,7 @@ impl AppState {
     pub fn cancel_active_operation(&self) -> bool {
         let active = self.operation_is_active();
         self.cancellation.lock().cancel();
+        self.cancel_manual_backup();
         active
     }
 
@@ -828,12 +883,13 @@ impl AppState {
                 let rule = matched.rule.clone();
                 let transmitter = legacy_transmitter(&source);
                 runtime.matched.insert(source_id.clone(), matched);
-                let should_schedule = runtime.preferences.automatic_backup
-                    && backup_requirements_met(
-                        runtime.destination_configured,
-                        runtime.snapshot.setup_state,
-                        runtime.matched.len(),
-                    );
+                let should_schedule = backup_should_schedule(
+                    runtime.preferences.automatic_backup,
+                    self.manual_backup_should_start_for(&source_id),
+                    runtime.destination_configured,
+                    runtime.snapshot.setup_state,
+                    runtime.matched.len(),
+                );
                 let source_phase = mounted_source_phase(should_schedule);
                 upsert_source_snapshot(&mut runtime.snapshot, &source, &rule, true, source_phase);
                 if let Some(transmitter) = transmitter {
@@ -846,6 +902,8 @@ impl AppState {
                 }
                 runtime.snapshot.phase = source_phase;
                 runtime.snapshot.message_code = "device_detected".to_owned();
+                runtime.snapshot.error = None;
+                runtime.snapshot.failure_stage = None;
                 Some((source_id, should_schedule))
             }
             Ok(RuleVolumeMatch::Conflict { .. }) => {
@@ -1060,6 +1118,18 @@ impl AppState {
                 snapshot.deletion_ready = false;
             });
         }
+        publish_locked(app, &mut runtime);
+    }
+
+    pub fn set_waiting_for_device(&self, app: &AppHandle) {
+        let mut runtime = self.runtime.lock();
+        runtime.snapshot.phase = BackupPhase::Detecting;
+        runtime.snapshot.message_code = "waiting_for_device".to_owned();
+        runtime.snapshot.error = None;
+        runtime.snapshot.failure_stage = None;
+        runtime.snapshot.current_stage = None;
+        runtime.snapshot.setting_applies_next_run = false;
+        runtime.snapshot.current_item_ordinal = None;
         publish_locked(app, &mut runtime);
     }
 
@@ -1324,6 +1394,17 @@ fn backup_requirements_met(
     destination_configured && setup_state == SetupStateDto::Ready && mounted_devices > 0
 }
 
+fn backup_should_schedule(
+    automatic_backup: bool,
+    manual_backup_pending: bool,
+    destination_configured: bool,
+    setup_state: SetupStateDto,
+    mounted_devices: usize,
+) -> bool {
+    (automatic_backup || manual_backup_pending)
+        && backup_requirements_met(destination_configured, setup_state, mounted_devices)
+}
+
 fn mounted_source_phase(should_schedule: bool) -> BackupPhase {
     if should_schedule {
         BackupPhase::Detecting
@@ -1583,18 +1664,42 @@ mod tests {
     }
 
     #[test]
-    fn manual_backup_reports_a_missing_recorder_instead_of_an_invalid_request() {
+    fn manual_reconnect_schedules_even_when_automatic_backup_is_disabled() {
+        assert!(backup_should_schedule(
+            false,
+            true,
+            true,
+            SetupStateDto::Ready,
+            1
+        ));
+        assert!(!backup_should_schedule(
+            false,
+            false,
+            true,
+            SetupStateDto::Ready,
+            1
+        ));
+    }
+
+    #[test]
+    fn manual_backup_can_wait_for_a_missing_recorder() {
         let state_directory = tempdir().unwrap();
         let destination = tempdir().unwrap();
         let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
         let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
 
-        let error = state.backup_start_preflight().unwrap_err();
-        let public = error.public(None);
+        assert!(state.backup_configuration_preflight().is_ok());
+        assert!(matches!(
+            state.backup_start_preflight(),
+            Err(CoreError::DeviceRemoved)
+        ));
+        state.request_manual_backup();
+        state.mark_manual_backup_waiting();
+        assert!(state.manual_backup_is_waiting());
 
-        assert_eq!(error.diagnostic_code(), "device_removed");
-        assert_eq!(public.message_code, "device_removed");
-        assert!(public.retryable);
+        state.cancel_active_operation();
+
+        assert!(!state.manual_backup_is_waiting());
     }
 
     #[test]

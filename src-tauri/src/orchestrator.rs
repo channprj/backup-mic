@@ -55,6 +55,7 @@ use crate::{
         retire_superseded_wavs_for_source, verify_published_artifact,
     },
     dto::{ProgressDto, TrashProposalSummaryDto},
+    manual_backup::ManualBackupClaim,
     platform::{
         device_registry::DeviceRegistry,
         macos::{
@@ -68,6 +69,12 @@ use crate::{
 };
 
 const RESCAN_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum BackupTrigger {
+    Automatic,
+    Manual,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceRunOutcome {
@@ -204,7 +211,13 @@ pub fn run_matched_sources_with_adapters(
         match first {
             Ok((compiled, snapshot)) => scan_snapshots.push((matched, compiled, snapshot)),
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
-            Err(error) => outcomes.push(failed_without_run(matched.authority.source.id, error)),
+            Err(error) => {
+                let error = classify_source_failure(
+                    source_authority_is_available(state, &matched.authority),
+                    error,
+                );
+                outcomes.push(failed_without_run(matched.authority.source.id, error));
+            }
         }
     }
     if !scan_snapshots.is_empty() {
@@ -235,7 +248,13 @@ pub fn run_matched_sources_with_adapters(
         }) {
             Ok(source) => prepared.push(source),
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
-            Err(error) => outcomes.push(failed_without_run(matched.authority.source.id, error)),
+            Err(error) => {
+                let error = classify_source_failure(
+                    source_authority_is_available(state, &matched.authority),
+                    error,
+                );
+                outcomes.push(failed_without_run(matched.authority.source.id, error));
+            }
         }
     }
 
@@ -828,6 +847,10 @@ fn finish_source_failure(
     run_id: String,
     error: CoreError,
 ) -> Result<SourceRunOutcome, CoreError> {
+    let error = classify_source_failure(
+        source_authority_is_available(state, &source.authority),
+        error,
+    );
     let public = error.public(None);
     state.ledger.lock().finish_backup_run(
         &run_id,
@@ -1007,6 +1030,18 @@ fn source_failure_is_process_wide(error: &CoreError) -> bool {
     )
 }
 
+fn classify_source_failure(authority_is_current: bool, error: CoreError) -> CoreError {
+    if !authority_is_current && !matches!(error, CoreError::Cancelled) {
+        CoreError::DeviceRemoved
+    } else {
+        error
+    }
+}
+
+fn source_authority_is_available(state: &AppState, authority: &MountedSourceAuthority) -> bool {
+    state.source_authority_is_current(authority) && authority.descriptor.mount_root.is_dir()
+}
+
 pub fn overall_backup_phase(outcomes: &[SourceRunOutcome]) -> BackupPhase {
     if outcomes.iter().any(|outcome| {
         matches!(
@@ -1127,16 +1162,33 @@ impl DeviceOrchestrator {
                             }
                         }
                     }
+                    if matched_sources
+                        .keys()
+                        .any(|source_id| state.manual_backup_should_start_for(source_id))
+                    {
+                        backup_pending = true;
+                    }
                     if matched_sources.is_empty() {
                         backup_pending = false;
                     }
                     if backup_pending {
-                        match start_backup(app.clone(), state.clone()) {
+                        let trigger = if matched_sources
+                            .keys()
+                            .any(|source_id| state.manual_backup_should_start_for(source_id))
+                        {
+                            BackupTrigger::Manual
+                        } else {
+                            BackupTrigger::Automatic
+                        };
+                        match start_backup(app.clone(), state.clone(), trigger) {
                             Ok(()) => {
                                 scheduler.mark_backup_started();
                                 backup_pending = false;
                             }
                             Err(CoreError::Busy) => {}
+                            Err(CoreError::DeviceRemoved) => {
+                                backup_pending = false;
+                            }
                             Err(error) => {
                                 state.report_failure(
                                     "automatic_backup",
@@ -1172,27 +1224,127 @@ impl Drop for DeviceOrchestrator {
     }
 }
 
-pub fn start_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
+pub fn request_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
+    state.backup_configuration_preflight()?;
+    state.request_manual_backup();
+    if state.matched_sources().is_empty() {
+        state.mark_manual_backup_waiting();
+        publish_waiting_for_device(&app, &state, "backup.waiting_for_device");
+        return Ok(());
+    }
+    match start_backup(app.clone(), state.clone(), BackupTrigger::Manual) {
+        Ok(()) | Err(CoreError::Busy) => Ok(()),
+        Err(CoreError::DeviceRemoved) => {
+            state.mark_manual_backup_waiting();
+            publish_waiting_for_device(&app, &state, "backup.waiting_for_device");
+            Ok(())
+        }
+        Err(error) => {
+            state.cancel_manual_backup();
+            Err(error)
+        }
+    }
+}
+
+pub(crate) fn start_backup(
+    app: AppHandle,
+    state: AppState,
+    trigger: BackupTrigger,
+) -> Result<(), CoreError> {
     state.backup_start_preflight()?;
     let guard = state.begin_operation()?;
+    let scheduled_sources = state.matched_sources().into_keys().collect::<Vec<_>>();
+    if scheduled_sources.is_empty() {
+        return Err(CoreError::DeviceRemoved);
+    }
+    let manual_claim = match trigger {
+        BackupTrigger::Automatic => None,
+        BackupTrigger::Manual => {
+            let Some(claim) = state.claim_manual_backup(&scheduled_sources) else {
+                return Err(CoreError::DeviceRemoved);
+            };
+            Some(claim)
+        }
+    };
     state
         .proposals
         .lock()
         .invalidate(ProposalInvalidation::BackupStarted);
-    tauri::async_runtime::spawn_blocking(move || {
-        if let Err(error) = run_backup(&app, &state, &guard) {
-            if matches!(error, CoreError::Cancelled) {
-                state.settle_cancelled_operation(&app);
+    if manual_claim
+        .as_ref()
+        .is_some_and(ManualBackupClaim::resumed)
+    {
+        append_reconnect_audit(&state, "backup.resumed_after_reconnect");
+    }
+    tauri::async_runtime::spawn_blocking(move || match run_backup(&app, &state, &guard) {
+        Ok(result) => {
+            let interrupted = result.should_resume_after_reconnect();
+            if result.has_real_failure {
+                state.cancel_manual_backup();
+            } else if !interrupted {
+                if let Some(claim) = manual_claim {
+                    state.finish_manual_backup(claim);
+                }
             } else {
-                state.report_failure("backup_run", "background_operation", &error, None, None);
-                state.set_error(&app, error, None);
+                let cancelled = guard.cancellation.is_cancelled();
+                if let Some(claim) = manual_claim {
+                    state.interrupt_manual_backup_claim(
+                        claim,
+                        result.interrupted_sources,
+                        cancelled,
+                    );
+                } else if !cancelled {
+                    state.interrupt_manual_backup(result.interrupted_sources);
+                }
             }
+            if !result.has_real_failure && state.manual_backup_is_waiting() {
+                if interrupted {
+                    state.set_waiting_for_device(&app);
+                } else {
+                    publish_waiting_for_device(&app, &state, "backup.waiting_for_device");
+                }
+            }
+        }
+        Err(CoreError::Cancelled) => {
+            state.cancel_manual_backup();
+            state.settle_cancelled_operation(&app);
+        }
+        Err(CoreError::DeviceRemoved) => {
+            let cancelled = guard.cancellation.is_cancelled();
+            if let Some(claim) = manual_claim {
+                state.interrupt_manual_backup_claim(claim, scheduled_sources, cancelled);
+            } else if !cancelled {
+                state.interrupt_manual_backup(scheduled_sources);
+            }
+            if !cancelled {
+                publish_waiting_for_device(&app, &state, "backup.waiting_for_device");
+            }
+        }
+        Err(error) => {
+            state.cancel_manual_backup();
+            state.report_failure("backup_run", "background_operation", &error, None, None);
+            state.set_error(&app, error, None);
         }
     });
     Ok(())
 }
 
-fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Result<(), CoreError> {
+struct BackupRunResult {
+    interrupted_sources: BTreeSet<SourceId>,
+    has_real_failure: bool,
+}
+
+impl BackupRunResult {
+    fn should_resume_after_reconnect(&self) -> bool {
+        !self.has_real_failure && !self.interrupted_sources.is_empty()
+    }
+}
+
+fn run_backup(
+    app: &AppHandle,
+    state: &AppState,
+    guard: &OperationGuard,
+) -> Result<BackupRunResult, CoreError> {
     let matched = state.matched_sources().into_values().collect::<Vec<_>>();
     if matched.is_empty() {
         return Err(CoreError::DeviceRemoved);
@@ -1248,8 +1400,21 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 )
             })
     });
-    let phase = if automatic_retirement_failed {
+    let interrupted_sources = outcomes
+        .iter()
+        .filter(|outcome| outcome.error.as_ref().is_some_and(is_device_removed))
+        .map(|outcome| outcome.source_id.clone())
+        .collect::<BTreeSet<_>>();
+    let non_device_failure = outcomes.iter().any(|outcome| {
+        outcome
+            .error
+            .as_ref()
+            .is_some_and(|error| !is_device_removed(error))
+    });
+    let phase = if automatic_retirement_failed || non_device_failure {
         BackupPhase::PartialFailure
+    } else if !interrupted_sources.is_empty() {
+        BackupPhase::Detecting
     } else {
         overall_backup_phase(&outcomes)
     };
@@ -1261,6 +1426,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
     })?;
     let last_error = outcomes
         .iter()
+        .filter(|outcome| !outcome.error.as_ref().is_some_and(is_device_removed))
         .find_map(|outcome| {
             outcome
                 .error
@@ -1284,6 +1450,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
                 .iter()
                 .find(|outcome| outcome.source_id == *source_id)
                 .and_then(|outcome| outcome.error.clone())
+                .filter(|error| !is_device_removed(error))
                 .or_else(|| {
                     automatic_retirements
                         .iter()
@@ -1308,6 +1475,7 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         runtime.snapshot.phase = phase;
         runtime.snapshot.message_code = match phase {
             BackupPhase::PartialFailure => "partial_failure",
+            BackupPhase::Detecting => "waiting_for_device",
             BackupPhase::NothingNew => "nothing_new",
             _ => "backup_complete",
         }
@@ -1317,35 +1485,43 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         runtime.snapshot.setting_applies_next_run = false;
         runtime.snapshot.current_item_ordinal = None;
         runtime.snapshot.error = last_error;
-        runtime.snapshot.last_success_at =
-            (phase != BackupPhase::PartialFailure).then_some(finished_at.clone());
+        if matches!(
+            phase,
+            BackupPhase::CompletedDeletionPending | BackupPhase::NothingNew
+        ) {
+            runtime.snapshot.last_success_at = Some(finished_at.clone());
+        }
         for matched_source in &matched {
             let source_phase = outcomes
                 .iter()
                 .find(|outcome| outcome.source_id == matched_source.authority.source.id)
                 .map(|outcome| outcome.phase)
                 .unwrap_or(BackupPhase::PartialFailure);
-            let deletion_ready = outcomes
-                .iter()
-                .find(|outcome| outcome.source_id == matched_source.authority.source.id)
-                .is_some_and(|outcome| outcome.deletion_ready)
+            let deletion_ready = !interrupted_sources.contains(&matched_source.authority.source.id)
+                && outcomes
+                    .iter()
+                    .find(|outcome| outcome.source_id == matched_source.authority.source.id)
+                    .is_some_and(|outcome| outcome.deletion_ready)
                 && !automatic_retirements
                     .iter()
                     .any(|retirement| retirement.source_id == matched_source.authority.source.id);
             let retirement = automatic_retirements
                 .iter()
                 .find(|retirement| retirement.source_id == matched_source.authority.source.id);
-            let effective_phase = if retirement.is_some_and(|retirement| {
-                retirement.error.is_some()
-                    || retirement
-                        .report
-                        .as_ref()
-                        .is_some_and(|report| report.outcome != DeletionOutcome::Deleted)
-            }) {
-                BackupPhase::Error
-            } else {
-                source_phase
-            };
+            let effective_phase =
+                if interrupted_sources.contains(&matched_source.authority.source.id) {
+                    BackupPhase::Idle
+                } else if retirement.is_some_and(|retirement| {
+                    retirement.error.is_some()
+                        || retirement
+                            .report
+                            .as_ref()
+                            .is_some_and(|report| report.outcome != DeletionOutcome::Deleted)
+                }) {
+                    BackupPhase::Error
+                } else {
+                    source_phase
+                };
             let deletion_phase = retirement
                 .map(
                     |retirement| match retirement.report.as_ref().map(|report| report.outcome) {
@@ -1397,6 +1573,9 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         publish_locked(app, &mut runtime);
     }
     for outcome in &outcomes {
+        if outcome.error.as_ref().is_some_and(is_device_removed) {
+            continue;
+        }
         if let Some(error) = &outcome.error {
             state.report_public_failure("backup_run", source_failure_stage(outcome), error, None);
         }
@@ -1476,10 +1655,10 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
         ("count", AuditValue::Unsigned(total_files)),
         (
             "mode",
-            AuditValue::Text(if phase == BackupPhase::PartialFailure {
-                "partial_failure"
-            } else {
-                "completed"
+            AuditValue::Text(match phase {
+                BackupPhase::PartialFailure => "partial_failure",
+                BackupPhase::Detecting => "waiting_for_device",
+                _ => "completed",
             }),
         ),
     ];
@@ -1491,30 +1670,62 @@ fn run_backup(app: &AppHandle, state: &AppState, guard: &OperationGuard) -> Resu
             } else {
                 AuditLevel::Info
             },
-            code: "backup.run_complete",
+            code: if phase == BackupPhase::Detecting {
+                "backup.waiting_for_device"
+            } else {
+                "backup.run_complete"
+            },
             transmitter: None,
             fields: &fields,
         },
         AuditDurability::SyncData,
     )?;
-    if app
-        .notification()
-        .builder()
-        .title("Backup Mic")
-        .body(if phase == BackupPhase::PartialFailure {
-            "일부 파일을 백업하지 못했습니다. 원본은 그대로 남아 있습니다."
-        } else if phase == BackupPhase::NothingNew {
-            "새 녹음이 없습니다."
-        } else {
-            "모든 녹음의 복사와 SHA-256 검증을 마쳤습니다."
-        })
-        .show()
-        .is_err()
+    if phase != BackupPhase::Detecting
+        && app
+            .notification()
+            .builder()
+            .title("Backup Mic")
+            .body(if phase == BackupPhase::PartialFailure {
+                "일부 파일을 백업하지 못했습니다. 원본은 그대로 남아 있습니다."
+            } else if phase == BackupPhase::NothingNew {
+                "새 녹음이 없습니다."
+            } else {
+                "모든 녹음의 복사와 SHA-256 검증을 마쳤습니다."
+            })
+            .show()
+            .is_err()
     {
         let error = adapter_public_error("notification_failed", true);
         state.report_public_failure("backup_run", "notification", &error, None);
     }
-    Ok(())
+    Ok(BackupRunResult {
+        interrupted_sources,
+        has_real_failure: automatic_retirement_failed || non_device_failure,
+    })
+}
+
+fn publish_waiting_for_device(app: &AppHandle, state: &AppState, audit_code: &'static str) {
+    state.set_waiting_for_device(app);
+    append_reconnect_audit(state, audit_code);
+}
+
+fn append_reconnect_audit(state: &AppState, code: &'static str) {
+    if let Err(error) = state.append_audit(
+        &AuditEvent {
+            occurred_at: audit_now(),
+            level: AuditLevel::Info,
+            code,
+            transmitter: None,
+            fields: &[],
+        },
+        AuditDurability::Buffered,
+    ) {
+        state.report_failure("backup_reconnect", "audit_log", &error, None, None);
+    }
+}
+
+fn is_device_removed(error: &PublicError) -> bool {
+    error.message_code == "device_removed"
 }
 
 pub fn prepare_trash(
@@ -2028,6 +2239,23 @@ mod tests {
     use super::*;
 
     #[test]
+    fn manual_reconnect_classifies_io_failure_only_after_authority_is_lost() {
+        let current = classify_source_failure(
+            true,
+            CoreError::CopyFailed(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        );
+        let removed = classify_source_failure(
+            false,
+            CoreError::CopyFailed(std::io::Error::from(std::io::ErrorKind::NotFound)),
+        );
+        let cancelled = classify_source_failure(false, CoreError::Cancelled);
+
+        assert_eq!(current.diagnostic_code(), "copy_failed");
+        assert!(matches!(removed, CoreError::DeviceRemoved));
+        assert!(matches!(cancelled, CoreError::Cancelled));
+    }
+
+    #[test]
     fn failures_without_a_run_are_reported_as_source_preparation() {
         let preparation = SourceRunOutcome {
             source_id: SourceId::new(),
@@ -2043,5 +2271,25 @@ mod tests {
 
         assert_eq!(source_failure_stage(&preparation), "source_preparation");
         assert_eq!(source_failure_stage(&pipeline), "source_pipeline");
+    }
+
+    #[test]
+    fn a_real_failure_is_not_hidden_by_a_simultaneous_disconnect() {
+        let interrupted_sources = [SourceId::new()].into_iter().collect::<BTreeSet<_>>();
+
+        assert!(
+            BackupRunResult {
+                interrupted_sources: interrupted_sources.clone(),
+                has_real_failure: false,
+            }
+            .should_resume_after_reconnect()
+        );
+        assert!(
+            !BackupRunResult {
+                interrupted_sources,
+                has_real_failure: true,
+            }
+            .should_resume_after_reconnect()
+        );
     }
 }

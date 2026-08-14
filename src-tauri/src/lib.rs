@@ -7,6 +7,7 @@ pub mod dto;
 pub mod failure_reporter;
 pub mod legacy_app_data;
 pub mod lifecycle;
+pub mod manual_backup;
 pub mod orchestrator;
 pub mod pairing;
 pub mod platform;
