@@ -504,6 +504,57 @@ fn dji_prefix_and_suffix_use_the_same_rule_destination_engine() {
 }
 
 #[test]
+fn dji_transmitters_share_one_month_without_device_or_day_directories() {
+    let source = tempdir().unwrap();
+    let destination = tempdir().unwrap();
+    for file_name in [
+        "tx01_MIC001_20260809_010203.WAV",
+        "TX02_MIC002_20260814_010204.WAV",
+    ] {
+        fs::write(source.path().join(file_name), b"dji audio").unwrap();
+    }
+    let mut rule = zoom_rule();
+    rule.archive_directory_name = "Ignored DJI Archive".to_owned();
+    rule.filename_prefix.clear();
+    rule.filename_suffix.clear();
+    rule.filename_profile = FilenameProfile::DjiTxShort;
+    rule.device_constraint_profile = DeviceConstraintProfile::DjiMicMini2s;
+    rule.date_folder_layout = DateFolderLayout::YearMonthDay;
+
+    for (file_name, date, expected) in [
+        (
+            "tx01_MIC001_20260809_010203.WAV",
+            date!(2026 - 08 - 09),
+            "2026/08/260809-T01_MIC001_20260809_010203.wav",
+        ),
+        (
+            "TX02_MIC002_20260814_010204.WAV",
+            date!(2026 - 08 - 14),
+            "2026/08/260814-T02_MIC002_20260814_010204.wav",
+        ),
+    ] {
+        let mut observation = observed(file_name, SelectedFileKind::RecordingWav, 9);
+        observation.session_relative_path = None;
+        observation.archive_date = date;
+        let plan = plan_rule_file(
+            source.path(),
+            destination.path(),
+            &rule,
+            &SourceId::new(),
+            observation,
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(plan.relative_destination, Path::new(expected));
+        assert_eq!(
+            plan.relative_destination.with_extension("m4a"),
+            Path::new(expected).with_extension("m4a")
+        );
+    }
+}
+
+#[test]
 fn generic_rules_keep_their_archive_directory_even_with_dji_filename_shortening() {
     let source = tempdir().unwrap();
     let destination = tempdir().unwrap();

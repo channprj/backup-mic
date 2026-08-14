@@ -6,19 +6,242 @@ use std::{
 
 use crate::{
     additional_file::VerifiedAdditionalFile,
+    artifact::OutputFormat,
     backup::CancellationToken,
     deletion::TrashAdapter,
     error::CoreError,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
-    rule::BackupRule,
+    recording::parse_recording_name,
+    rule::{BackupRule, destination_stem, uses_root_dji_calendar_layout},
 };
 use tempfile::NamedTempFile;
+use time::{Date, Month};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LayoutMigration {
     pub from: PathBuf,
     pub to: PathBuf,
+}
+
+pub fn migrate_verified_dji_calendar_layout(
+    destination_root: &Path,
+    ledger: &mut Ledger,
+    trash: &dyn TrashAdapter,
+    cancellation: &CancellationToken,
+) -> Result<Vec<LayoutMigration>, CoreError> {
+    migrate_verified_dji_calendar_layout_inner(
+        destination_root,
+        ledger,
+        trash,
+        cancellation,
+        &mut |error| Err(error),
+    )
+}
+
+pub fn migrate_verified_dji_calendar_layout_resilient(
+    destination_root: &Path,
+    ledger: &mut Ledger,
+    trash: &dyn TrashAdapter,
+    cancellation: &CancellationToken,
+    on_failure: &mut dyn FnMut(&CoreError),
+) -> Result<Vec<LayoutMigration>, CoreError> {
+    migrate_verified_dji_calendar_layout_inner(
+        destination_root,
+        ledger,
+        trash,
+        cancellation,
+        &mut |error| {
+            on_failure(&error);
+            Ok(())
+        },
+    )
+}
+
+fn migrate_verified_dji_calendar_layout_inner(
+    destination_root: &Path,
+    ledger: &mut Ledger,
+    trash: &dyn TrashAdapter,
+    cancellation: &CancellationToken,
+    on_failure: &mut dyn FnMut(CoreError) -> Result<(), CoreError>,
+) -> Result<Vec<LayoutMigration>, CoreError> {
+    cancellation.check()?;
+    let canonical_root =
+        fs::canonicalize(destination_root).map_err(|_| CoreError::DestinationUnavailable)?;
+    let recordings = ledger.verified_recordings()?;
+    let mut migrations = Vec::new();
+    for recording in recordings {
+        cancellation.check()?;
+        match migrate_dji_recording(&canonical_root, ledger, trash, cancellation, &recording) {
+            Ok(Some(migration)) => migrations.push(migration),
+            Ok(None) => {}
+            Err(CoreError::Cancelled) => return Err(CoreError::Cancelled),
+            Err(error) => on_failure(error)?,
+        }
+    }
+    Ok(migrations)
+}
+
+fn migrate_dji_recording(
+    root: &Path,
+    ledger: &mut Ledger,
+    trash: &dyn TrashAdapter,
+    cancellation: &CancellationToken,
+    recording: &VerifiedRecording,
+) -> Result<Option<LayoutMigration>, CoreError> {
+    let source = ledger.source(&recording.source_id)?;
+    let rule = ledger
+        .backup_rule(&source.rule_id)?
+        .ok_or(CoreError::LedgerCorrupt)?;
+    if !uses_root_dji_calendar_layout(&rule) {
+        return Ok(None);
+    }
+    let Some(default_target) = dji_calendar_target(&rule, recording) else {
+        return Ok(None);
+    };
+    let old_relative = &recording.artifact.relative_path;
+    if is_dji_calendar_target(old_relative, &default_target, &recording.artifact.sha256)? {
+        return Ok(None);
+    }
+    let Some(target_relative) = migrate_verified_file(
+        root,
+        old_relative,
+        &default_target,
+        recording.artifact.byte_count,
+        &recording.artifact.sha256,
+        trash,
+        cancellation,
+    )?
+    else {
+        return Ok(None);
+    };
+    remove_empty_legacy_ancestors(root, &root.join(old_relative))?;
+    ledger.relocate_verified_artifact(
+        &recording.id,
+        old_relative,
+        &target_relative,
+        recording.artifact.byte_count,
+        &recording.artifact.sha256,
+    )?;
+    Ok(Some(LayoutMigration {
+        from: old_relative.clone(),
+        to: target_relative,
+    }))
+}
+
+fn dji_calendar_target(rule: &BackupRule, recording: &VerifiedRecording) -> Option<PathBuf> {
+    let source_file_name = recording.source_relative_path.file_name()?.to_str()?;
+    let source_stem = recording.source_relative_path.file_stem()?.to_str()?;
+    let transmitter_prefix = source_stem.get(..5)?;
+    if !transmitter_prefix.eq_ignore_ascii_case("TX01_")
+        && !transmitter_prefix.eq_ignore_ascii_case("TX02_")
+    {
+        return None;
+    }
+    let date = dji_recording_date(recording, source_file_name)?;
+    let stem = destination_stem(rule, source_stem).ok()?;
+    let extension = match recording.artifact.format {
+        OutputFormat::Wav => "wav",
+        OutputFormat::M4a => "m4a",
+    };
+    Some(
+        PathBuf::from(date.year().to_string())
+            .join(format!("{:02}", date.month() as u8))
+            .join(format!(
+                "{:02}{:02}{:02}-{stem}.{extension}",
+                date.year().rem_euclid(100),
+                date.month() as u8,
+                date.day()
+            )),
+    )
+}
+
+fn dji_recording_date(recording: &VerifiedRecording, source_file_name: &str) -> Option<Date> {
+    let fallback = Date::from_calendar_date(1970, Month::January, 1).ok()?;
+    let parsed = parse_recording_name(source_file_name, fallback);
+    if !parsed.used_fallback_date {
+        return Some(parsed.destination_date);
+    }
+    date_from_prefixed_artifact_name(&recording.artifact.relative_path)
+        .or_else(|| date_from_legacy_ancestors(&recording.artifact.relative_path))
+}
+
+fn date_from_prefixed_artifact_name(path: &Path) -> Option<Date> {
+    let file_name = path.file_name()?.to_str()?;
+    if file_name.as_bytes().get(6) != Some(&b'-') {
+        return None;
+    }
+    let year = 2000 + file_name.get(0..2)?.parse::<i32>().ok()?;
+    let month = Month::try_from(file_name.get(2..4)?.parse::<u8>().ok()?).ok()?;
+    let day = file_name.get(4..6)?.parse::<u8>().ok()?;
+    Date::from_calendar_date(year, month, day).ok()
+}
+
+fn date_from_legacy_ancestors(path: &Path) -> Option<Date> {
+    let components = path
+        .parent()?
+        .components()
+        .filter_map(|component| match component {
+            Component::Normal(value) => value.to_str(),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    for component in &components {
+        if component.len() == 10
+            && component.as_bytes().get(4) == Some(&b'-')
+            && component.as_bytes().get(7) == Some(&b'-')
+        {
+            let parsed = component
+                .get(0..4)
+                .and_then(|value| value.parse::<i32>().ok())
+                .zip(
+                    component
+                        .get(5..7)
+                        .and_then(|value| value.parse::<u8>().ok())
+                        .and_then(|value| Month::try_from(value).ok()),
+                )
+                .zip(
+                    component
+                        .get(8..10)
+                        .and_then(|value| value.parse::<u8>().ok()),
+                );
+            if let Some(((year, month), day)) = parsed
+                && let Ok(date) = Date::from_calendar_date(year, month, day)
+            {
+                return Some(date);
+            }
+        }
+    }
+    for window in components.windows(3) {
+        let year = window[0].parse::<i32>().ok();
+        let month = window[1]
+            .parse::<u8>()
+            .ok()
+            .and_then(|month| Month::try_from(month).ok());
+        let day = window[2].parse::<u8>().ok();
+        if let (Some(year), Some(month), Some(day)) = (year, month, day)
+            && let Ok(date) = Date::from_calendar_date(year, month, day)
+        {
+            return Some(date);
+        }
+    }
+    None
+}
+
+fn is_dji_calendar_target(
+    current: &Path,
+    default_target: &Path,
+    sha256: &str,
+) -> Result<bool, CoreError> {
+    if current == default_target {
+        return Ok(true);
+    }
+    for prefix_length in (8..=sha256.len()).step_by(4) {
+        if current == with_hash_suffix(default_target, &sha256[..prefix_length])? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub fn migrate_legacy_rule_layout(

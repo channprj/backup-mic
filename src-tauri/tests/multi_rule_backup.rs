@@ -6,14 +6,17 @@ use std::{
 };
 
 use backup_core::{
-    artifact::{AudioDescription, OutputFormat},
+    artifact::{
+        AudioDescription, ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact,
+        VerifiedAudioProperties,
+    },
     backup::{CancellationToken, CopyFaultPoint},
     batch::BatchPhase,
     clock::Clock,
     deletion::TrashAdapter,
     error::CoreError,
     hash::hash_file,
-    ledger::Ledger,
+    ledger::{Ledger, VerifiedRecording},
     rule::{BackupRule, BackupRuleDraft, compile_rule},
     rule_scanner::scan_rule_once,
     source::{MountedSourceAuthority, SourceId, SourceRecord},
@@ -580,6 +583,110 @@ fn archive_and_layout_changes_leave_existing_artifacts_in_place() {
         components.get(1).is_some_and(|date| {
             date.len() == 6 && date.bytes().all(|byte| byte.is_ascii_digit())
         })
+    );
+}
+
+#[test]
+fn a_rule_backup_migrates_verified_dji_artifacts_before_reuse_planning() {
+    let fixture = Fixture::new();
+    let (_zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Zoom H1n",
+        "zoom-",
+        "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    );
+    let old_relative =
+        Path::new("DJI Mic Mini 2S/2026/08/14/260814-T01_MIC001_20260814_010203_edit.m4a");
+    let old_path = fixture._destination.path().join(old_relative);
+    fs::create_dir_all(old_path.parent().unwrap()).unwrap();
+    fs::write(&old_path, b"verified legacy m4a").unwrap();
+    let digest = hash_file(&old_path).unwrap();
+    let dji_source = SourceId::new();
+    {
+        let mut ledger = Ledger::open(&fixture.ledger_path).unwrap();
+        let rule = ledger.dji_rule().unwrap();
+        ledger
+            .upsert_source(
+                &SourceRecord {
+                    id: dji_source.clone(),
+                    rule_id: rule.id,
+                    volume_uuid: "dji-migration-integration".to_owned(),
+                    legacy_slot: Some("TX01".to_owned()),
+                    display_name: "DJI Mic Mini 2S (TX01)".to_owned(),
+                },
+                "2026-08-14T00:00:00Z",
+            )
+            .unwrap();
+        ledger
+            .begin_batch_run(
+                "dji-migration-run",
+                &dji_source,
+                "2026-08-14T00:00:00Z",
+                0,
+                backup_core::batch::FrozenPreferences {
+                    automatic_backup: true,
+                    m4a_conversion: true,
+                    automatic_trash: false,
+                },
+            )
+            .unwrap();
+        ledger
+            .commit_verified_recording(&VerifiedRecording {
+                id: "dji-migration-recording".to_owned(),
+                source_id: dji_source,
+                source_relative_path: "TX_MIC001/TX01_MIC001_20260814_010203_edit.wav".into(),
+                source_size: digest.size,
+                source_mtime_ns: 1,
+                source_sha256: digest.sha256.clone(),
+                artifact: VerifiedArtifact {
+                    relative_path: old_relative.to_path_buf(),
+                    format: OutputFormat::M4a,
+                    byte_count: digest.size,
+                    sha256: digest.sha256,
+                    audio: Some(VerifiedAudioProperties {
+                        codec: "aac".to_owned(),
+                        sample_rate_hz: 48_000,
+                        channel_count: 1,
+                        valid_frames: 48_000,
+                        duration_micros: 1_000_000,
+                    }),
+                },
+                conversion_status: ConversionStatus::Complete,
+                conversion_error_code: None,
+                retirement_status: RetirementStatus::Present,
+                retired_session_relative_path: None,
+                verified_at: "2026-08-14T00:00:01Z".to_owned(),
+                backup_run_id: "dji-migration-run".to_owned(),
+            })
+            .unwrap();
+    }
+
+    run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&zoom),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &BackupTrash,
+        &InstantClock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    let expected = Path::new("2026/08/260814-T01_MIC001_20260814_010203_edit.m4a");
+    let ledger = Ledger::open(&fixture.ledger_path).unwrap();
+    assert_eq!(
+        ledger
+            .verified_recording("dji-migration-recording")
+            .unwrap()
+            .unwrap()
+            .artifact
+            .relative_path,
+        expected
+    );
+    assert!(!old_path.exists());
+    assert_eq!(
+        fs::read(fixture._destination.path().join(expected)).unwrap(),
+        b"verified legacy m4a"
     );
 }
 

@@ -29,6 +29,7 @@ use backup_core::{
     },
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
+    layout::migrate_verified_dji_calendar_layout_resilient,
     ledger::VerifiedRecording,
     recording::{AdditionalFileObservation, ParsedRecordingName, RecordingObservation},
     rule::{BackupRule, compile_rule},
@@ -163,6 +164,45 @@ pub fn run_matched_sources_with_adapters(
     }
     std::fs::create_dir_all(&destination).map_err(CoreError::CopyFailed)?;
     cleanup_owned_partials(&destination)?;
+    let migrations = {
+        let mut ledger = state.ledger.lock();
+        migrate_verified_dji_calendar_layout_resilient(
+            &destination,
+            &mut ledger,
+            destination_trash,
+            cancellation,
+            &mut |error| {
+                state.report_failure(
+                    "dji_calendar_migration",
+                    "artifact_migration",
+                    error,
+                    None,
+                    None,
+                );
+            },
+        )?
+    };
+    for migration in migrations {
+        let source = migration.from.to_string_lossy().into_owned();
+        let output = migration.to.to_string_lossy().into_owned();
+        let fields = [
+            ("source", AuditValue::Text(source.as_str())),
+            ("output", AuditValue::Text(output.as_str())),
+            ("mode", AuditValue::Text("dji_calendar")),
+        ];
+        if let Err(error) = state.append_audit(
+            &AuditEvent {
+                occurred_at: audit_now(),
+                level: AuditLevel::Info,
+                code: "archive.migration_complete",
+                transmitter: None,
+                fields: &fields,
+            },
+            AuditDurability::Buffered,
+        ) {
+            state.report_failure("dji_calendar_migration", "audit_log", &error, None, None);
+        }
+    }
     let preferences = state.frozen_preferences();
     let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let mut frozen_sources = matched_sources.to_vec();
