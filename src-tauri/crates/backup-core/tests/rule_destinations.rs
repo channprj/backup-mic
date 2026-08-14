@@ -499,12 +499,12 @@ fn dji_prefix_and_suffix_use_the_same_rule_destination_engine() {
 
     assert_eq!(
         plan.relative_destination,
-        Path::new("2026/08/260809-rec-T01_MIC001_20260809_010203-backup.wav")
+        Path::new("DJI Mic Mini 2S/2026/08/260809-rec-T01_MIC001_20260809_010203-backup.wav")
     );
 }
 
 #[test]
-fn dji_transmitters_share_one_month_without_device_or_day_directories() {
+fn dji_transmitters_share_the_configured_archive_and_day_directory() {
     let source = tempdir().unwrap();
     let destination = tempdir().unwrap();
     for file_name in [
@@ -525,12 +525,12 @@ fn dji_transmitters_share_one_month_without_device_or_day_directories() {
         (
             "tx01_MIC001_20260809_010203.WAV",
             date!(2026 - 08 - 09),
-            "2026/08/260809-T01_MIC001_20260809_010203.wav",
+            "Ignored DJI Archive/2026/08/09/260809-T01_MIC001_20260809_010203.wav",
         ),
         (
             "TX02_MIC002_20260814_010204.WAV",
             date!(2026 - 08 - 14),
-            "2026/08/260814-T02_MIC002_20260814_010204.wav",
+            "Ignored DJI Archive/2026/08/14/260814-T02_MIC002_20260814_010204.wav",
         ),
     ] {
         let mut observation = observed(file_name, SelectedFileKind::RecordingWav, 9);

@@ -2742,6 +2742,20 @@ fn migrate(connection: &Connection) -> Result<(), CoreError> {
             ))
             .map_err(CoreError::Ledger)?;
     }
+    let version_eight_applied = connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = 8)",
+            [],
+            |row| row.get::<_, bool>(0),
+        )
+        .map_err(CoreError::Ledger)?;
+    if !version_eight_applied {
+        connection
+            .execute_batch(include_str!(
+                "../migrations/0008_dji_archive_day_layout.sql"
+            ))
+            .map_err(CoreError::Ledger)?;
+    }
     Ok(())
 }
 

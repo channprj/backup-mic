@@ -49,7 +49,7 @@ function newDraft(): BackupRuleDraft {
     session_directory_globs: [],
     filename_prefix: "",
     filename_suffix: "",
-    date_folder_layout: "year_month",
+    date_folder_layout: "year_month_day",
   };
 }
 
@@ -322,7 +322,7 @@ export function RuleEditor({
           disabled={busy}
           hint={
             rule?.archive_directory_locked
-              ? "새 백업부터 적용됩니다. 검증된 기존 파일은 현재 위치에 유지됩니다."
+              ? "보관 폴더나 날짜 구조를 바꾸면 검증된 기존 파일도 다음 백업 전에 새 구조로 안전하게 정리됩니다."
               : undefined
           }
           onChange={(value) => updateText("archive_directory_name", value)}

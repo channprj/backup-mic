@@ -45,8 +45,8 @@ pub enum FilenameProfile {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DateFolderLayout {
-    YearMonthDay,
     #[default]
+    YearMonthDay,
     YearMonth,
     CompactDate,
 }
@@ -257,7 +257,7 @@ pub fn destination_stem(rule: &BackupRule, source_stem: &str) -> Result<String, 
     Ok(stem)
 }
 
-pub fn uses_root_dji_calendar_layout(rule: &BackupRule) -> bool {
+pub fn is_dji_calendar_rule(rule: &BackupRule) -> bool {
     rule.device_constraint_profile == DeviceConstraintProfile::DjiMicMini2s
         && rule.filename_profile == FilenameProfile::DjiTxShort
 }

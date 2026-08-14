@@ -66,7 +66,25 @@ struct Fixture {
 impl Fixture {
     fn new(root: &Path) -> Self {
         let mut ledger = Ledger::open(root.join("ledger.sqlite3")).unwrap();
-        let dji_rule = ledger.dji_rule().unwrap();
+        let current_dji_rule = ledger.dji_rule().unwrap();
+        let dji_rule = ledger
+            .save_backup_rule(
+                BackupRuleDraft {
+                    id: Some(current_dji_rule.id),
+                    name: current_dji_rule.name,
+                    archive_directory_name: "dji".to_owned(),
+                    enabled: current_dji_rule.enabled,
+                    volume_name_glob: current_dji_rule.volume_name_glob,
+                    required_path_globs: current_dji_rule.required_path_globs,
+                    backup_file_globs: current_dji_rule.backup_file_globs,
+                    session_directory_globs: current_dji_rule.session_directory_globs,
+                    filename_prefix: current_dji_rule.filename_prefix,
+                    filename_suffix: current_dji_rule.filename_suffix,
+                    date_folder_layout: DateFolderLayout::YearMonthDay,
+                },
+                "2026-08-14T00:00:00Z",
+            )
+            .unwrap();
         let generic_rule = ledger
             .save_backup_rule(
                 BackupRuleDraft {
@@ -220,7 +238,7 @@ fn recording(
 }
 
 #[test]
-fn migrates_every_verified_dji_legacy_shape_into_one_calendar_month() {
+fn migrates_every_verified_dji_legacy_shape_into_the_configured_archive_day() {
     let destination = tempdir().unwrap();
     let trash_root = tempdir().unwrap();
     let trash = RecordingTrash::new(trash_root.path().to_path_buf());
@@ -231,25 +249,31 @@ fn migrates_every_verified_dji_legacy_shape_into_one_calendar_month() {
             "day-directory",
             "TX_MIC001/TX01_MIC001_20260814_010203_edit.wav",
             "DJI Mic Mini 2S/2026/08/14/260814-T01_MIC001_20260814_010203_edit.m4a",
-            "2026/08/260814-T01_MIC001_20260814_010203_edit.m4a",
+            "dji/2026/08/14/260814-T01_MIC001_20260814_010203_edit.m4a",
         ),
         (
             "month-directory",
             "TX_MIC002/TX02_MIC002_20260814_010204_edit.wav",
             "DJI Mic Mini 2S/2026/08/260814-T02_MIC002_20260814_010204_edit.m4a",
-            "2026/08/260814-T02_MIC002_20260814_010204_edit.m4a",
+            "dji/2026/08/14/260814-T02_MIC002_20260814_010204_edit.m4a",
         ),
         (
             "dated-transmitter-directory",
             "TX_MIC003/TX01_MIC003_20260814_010205_edit.wav",
             "2026/2026-08-14/TX01/TX01_MIC003_20260814_010205_edit.m4a",
-            "2026/08/260814-T01_MIC003_20260814_010205_edit.m4a",
+            "dji/2026/08/14/260814-T01_MIC003_20260814_010205_edit.m4a",
         ),
         (
             "dated-directory",
             "TX_MIC004/TX02_MIC004_20260814_010206_edit.wav",
             "2026/2026-08-14/TX02_MIC004_20260814_010206_edit.wav",
-            "2026/08/260814-T02_MIC004_20260814_010206_edit.wav",
+            "dji/2026/08/14/260814-T02_MIC004_20260814_010206_edit.wav",
+        ),
+        (
+            "root-month-directory",
+            "TX_MIC005/TX01_MIC005_20260815_010207_edit.wav",
+            "2026/08/260815-T01_MIC005_20260815_010207_edit.m4a",
+            "dji/2026/08/15/260815-T01_MIC005_20260815_010207_edit.m4a",
         ),
     ];
     for (id, source_relative, old, _) in cases {
@@ -290,6 +314,8 @@ fn migrates_every_verified_dji_legacy_shape_into_one_calendar_month() {
         );
     }
     assert_eq!(trash.moved().len(), cases.len());
+    assert!(destination.path().join("dji/2026/08/14").is_dir());
+    assert!(destination.path().join("dji/2026/08/15").is_dir());
     assert!(!destination.path().join("DJI Mic Mini 2S").exists());
     assert!(!destination.path().join("2026/2026-08-14").exists());
     assert!(
@@ -314,7 +340,7 @@ fn reuses_equal_content_suffixes_collisions_and_leaves_generic_rules_untouched()
     let generic_source = fixture.generic_source.clone();
 
     let equal_old = "DJI Mic Mini 2S/2026/08/14/equal.m4a";
-    let equal_target = "2026/08/260814-T01_MIC005_20260814_010207_edit.m4a";
+    let equal_target = "dji/2026/08/14/260814-T01_MIC005_20260814_010207_edit.m4a";
     let equal = fixture.commit(
         destination.path(),
         "equal",
@@ -326,7 +352,7 @@ fn reuses_equal_content_suffixes_collisions_and_leaves_generic_rules_untouched()
     write_artifact(destination.path(), Path::new(equal_target), b"equal bytes");
 
     let collision_old = "DJI Mic Mini 2S/2026/08/14/collision.m4a";
-    let collision_default = "2026/08/260814-T02_MIC006_20260814_010208_edit.m4a";
+    let collision_default = "dji/2026/08/14/260814-T02_MIC006_20260814_010208_edit.m4a";
     let collision = fixture.commit(
         destination.path(),
         "collision",
@@ -374,7 +400,7 @@ fn reuses_equal_content_suffixes_collisions_and_leaves_generic_rules_untouched()
         fs::read(destination.path().join(equal_target)).unwrap(),
         b"equal bytes"
     );
-    let collision_target = Path::new("2026/08").join(format!(
+    let collision_target = Path::new("dji/2026/08/14").join(format!(
         "260814-T02_MIC006_20260814_010208_edit-{}.m4a",
         &collision.artifact.sha256[..8]
     ));

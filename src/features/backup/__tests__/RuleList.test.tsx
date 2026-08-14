@@ -27,7 +27,7 @@ describe("RuleList", () => {
     const items = screen.getAllByRole("listitem");
     expect(items[0]).toHaveTextContent("DJI Mic Mini 2S");
     expect(items[0]).toHaveTextContent("기본 규칙");
-    expect(items[0]).toHaveTextContent("DJI Mic Mini 2S/YYYY/MM/");
+    expect(items[0]).toHaveTextContent("DJI Mic Mini 2S/YYYY/MM/DD/");
     fireEvent.click(
       screen.getByRole("button", { name: "DJI Mic Mini 2S 편집" }),
     );
@@ -45,7 +45,7 @@ describe("RuleList", () => {
       name: "DJI Mic Mini 2S 복사본",
       archive_directory_name: "DJI Mic Mini 2S 복사본",
       enabled: true,
-      date_folder_layout: "year_month",
+      date_folder_layout: "year_month_day",
     });
     expect(duplicateRuleDraft(rules[0])).not.toHaveProperty(
       "archive_directory_locked",

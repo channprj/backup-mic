@@ -9,11 +9,12 @@ use crate::{
     artifact::OutputFormat,
     backup::CancellationToken,
     deletion::TrashAdapter,
+    destination::recording_archive_directory,
     error::CoreError,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
     recording::parse_recording_name,
-    rule::{BackupRule, destination_stem, uses_root_dji_calendar_layout},
+    rule::{BackupRule, destination_stem, is_dji_calendar_rule},
 };
 use tempfile::NamedTempFile;
 use time::{Date, Month};
@@ -93,7 +94,7 @@ fn migrate_dji_recording(
     let rule = ledger
         .backup_rule(&source.rule_id)?
         .ok_or(CoreError::LedgerCorrupt)?;
-    if !uses_root_dji_calendar_layout(&rule) {
+    if !is_dji_calendar_rule(&rule) {
         return Ok(None);
     }
     let Some(default_target) = dji_calendar_target(&rule, recording) else {
@@ -144,16 +145,12 @@ fn dji_calendar_target(rule: &BackupRule, recording: &VerifiedRecording) -> Opti
         OutputFormat::Wav => "wav",
         OutputFormat::M4a => "m4a",
     };
-    Some(
-        PathBuf::from(date.year().to_string())
-            .join(format!("{:02}", date.month() as u8))
-            .join(format!(
-                "{:02}{:02}{:02}-{stem}.{extension}",
-                date.year().rem_euclid(100),
-                date.month() as u8,
-                date.day()
-            )),
-    )
+    Some(recording_archive_directory(rule, date).join(format!(
+        "{:02}{:02}{:02}-{stem}.{extension}",
+        date.year().rem_euclid(100),
+        date.month() as u8,
+        date.day()
+    )))
 }
 
 fn dji_recording_date(recording: &VerifiedRecording, source_file_name: &str) -> Option<Date> {

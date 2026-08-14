@@ -595,8 +595,7 @@ fn a_rule_backup_migrates_verified_dji_artifacts_before_reuse_planning() {
         "zoom-",
         "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
     );
-    let old_relative =
-        Path::new("DJI Mic Mini 2S/2026/08/14/260814-T01_MIC001_20260814_010203_edit.m4a");
+    let old_relative = Path::new("2026/08/260814-T01_MIC001_20260814_010203_edit.m4a");
     let old_path = fixture._destination.path().join(old_relative);
     fs::create_dir_all(old_path.parent().unwrap()).unwrap();
     fs::write(&old_path, b"verified legacy m4a").unwrap();
@@ -672,7 +671,8 @@ fn a_rule_backup_migrates_verified_dji_artifacts_before_reuse_planning() {
     )
     .unwrap();
 
-    let expected = Path::new("2026/08/260814-T01_MIC001_20260814_010203_edit.m4a");
+    let expected =
+        Path::new("DJI Mic Mini 2S/2026/08/14/260814-T01_MIC001_20260814_010203_edit.m4a");
     let ledger = Ledger::open(&fixture.ledger_path).unwrap();
     assert_eq!(
         ledger

@@ -16,7 +16,7 @@ const requiredPatternsSchema = optionalPatternsSchema.min(1);
 
 export const dateFolderLayoutSchema = z
   .enum(["year_month_day", "year_month", "compact_date"])
-  .default("year_month");
+  .default("year_month_day");
 
 export const backupPhaseSchema = z.enum([
   "idle",

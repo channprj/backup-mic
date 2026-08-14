@@ -14,7 +14,7 @@ const lockedDjiRule: BackupRule = {
   session_directory_globs: ["TX_MIC*"],
   filename_prefix: "",
   filename_suffix: "",
-  date_folder_layout: "year_month",
+  date_folder_layout: "year_month_day",
   archive_directory_locked: true,
   is_dji_preset: true,
   archived: false,
@@ -98,7 +98,7 @@ describe("RuleEditor", () => {
     expect(archive).toBeEnabled();
     expect(
       screen.getByText(
-        "새 백업부터 적용됩니다. 검증된 기존 파일은 현재 위치에 유지됩니다.",
+        "보관 폴더나 날짜 구조를 바꾸면 검증된 기존 파일도 다음 백업 전에 새 구조로 안전하게 정리됩니다.",
       ),
     ).toBeInTheDocument();
     fireEvent.change(archive, {
@@ -117,7 +117,7 @@ describe("RuleEditor", () => {
     renderEditor();
 
     const select = screen.getByRole("combobox", { name: "날짜 폴더 구조" });
-    expect(select).toHaveValue("year_month");
+    expect(select).toHaveValue("year_month_day");
     expect(
       screen.getAllByRole("option").map((option) => option.textContent),
     ).toEqual(["YYYY/MM/DD/", "YYYY/MM/", "YYMMDD/"]);
@@ -130,18 +130,21 @@ describe("RuleEditor", () => {
     const { year, month, day, compact } = previewDate();
     expect(
       screen.getByText(
-        `Zoom H1n/${year}/${month}/${compact}-zoom-ZOOM0001-field.m4a`,
+        `Zoom H1n/${year}/${month}/${day}/${compact}-zoom-ZOOM0001-field.m4a`,
       ),
     ).toBeInTheDocument();
 
     fireEvent.change(screen.getByRole("combobox", { name: "날짜 폴더 구조" }), {
-      target: { value: "year_month_day" },
+      target: { value: "year_month" },
     });
     expect(
       screen.getByText(
-        `Zoom H1n/${year}/${month}/${day}/${compact}-zoom-ZOOM0001-field.m4a`,
+        `Zoom H1n/${year}/${month}/${compact}-zoom-ZOOM0001-field.m4a`,
       ),
     ).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: "날짜 폴더 구조" }), {
+      target: { value: "year_month_day" },
+    });
     expect(
       screen.getByRole("button", { name: "필수 경로 glob 1 제거" }),
     ).not.toHaveAttribute("tabindex", "-1");
@@ -186,7 +189,7 @@ describe("RuleEditor", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        `DJI Mic Mini 2S/${year}/${month}/${compact}-T01_MIC001_${year}${month}${day}_120000.wav`,
+        `DJI Mic Mini 2S/${year}/${month}/${day}/${compact}-T01_MIC001_${year}${month}${day}_120000.wav`,
       ),
     ).toBeInTheDocument();
   });

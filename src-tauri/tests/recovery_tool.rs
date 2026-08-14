@@ -261,7 +261,7 @@ fn apply_recovers_m4a_without_mutating_the_trashed_source() {
     assert_eq!(recovered.retirement_status, RetirementStatus::MovedToTrash);
     assert_eq!(
         recovered.artifact.relative_path,
-        Path::new("2026/08/260810-T01_MIC001_20260810_155045_edit.m4a")
+        Path::new("DJI Mic Mini 2S/2026/08/10/260810-T01_MIC001_20260810_155045_edit.m4a")
     );
     assert!(
         fixture
@@ -307,7 +307,8 @@ fn mismatched_source_and_overlapping_roots_fail_closed() {
 #[test]
 fn divergent_destination_is_never_overwritten() {
     let mut fixture = Fixture::new();
-    let occupied_relative = Path::new("2026/08/260810-T01_MIC001_20260810_155045_edit.wav");
+    let occupied_relative =
+        Path::new("DJI Mic Mini 2S/2026/08/10/260810-T01_MIC001_20260810_155045_edit.wav");
     let occupied = fixture.destination.path().join(occupied_relative);
     fs::create_dir_all(occupied.parent().unwrap()).unwrap();
     fs::write(&occupied, b"unrelated destination bytes").unwrap();

@@ -91,7 +91,7 @@ describe("app snapshot contract", () => {
     expect(parsed.setting_applies_next_run).toBe(false);
     expect(parsed.settings.automatic_trash).toBe(false);
     expect(parsed.backup_rules[0].is_dji_preset).toBe(true);
-    expect(parsed.backup_rules[0].date_folder_layout).toBe("year_month");
+    expect(parsed.backup_rules[0].date_folder_layout).toBe("year_month_day");
   });
 
   test("requires an explicit nullable error for every recorder source", () => {
@@ -121,7 +121,7 @@ describe("app snapshot contract", () => {
     };
 
     expect(backupRuleDraftSchema.parse(draft).date_folder_layout).toBe(
-      "year_month",
+      "year_month_day",
     );
     for (const date_folder_layout of [
       "year_month_day",

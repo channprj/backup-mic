@@ -15,7 +15,7 @@ use crate::{
     },
     hash::{FileDigest, hash_file},
     recording::{AdditionalFileObservation, RecordingObservation},
-    rule::{BackupRule, DateFolderLayout, destination_stem, uses_root_dji_calendar_layout},
+    rule::{BackupRule, DateFolderLayout, destination_stem},
     rule_scanner::{RuleFileObservation, SelectedFileKind},
     source::SourceId,
     state::Transmitter,
@@ -222,27 +222,27 @@ fn recording_rule_destination(
         date.month() as u8,
         date.day()
     );
-    let archive = PathBuf::from(&rule.archive_directory_name);
-    let directory = if uses_root_dji_calendar_layout(rule) {
-        PathBuf::from(date.year().to_string()).join(format!("{:02}", date.month() as u8))
-    } else {
-        match rule.date_folder_layout {
-            DateFolderLayout::YearMonthDay => archive
-                .join(date.year().to_string())
-                .join(format!("{:02}", date.month() as u8))
-                .join(format!("{:02}", date.day())),
-            DateFolderLayout::YearMonth => archive
-                .join(date.year().to_string())
-                .join(format!("{:02}", date.month() as u8)),
-            DateFolderLayout::CompactDate => archive.join(format!(
-                "{:02}{:02}{:02}",
-                date.year().rem_euclid(100),
-                date.month() as u8,
-                date.day()
-            )),
-        }
-    };
+    let directory = recording_archive_directory(rule, date);
     Ok(directory.join(file_name))
+}
+
+pub(crate) fn recording_archive_directory(rule: &BackupRule, date: time::Date) -> PathBuf {
+    let archive = PathBuf::from(&rule.archive_directory_name);
+    match rule.date_folder_layout {
+        DateFolderLayout::YearMonthDay => archive
+            .join(date.year().to_string())
+            .join(format!("{:02}", date.month() as u8))
+            .join(format!("{:02}", date.day())),
+        DateFolderLayout::YearMonth => archive
+            .join(date.year().to_string())
+            .join(format!("{:02}", date.month() as u8)),
+        DateFolderLayout::CompactDate => archive.join(format!(
+            "{:02}{:02}{:02}",
+            date.year().rem_euclid(100),
+            date.month() as u8,
+            date.day()
+        )),
+    }
 }
 
 fn source_evidence_key(source_id: &SourceId) -> String {

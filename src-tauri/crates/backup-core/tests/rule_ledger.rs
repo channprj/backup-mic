@@ -94,7 +94,7 @@ fn new_ledger_seeds_the_editable_dji_preset_and_round_trips_user_rules() {
     );
     assert_eq!(dji.session_directory_globs, ["TX_MIC*".to_owned()]);
     assert_eq!(dji.filename_profile, FilenameProfile::DjiTxShort);
-    assert_eq!(dji.date_folder_layout, DateFolderLayout::YearMonth);
+    assert_eq!(dji.date_folder_layout, DateFolderLayout::YearMonthDay);
     assert_eq!(
         dji.device_constraint_profile,
         DeviceConstraintProfile::DjiMicMini2s
@@ -175,7 +175,7 @@ fn date_folder_layouts_round_trip_through_create_and_update() {
 }
 
 #[test]
-fn version_six_rules_migrate_to_year_month_layout() {
+fn version_six_rules_migrate_to_the_default_day_layout() {
     let directory = tempdir().unwrap();
     let path = directory.path().join("ledger.sqlite3");
     let connection = Connection::open(&path).unwrap();
@@ -206,7 +206,7 @@ fn version_six_rules_migrate_to_year_month_layout() {
     let ledger = Ledger::open(&path).unwrap();
     assert_eq!(
         ledger.dji_rule().unwrap().date_folder_layout,
-        DateFolderLayout::YearMonth
+        DateFolderLayout::YearMonthDay
     );
     drop(ledger);
 
@@ -214,13 +214,45 @@ fn version_six_rules_migrate_to_year_month_layout() {
     assert_eq!(
         connection
             .query_row(
-                "SELECT COUNT(*) FROM schema_migrations WHERE version = 7",
+                "SELECT COUNT(*) FROM schema_migrations WHERE version = 8",
                 [],
                 |row| row.get::<_, i64>(0),
             )
             .unwrap(),
         1
     );
+}
+
+#[test]
+fn version_seven_preserves_an_explicit_compact_layout_while_advancing_the_preset() {
+    let directory = tempdir().unwrap();
+    let path = directory.path().join("ledger.sqlite3");
+    let connection = Connection::open(&path).unwrap();
+    for migration in [
+        include_str!("../migrations/0001_initial.sql"),
+        include_str!("../migrations/0002_artifacts_and_preferences.sql"),
+        include_str!("../migrations/0003_batch_manifests.sql"),
+        include_str!("../migrations/0004_durable_superseded_wav_evidence.sql"),
+        include_str!("../migrations/0005_backup_rules.sql"),
+        include_str!("../migrations/0006_dynamic_sources.sql"),
+        include_str!("../migrations/0007_rule_date_folder_layout.sql"),
+    ] {
+        connection.execute_batch(migration).unwrap();
+    }
+    connection
+        .execute(
+            "UPDATE backup_rules
+             SET date_folder_layout = 'compact_date', preset_revision = 1
+             WHERE preset_kind = 'dji_mic_mini_2s'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+
+    let ledger = Ledger::open(&path).unwrap();
+    let dji = ledger.dji_rule().unwrap();
+    assert_eq!(dji.date_folder_layout, DateFolderLayout::CompactDate);
+    assert_eq!(dji.preset_revision, Some(DJI_PRESET_REVISION));
 }
 
 #[test]
@@ -274,7 +306,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
     assert!(restored.enabled);
     assert_eq!(restored.filename_prefix, "");
     assert_eq!(restored.archive_directory_name, "My DJI Archive");
-    assert_eq!(restored.date_folder_layout, DateFolderLayout::YearMonth);
+    assert_eq!(restored.date_folder_layout, DateFolderLayout::YearMonthDay);
     assert_eq!(restored.preset_revision, Some(DJI_PRESET_REVISION));
     assert_eq!(restored.archived_at, None);
     assert_eq!(

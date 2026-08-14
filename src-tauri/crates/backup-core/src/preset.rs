@@ -2,7 +2,7 @@ use crate::rule::{BackupRuleDraft, DateFolderLayout, RuleId};
 
 pub const DJI_PRESET_ID: &str = "6d784c99-8b0e-4a32-a0a2-d7730f68cf28";
 pub const DJI_PRESET_KIND: &str = "dji_mic_mini_2s";
-pub const DJI_PRESET_REVISION: u32 = 1;
+pub const DJI_PRESET_REVISION: u32 = 2;
 
 pub fn dji_mic_mini_2s_preset() -> BackupRuleDraft {
     BackupRuleDraft {
@@ -16,6 +16,6 @@ pub fn dji_mic_mini_2s_preset() -> BackupRuleDraft {
         session_directory_globs: vec!["TX_MIC*".to_owned()],
         filename_prefix: String::new(),
         filename_suffix: String::new(),
-        date_folder_layout: DateFolderLayout::YearMonth,
+        date_folder_layout: DateFolderLayout::YearMonthDay,
     }
 }
