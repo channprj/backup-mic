@@ -29,7 +29,22 @@ import { RuleEditor } from "./RuleEditor";
 import { RuleList, duplicateRuleDraft } from "./RuleList";
 import { useBackupSnapshot } from "./useBackupSnapshot";
 
-type SettingKey = keyof AppSnapshot["settings"];
+type Settings = AppSnapshot["settings"];
+type SettingKey = keyof Settings;
+type FlagKey = {
+  [Key in SettingKey]: Settings[Key] extends boolean ? Key : never;
+}[SettingKey];
+
+/// The choices the settings window offers. Rust accepts the whole range, so these are
+/// suggestions rather than the validation boundary.
+const freeSpaceReserveChoices = [5, 10, 20, 50, 100] as const;
+const rescanIntervalChoices = [
+  { value: 5, label: "5초" },
+  { value: 15, label: "15초" },
+  { value: 30, label: "30초" },
+  { value: 60, label: "1분" },
+  { value: 300, label: "5분" },
+] as const;
 
 interface ActionError {
   messageCode: string;
@@ -120,9 +135,9 @@ export function SettingsView({
     });
   }
 
-  async function persistSetting(
-    key: SettingKey,
-    enabled: boolean,
+  async function persistSetting<Key extends SettingKey>(
+    key: Key,
+    value: Settings[Key],
     operation: () => Promise<AppSnapshot>,
   ) {
     if (pending.has(key)) return;
@@ -131,7 +146,7 @@ export function SettingsView({
     markPending(key, true);
     setViewSnapshot((current) => ({
       ...current,
-      settings: { ...current.settings, [key]: enabled },
+      settings: { ...current.settings, [key]: value },
     }));
     try {
       const persisted = await operation();
@@ -387,6 +402,22 @@ export function SettingsView({
               {destinationStatus}
             </p>
           ) : null}
+          <SettingChoiceRow
+            id="free-space-reserve"
+            label="백업 폴더에 남길 여유 공간"
+            description="변환 중에는 WAV와 M4A가 함께 존재하므로, 이만큼 남지 않으면 백업을 시작하지 않습니다."
+            value={viewSnapshot.settings.free_space_reserve_gib}
+            choices={freeSpaceReserveChoices.map((gibibytes) => ({
+              value: gibibytes,
+              label: `${gibibytes} GiB`,
+            }))}
+            pending={pending.has("free_space_reserve_gib")}
+            onChange={(gibibytes) =>
+              void persistSetting("free_space_reserve_gib", gibibytes, () =>
+                actions.setFreeSpaceReserve(gibibytes),
+              )
+            }
+          />
           <SettingRow
             id="automatic-backup"
             label="자동으로 백업"
@@ -408,6 +439,19 @@ export function SettingsView({
             onChange={(enabled) =>
               void persistSetting("m4a_conversion", enabled, () =>
                 actions.setM4aConversion(enabled),
+              )
+            }
+          />
+          <SettingChoiceRow
+            id="rescan-interval"
+            label="연결된 녹음기 확인 주기"
+            description="녹음기가 계속 연결되어 있을 때 새 녹음을 확인하는 간격입니다."
+            value={viewSnapshot.settings.rescan_interval_seconds}
+            choices={rescanIntervalChoices}
+            pending={pending.has("rescan_interval_seconds")}
+            onChange={(seconds) =>
+              void persistSetting("rescan_interval_seconds", seconds, () =>
+                actions.setRescanInterval(seconds),
               )
             }
           />
@@ -525,6 +569,60 @@ export function SettingsView({
         </AlertDialogContent>
       </AlertDialog>
     </main>
+  );
+}
+
+/// A settings row whose value is one of a few numbers rather than on/off.
+///
+/// A value the app is storing but does not offer — a range is wider than the preset list, and an
+/// older build may have written something else — is shown as an extra option so the control never
+/// silently misreports what is in effect.
+function SettingChoiceRow({
+  id,
+  label,
+  description,
+  value,
+  choices,
+  pending,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  description: string;
+  value: number;
+  choices: ReadonlyArray<{ value: number; label: string }>;
+  pending: boolean;
+  onChange: (value: number) => void;
+}) {
+  const options = choices.some((choice) => choice.value === value)
+    ? choices
+    : [...choices, { value, label: String(value) }].sort(
+        (left, right) => left.value - right.value,
+      );
+  return (
+    <div className="settings-row">
+      <label htmlFor={id}>
+        <strong>{label}</strong>
+        <span>{description}</span>
+      </label>
+      <div className="settings-control">
+        {pending ? <Spinner aria-label={`${label} 저장 중`} /> : null}
+        <select
+          id={id}
+          className="settings-choice"
+          aria-label={label}
+          value={value}
+          disabled={pending}
+          onChange={(event) => onChange(Number(event.currentTarget.value))}
+        >
+          {options.map((choice) => (
+            <option key={choice.value} value={choice.value}>
+              {choice.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
   );
 }
 

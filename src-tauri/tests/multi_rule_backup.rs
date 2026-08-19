@@ -17,6 +17,7 @@ use backup_core::{
     error::CoreError,
     hash::hash_file,
     ledger::{Ledger, VerifiedRecording},
+    preferences::PreferenceLimit,
     rule::{BackupRule, BackupRuleDraft, compile_rule},
     rule_scanner::scan_rule_once,
     source::{MountedSourceAuthority, SourceId, SourceRecord},
@@ -344,6 +345,73 @@ fn two_rules_with_equal_source_names_complete_independent_m4a_barriers() {
             BatchPhase::M4aCohortVerified
         );
     }
+}
+
+#[test]
+fn the_configured_free_space_reserve_refuses_a_run_and_preserves_every_source() {
+    let fixture = Fixture::new();
+    let (zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Zoom H1n",
+        "zoom-",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    let source_file = zoom_root.path().join("RECORD/FOLDER01/REC0001.WAV");
+    let before = fs::read(&source_file).unwrap();
+
+    // The largest reserve the setting allows cannot be satisfied by any test volume, so a run that
+    // reads the preference must refuse. With the reserve still compiled in at 10 GiB this passes.
+    let preferences = fixture
+        .state
+        .persist_limit(
+            PreferenceLimit::FreeSpaceReserveGib,
+            PreferenceLimit::FreeSpaceReserveGib.range().1,
+            "2026-08-19T00:00:00Z",
+        )
+        .unwrap();
+    fixture.state.apply_persisted_preferences(preferences);
+
+    let result = run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&zoom),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &BackupTrash,
+        &InstantClock,
+        &CancellationToken::default(),
+    );
+
+    assert!(
+        matches!(result, Err(CoreError::InsufficientCapacity)),
+        "the run must refuse before copying, got {result:?}"
+    );
+    assert_eq!(fs::read(&source_file).unwrap(), before);
+    assert!(fixture.recordings().is_empty());
+
+    // A reserve the volume can satisfy lets the same run through, so the refusal came from the
+    // preference and not from the fixture.
+    let preferences = fixture
+        .state
+        .persist_limit(
+            PreferenceLimit::FreeSpaceReserveGib,
+            PreferenceLimit::FreeSpaceReserveGib.range().0,
+            "2026-08-19T00:00:01Z",
+        )
+        .unwrap();
+    fixture.state.apply_persisted_preferences(preferences);
+    let outcomes = run_matched_sources_with_adapters(
+        &fixture.state,
+        std::slice::from_ref(&zoom),
+        &FakeAudioTools,
+        &NoSourceCopyFaults,
+        &BackupTrash,
+        &InstantClock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+    assert_eq!(outcomes.len(), 1);
+    assert!(outcomes[0].error.is_none());
+    assert_eq!(fixture.recordings().len(), 1);
 }
 
 #[test]

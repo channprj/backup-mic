@@ -90,6 +90,7 @@ fn private_or_unapproved_fields_are_rejected_before_opening_a_log() {
             AuditValue::Text("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
         )],
         vec![("volume_uuid", AuditValue::Text("redacted"))],
+        vec![("value", AuditValue::Text("/Volumes/DJI-MIC-2/private.wav"))],
     ] {
         let result = log.append(
             &AuditEvent {
@@ -104,6 +105,36 @@ fn private_or_unapproved_fields_are_rejected_before_opening_a_log() {
         assert!(matches!(result, Err(CoreError::InvalidAuditEvent)));
     }
     assert!(!destination.path().join("logs").exists());
+}
+
+#[test]
+fn a_saved_numeric_setting_records_its_value() {
+    let destination = tempdir().unwrap();
+    let log = FileAuditLog::new(destination.path());
+    let fields = [
+        ("setting", AuditValue::Text("free_space_reserve_gib")),
+        ("value", AuditValue::Unsigned(25)),
+        ("applies", AuditValue::Text("next_operation")),
+    ];
+
+    let path = log
+        .append(
+            &AuditEvent {
+                occurred_at: timestamp(),
+                level: AuditLevel::Info,
+                code: "setting.saved",
+                transmitter: None,
+                fields: &fields,
+            },
+            AuditDurability::SyncData,
+        )
+        .unwrap();
+
+    let line = fs::read_to_string(path).unwrap();
+    assert_eq!(
+        line,
+        "2026-08-09T20:01:42.613+09:00 INFO setting.saved setting=\"free_space_reserve_gib\" value=25 applies=\"next_operation\"\n"
+    );
 }
 
 #[test]

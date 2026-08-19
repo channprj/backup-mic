@@ -138,6 +138,7 @@ fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
                 | "item"
                 | "setting"
                 | "enabled"
+                | "value"
                 | "applies"
         ) {
             return Err(CoreError::InvalidAuditEvent);

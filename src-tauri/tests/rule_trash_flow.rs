@@ -15,7 +15,7 @@ use backup_core::{
     deletion::{DeletionOutcome, TrashAdapter},
     error::CoreError,
     ledger::Ledger,
-    preferences::PreferenceKey,
+    preferences::PreferenceFlag,
     rule::{BackupRuleDraft, compile_rule},
     rule_scanner::scan_rule_once,
     source::{MountedSourceAuthority, SourceId, SourceRecord},
@@ -306,10 +306,11 @@ fn backup_wav_trash_failure_never_authorizes_source_retirement() {
 #[test]
 fn automatic_trash_refusal_for_one_source_does_not_block_another_source() {
     let fixture = Fixture::new();
-    fixture
+    let preferences = fixture
         .state
-        .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-10T00:00:00Z")
+        .persist_flag(PreferenceFlag::AutomaticTrash, true, "2026-08-10T00:00:00Z")
         .unwrap();
+    fixture.state.apply_persisted_preferences(preferences);
     let (zoom_root, zoom) = fixture.add_source("ZOOM", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     let (sony_root, sony) = fixture.add_source("SONY", "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
     let outcomes = run_matched_sources_with_adapters(
@@ -369,10 +370,11 @@ fn automatic_trash_refusal_for_one_source_does_not_block_another_source() {
 #[test]
 fn cancellation_before_automatic_retirement_keeps_source_files_in_place() {
     let fixture = Fixture::new();
-    fixture
+    let preferences = fixture
         .state
-        .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-10T00:00:00Z")
+        .persist_flag(PreferenceFlag::AutomaticTrash, true, "2026-08-10T00:00:00Z")
         .unwrap();
+    fixture.state.apply_persisted_preferences(preferences);
     let (source_root, source) = fixture.add_source("ZOOM", "cccccccc-cccc-4ccc-8ccc-cccccccccccc");
     let outcomes = run_matched_sources_with_adapters(
         &fixture.state,
@@ -408,10 +410,11 @@ fn cancellation_before_automatic_retirement_keeps_source_files_in_place() {
 #[test]
 fn wav_only_backup_never_creates_source_retirement_authority() {
     let fixture = Fixture::new();
-    fixture
+    let preferences = fixture
         .state
-        .set_preference(PreferenceKey::M4aConversion, false, "2026-08-10T00:00:00Z")
+        .persist_flag(PreferenceFlag::M4aConversion, false, "2026-08-10T00:00:00Z")
         .unwrap();
+    fixture.state.apply_persisted_preferences(preferences);
     let (source_root, source) = fixture.add_source("ZOOM", "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
     let outcomes = run_matched_sources_with_adapters(
         &fixture.state,

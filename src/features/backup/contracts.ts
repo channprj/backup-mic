@@ -48,12 +48,19 @@ export const currentStageSchema = z.enum([
   "source_revalidation",
   "trash",
 ]);
+// Mirrors `PreferenceLimit::range` in Rust. Rust refuses anything outside the range, so a
+// snapshot that fails these bounds means the two sides disagree and the UI should not render it.
+export const freeSpaceReserveGibSchema = z.number().int().min(1).max(512);
+export const rescanIntervalSecondsSchema = z.number().int().min(5).max(3600);
+
 export const backupSettingsSchema = z
   .object({
     automatic_backup: z.boolean(),
     m4a_conversion: z.boolean(),
     automatic_trash: z.boolean(),
     autostart: z.boolean(),
+    free_space_reserve_gib: freeSpaceReserveGibSchema,
+    rescan_interval_seconds: rescanIntervalSecondsSchema,
   })
   .strict();
 export const progressSchema = z

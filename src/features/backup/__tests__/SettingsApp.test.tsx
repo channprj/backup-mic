@@ -2,11 +2,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react"
 import { describe, expect, it, vi } from "vitest";
 import completeFixture from "../../../../contracts/fixtures/backup-complete.json";
 import { SettingsView } from "../SettingsApp";
-import { appSnapshotSchema } from "../contracts";
+import { appSnapshotSchema, type AppSnapshot } from "../contracts";
 
 const complete = appSnapshotSchema.parse(completeFixture);
 
-function renderSettings() {
+function renderSettings(snapshot: AppSnapshot = complete) {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
     cancelBackup: vi.fn().mockResolvedValue(undefined),
@@ -32,11 +32,13 @@ function renderSettings() {
       retirement_mode: "automatic",
       settings: { ...complete.settings, automatic_trash: true },
     }),
+    setFreeSpaceReserve: vi.fn().mockResolvedValue(complete),
+    setRescanInterval: vi.fn().mockResolvedValue(complete),
     openDestination: vi.fn().mockResolvedValue(undefined),
     openLogs: vi.fn().mockResolvedValue(undefined),
     quitApp: vi.fn().mockResolvedValue(undefined),
   };
-  return { actions, ...render(<SettingsView snapshot={complete} actions={actions} />) };
+  return { actions, ...render(<SettingsView snapshot={snapshot} actions={actions} />) };
 }
 
 describe("SettingsView", () => {
@@ -204,6 +206,65 @@ describe("SettingsView", () => {
     await waitFor(() =>
       expect(screen.queryByRole("heading", { name: "녹음기 규칙 추가" })).not.toBeInTheDocument(),
     );
+  });
+
+  it("saves a chosen free space reserve and shows what the ledger returned", async () => {
+    const { actions } = renderSettings();
+    const reserve = screen.getByLabelText("백업 폴더에 남길 여유 공간");
+    expect(reserve).toHaveValue("10");
+
+    actions.setFreeSpaceReserve.mockResolvedValueOnce({
+      ...complete,
+      revision: complete.revision + 1,
+      settings: { ...complete.settings, free_space_reserve_gib: 50 },
+    });
+    fireEvent.change(reserve, { target: { value: "50" } });
+
+    await waitFor(() => expect(actions.setFreeSpaceReserve).toHaveBeenCalledWith(50));
+    await waitFor(() =>
+      expect(screen.getByLabelText("백업 폴더에 남길 여유 공간")).toHaveValue("50"),
+    );
+  });
+
+  it("saves a chosen rescan interval", async () => {
+    const { actions } = renderSettings();
+    const interval = screen.getByLabelText("연결된 녹음기 확인 주기");
+    expect(interval).toHaveValue("15");
+
+    actions.setRescanInterval.mockResolvedValueOnce({
+      ...complete,
+      revision: complete.revision + 1,
+      settings: { ...complete.settings, rescan_interval_seconds: 300 },
+    });
+    fireEvent.change(interval, { target: { value: "300" } });
+
+    await waitFor(() => expect(actions.setRescanInterval).toHaveBeenCalledWith(300));
+    await waitFor(() =>
+      expect(screen.getByLabelText("연결된 녹음기 확인 주기")).toHaveValue("300"),
+    );
+  });
+
+  it("restores the previous choice when Rust refuses the value", async () => {
+    const { actions } = renderSettings();
+    actions.setRescanInterval.mockRejectedValueOnce({ message_code: "invalid_request" });
+    const interval = screen.getByLabelText("연결된 녹음기 확인 주기");
+
+    fireEvent.change(interval, { target: { value: "60" } });
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("설정을 저장하지 못했습니다");
+    await waitFor(() =>
+      expect(screen.getByLabelText("연결된 녹음기 확인 주기")).toHaveValue("15"),
+    );
+  });
+
+  it("offers a stored value the preset list does not contain", () => {
+    // Rust accepts the whole range, so a value outside the offered presets must still show as
+    // itself rather than being silently reported as one of the presets.
+    renderSettings({
+      ...complete,
+      settings: { ...complete.settings, rescan_interval_seconds: 47 },
+    });
+    expect(screen.getByLabelText("연결된 녹음기 확인 주기")).toHaveValue("47");
   });
 
   it("keeps the archive directory editable after evidence exists", () => {

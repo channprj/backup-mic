@@ -8,7 +8,7 @@ use backup_core::{
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
     ledger::{Ledger, MAX_ACTIVITY_ENTRIES, VerifiedRecording},
-    preferences::{BackupPreferences, PreferenceKey},
+    preferences::{BackupPreferences, PreferenceFlag},
     source::{SourceId, SourceRecord},
     state::Transmitter,
 };
@@ -537,14 +537,14 @@ fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
     {
         let mut ledger = Ledger::open(&path).unwrap();
         ledger
-            .set_preference(
-                PreferenceKey::AutomaticBackup,
+            .set_flag(
+                PreferenceFlag::AutomaticBackup,
                 false,
                 "2026-08-09T00:00:00Z",
             )
             .unwrap();
         ledger
-            .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-09T00:00:01Z")
+            .set_flag(PreferenceFlag::AutomaticTrash, true, "2026-08-09T00:00:01Z")
             .unwrap();
     }
 
@@ -555,6 +555,7 @@ fn artifact_and_preferences_persist_only_typed_boolean_preferences() {
             automatic_backup: false,
             m4a_conversion: true,
             automatic_trash: true,
+            ..BackupPreferences::default()
         }
     );
 }

@@ -30,6 +30,20 @@ impl RescanScheduler {
         }
     }
 
+    /// Adopts a new interval, rebasing every pending deadline.
+    ///
+    /// Rebasing matters in both directions: without it, shortening the interval would still wait
+    /// out the old one, and lengthening it would leave a source due almost immediately.
+    pub fn set_interval(&mut self, interval: Duration, now: Instant) {
+        if self.interval == interval {
+            return;
+        }
+        self.interval = interval;
+        for deadline in self.next_due.values_mut() {
+            *deadline = now.checked_add(interval).unwrap_or(now);
+        }
+    }
+
     pub fn mount(&mut self, source_id: SourceId, fingerprint: RuleScanFingerprint, now: Instant) {
         self.fingerprints.insert(source_id.clone(), fingerprint);
         self.next_due

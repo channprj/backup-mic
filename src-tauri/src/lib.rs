@@ -57,6 +57,8 @@ pub fn run() {
             commands::set_automatic_backup,
             commands::set_m4a_conversion,
             commands::set_automatic_trash,
+            commands::set_free_space_reserve,
+            commands::set_rescan_interval,
             commands::complete_initial_setup,
             commands::open_logs,
         ])

@@ -1,7 +1,7 @@
 use backup_core::{
     error::CoreError,
     ledger::Ledger,
-    preferences::{BackupPreferences, PreferenceKey},
+    preferences::{BackupPreferences, PreferenceFlag},
     preset::{DJI_PRESET_KIND, DJI_PRESET_REVISION},
     rule::{
         BackupRule, BackupRuleDraft, DateFolderLayout, DeviceConstraintProfile, FilenameProfile,
@@ -281,7 +281,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
 
     let mut ledger = Ledger::open(&path).unwrap();
     ledger
-        .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-10T01:00:00Z")
+        .set_flag(PreferenceFlag::AutomaticTrash, true, "2026-08-10T01:00:00Z")
         .unwrap();
     let mut edited = editable_draft(&original);
     edited.archive_directory_name = "My DJI Archive".to_owned();
@@ -315,6 +315,7 @@ fn restoring_the_dji_preset_preserves_identity_bindings_and_preferences() {
             automatic_backup: true,
             m4a_conversion: true,
             automatic_trash: true,
+            ..BackupPreferences::default()
         }
     );
     drop(ledger);

@@ -27,22 +27,22 @@ function Preview() {
     initial === "rules" || new URLSearchParams(window.location.search).get("window") === "settings";
   const actions = useMemo<BackupActions>(
     () => {
-      const withSetting = (
-        key: keyof AppSnapshot["settings"],
-        enabled: boolean,
+      const withSetting = <Key extends keyof AppSnapshot["settings"]>(
+        key: Key,
+        value: AppSnapshot["settings"][Key],
       ): AppSnapshot => {
         const next: AppSnapshot = {
           ...snapshot,
           revision: snapshot.revision + 1,
           artifact_format:
-            key === "m4a_conversion" ? (enabled ? "m4a" : "wav") : snapshot.artifact_format,
+            key === "m4a_conversion" ? (value ? "m4a" : "wav") : snapshot.artifact_format,
           retirement_mode:
             key === "automatic_trash"
-              ? enabled
+              ? value
                 ? "automatic"
                 : "manual"
               : snapshot.retirement_mode,
-          settings: { ...snapshot.settings, [key]: enabled },
+          settings: { ...snapshot.settings, [key]: value },
         };
         setSnapshot(next);
         return next;
@@ -108,6 +108,9 @@ function Preview() {
       setAutomaticBackup: async (enabled) => withSetting("automatic_backup", enabled),
       setM4aConversion: async (enabled) => withSetting("m4a_conversion", enabled),
       setAutomaticTrash: async (enabled) => withSetting("automatic_trash", enabled),
+      setFreeSpaceReserve: async (gibibytes) =>
+        withSetting("free_space_reserve_gib", gibibytes),
+      setRescanInterval: async (seconds) => withSetting("rescan_interval_seconds", seconds),
       openDestination: async () => undefined,
       openLogs: async () => undefined,
       quitApp: async () => undefined,

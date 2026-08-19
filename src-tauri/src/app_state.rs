@@ -5,7 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use backup_core::{
@@ -17,7 +17,7 @@ use backup_core::{
     events::{ActivityEntry, ActivitySeverity},
     initial_setup::InitialSetupMarker,
     ledger::Ledger,
-    preferences::{BackupPreferences, PreferenceKey},
+    preferences::{BackupPreferences, PreferenceFlag, PreferenceLimit},
     rule::{
         BackupRule, BackupRuleDraft, DeviceConstraintProfile, FilenameProfile, compile_rule,
         validate_rule,
@@ -154,6 +154,8 @@ impl AppState {
                         m4a_conversion: preferences.m4a_conversion,
                         automatic_trash: preferences.automatic_trash,
                         autostart: autostart_enabled,
+                        free_space_reserve_gib: preferences.free_space_reserve_gib,
+                        rescan_interval_seconds: preferences.rescan_interval_seconds,
                     },
                     notification_status: NotificationStatusDto::Unknown,
                     setup_state,
@@ -372,6 +374,17 @@ impl AppState {
         self.runtime.lock().preferences.m4a_conversion
     }
 
+    /// The free space the destination capacity preflight must leave behind.
+    pub fn free_space_reserve_bytes(&self) -> u64 {
+        self.runtime.lock().preferences.free_space_reserve_bytes()
+    }
+
+    /// How long a mounted recorder waits between metadata rescans. Read on every device-monitor
+    /// tick so a change in the settings window takes effect without a restart.
+    pub fn rescan_interval(&self) -> Duration {
+        self.runtime.lock().preferences.rescan_interval()
+    }
+
     pub fn automatic_trash_enabled(&self) -> bool {
         self.runtime.lock().preferences.automatic_trash
     }
@@ -385,46 +398,33 @@ impl AppState {
         }
     }
 
-    pub fn set_preference(
+    /// Writes a flag and reads back the preferences the ledger actually holds.
+    ///
+    /// Synchronous, and it takes the ledger lock, so a caller on the async runtime must run it
+    /// in a blocking task. The read-back is the point: the snapshot can then only show a value
+    /// that survived the write.
+    pub fn persist_flag(
         &self,
-        key: PreferenceKey,
+        flag: PreferenceFlag,
         enabled: bool,
         occurred_at: &str,
-    ) -> Result<AppSnapshotDto, CoreError> {
-        self.ledger
-            .lock()
-            .set_preference(key, enabled, occurred_at)?;
+    ) -> Result<BackupPreferences, CoreError> {
+        let mut ledger = self.ledger.lock();
+        ledger.set_flag(flag, enabled, occurred_at)?;
+        ledger.read_preferences()
+    }
 
-        let mut runtime = self.runtime.lock();
-        match key {
-            PreferenceKey::AutomaticBackup => {
-                runtime.preferences.automatic_backup = enabled;
-                runtime.snapshot.settings.automatic_backup = enabled;
-            }
-            PreferenceKey::M4aConversion => {
-                runtime.preferences.m4a_conversion = enabled;
-                runtime.snapshot.settings.m4a_conversion = enabled;
-                runtime.snapshot.artifact_format = if enabled {
-                    ArtifactFormatDto::M4a
-                } else {
-                    ArtifactFormatDto::Wav
-                };
-                if !enabled {
-                    clear_retirement_authority(&mut runtime);
-                }
-            }
-            PreferenceKey::AutomaticTrash => {
-                runtime.preferences.automatic_trash = enabled;
-                runtime.snapshot.settings.automatic_trash = enabled;
-                runtime.snapshot.retirement_mode = if enabled {
-                    RetirementModeDto::Automatic
-                } else {
-                    RetirementModeDto::Manual
-                };
-            }
-        }
-        runtime.snapshot.revision = runtime.snapshot.revision.saturating_add(1);
-        Ok(runtime.snapshot.clone())
+    /// Writes a whole-number limit and reads back what the ledger holds. Same blocking contract
+    /// as [`Self::persist_flag`]; the limit refuses an out-of-range value before any write.
+    pub fn persist_limit(
+        &self,
+        limit: PreferenceLimit,
+        value: u32,
+        occurred_at: &str,
+    ) -> Result<BackupPreferences, CoreError> {
+        let mut ledger = self.ledger.lock();
+        ledger.set_limit(limit, value, occurred_at)?;
+        ledger.read_preferences()
     }
 
     pub fn apply_persisted_preferences(&self, preferences: BackupPreferences) -> AppSnapshotDto {
@@ -433,6 +433,8 @@ impl AppState {
         runtime.snapshot.settings.automatic_backup = preferences.automatic_backup;
         runtime.snapshot.settings.m4a_conversion = preferences.m4a_conversion;
         runtime.snapshot.settings.automatic_trash = preferences.automatic_trash;
+        runtime.snapshot.settings.free_space_reserve_gib = preferences.free_space_reserve_gib;
+        runtime.snapshot.settings.rescan_interval_seconds = preferences.rescan_interval_seconds;
         runtime.snapshot.artifact_format = if preferences.m4a_conversion {
             ArtifactFormatDto::M4a
         } else {
@@ -1410,7 +1412,7 @@ fn canonical_destination_is_separate(destination: &Path, source_roots: &[PathBuf
 mod tests {
     use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
     use backup_core::initial_setup::InitialSetupMarker;
-    use backup_core::preferences::PreferenceKey;
+    use backup_core::preferences::PreferenceFlag;
     use tempfile::tempdir;
     use time::macros::datetime;
 
@@ -1723,8 +1725,8 @@ mod tests {
         let destination = tempdir().unwrap();
         let mut ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
         ledger
-            .set_preference(
-                PreferenceKey::AutomaticBackup,
+            .set_flag(
+                PreferenceFlag::AutomaticBackup,
                 false,
                 "2026-08-09T00:00:00Z",
             )
@@ -1742,28 +1744,37 @@ mod tests {
                 m4a_conversion: true,
                 automatic_trash: false,
                 autostart: false,
+                ..BackupSettingsDto::default()
             }
         );
     }
 
     #[test]
-    fn setting_a_preference_persists_before_updating_the_snapshot() {
+    fn applying_persisted_preferences_republishes_every_derived_field() {
         let state_directory = tempdir().unwrap();
         let destination = tempdir().unwrap();
-        let ledger_path = state_directory.path().join("ledger.sqlite3");
-        let ledger = Ledger::open(&ledger_path).unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
         let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+        let before = state.snapshot().revision;
 
-        let snapshot = state
-            .set_preference(PreferenceKey::AutomaticTrash, true, "2026-08-09T00:00:00Z")
-            .unwrap();
+        let snapshot = state.apply_persisted_preferences(BackupPreferences {
+            automatic_backup: false,
+            m4a_conversion: false,
+            automatic_trash: true,
+            free_space_reserve_gib: 25,
+            rescan_interval_seconds: 120,
+        });
 
+        assert!(!snapshot.settings.automatic_backup);
+        assert!(!snapshot.settings.m4a_conversion);
         assert!(snapshot.settings.automatic_trash);
+        assert_eq!(snapshot.settings.free_space_reserve_gib, 25);
+        assert_eq!(snapshot.settings.rescan_interval_seconds, 120);
+        assert_eq!(snapshot.artifact_format, ArtifactFormatDto::Wav);
         assert_eq!(snapshot.retirement_mode, RetirementModeDto::Automatic);
-        assert!(state.automatic_trash_enabled());
-        drop(state);
-        let reopened = Ledger::open(ledger_path).unwrap();
-        assert!(reopened.read_preferences().unwrap().automatic_trash);
+        assert!(snapshot.revision > before, "React needs a new revision");
+        assert_eq!(state.free_space_reserve_bytes(), 25 * 1024 * 1024 * 1024);
+        assert_eq!(state.rescan_interval(), Duration::from_secs(120));
     }
 
     #[test]

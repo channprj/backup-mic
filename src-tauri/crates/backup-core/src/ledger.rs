@@ -16,7 +16,7 @@ use crate::{
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
     initial_setup::{DESTINATION_SETTING, INITIAL_SETUP_SETTING, InitialSetupMarker},
-    preferences::{BackupPreferences, PreferenceKey, decode_bool},
+    preferences::{BackupPreferences, PreferenceFlag, PreferenceLimit, decode_bool, decode_limit},
     preset::{DJI_PRESET_KIND, DJI_PRESET_REVISION, dji_mic_mini_2s_preset},
     recovery::DELETION_DISABLED_REINDEX_REQUIRED,
     rule::{
@@ -674,31 +674,49 @@ impl Ledger {
         let defaults = BackupPreferences::default();
         Ok(BackupPreferences {
             automatic_backup: decode_bool(
-                self.setting(PreferenceKey::AutomaticBackup.storage_key())?,
+                self.setting(PreferenceFlag::AutomaticBackup.storage_key())?,
                 defaults.automatic_backup,
             )?,
             m4a_conversion: decode_bool(
-                self.setting(PreferenceKey::M4aConversion.storage_key())?,
+                self.setting(PreferenceFlag::M4aConversion.storage_key())?,
                 defaults.m4a_conversion,
             )?,
             automatic_trash: decode_bool(
-                self.setting(PreferenceKey::AutomaticTrash.storage_key())?,
+                self.setting(PreferenceFlag::AutomaticTrash.storage_key())?,
                 defaults.automatic_trash,
             )?,
+            free_space_reserve_gib: self.limit(PreferenceLimit::FreeSpaceReserveGib)?,
+            rescan_interval_seconds: self.limit(PreferenceLimit::RescanIntervalSeconds)?,
         })
     }
 
-    pub fn set_preference(
+    fn limit(&self, limit: PreferenceLimit) -> Result<u32, CoreError> {
+        decode_limit(self.setting(limit.storage_key())?, limit)
+    }
+
+    pub fn set_flag(
         &mut self,
-        key: PreferenceKey,
+        flag: PreferenceFlag,
         value: bool,
         updated_at: &str,
     ) -> Result<(), CoreError> {
         self.set_setting(
-            key.storage_key(),
+            flag.storage_key(),
             if value { "true" } else { "false" },
             updated_at,
         )
+    }
+
+    /// Stores a whole-number limit after the limit itself has accepted the value, so an
+    /// out-of-range request never reaches the settings table.
+    pub fn set_limit(
+        &mut self,
+        limit: PreferenceLimit,
+        value: u32,
+        updated_at: &str,
+    ) -> Result<(), CoreError> {
+        let accepted = limit.accept(value)?;
+        self.set_setting(limit.storage_key(), &accepted.to_string(), updated_at)
     }
 
     pub fn append_activity(&mut self, entry: &ActivityEntry) -> Result<(), CoreError> {

@@ -22,6 +22,8 @@ fn command_surface_is_exact_and_has_no_arbitrary_settings_or_path_ipc() {
             "set_automatic_backup",
             "set_m4a_conversion",
             "set_automatic_trash",
+            "set_free_space_reserve",
+            "set_rescan_interval",
             "complete_initial_setup",
             "open_logs",
         ]

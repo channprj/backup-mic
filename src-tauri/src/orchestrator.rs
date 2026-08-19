@@ -6,7 +6,7 @@ use std::{
         mpsc::{self, RecvTimeoutError},
     },
     thread::{self, JoinHandle},
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use backup_core::{
@@ -24,8 +24,8 @@ use backup_core::{
         RuleDeletionConfirmation, RuleDeletionContext, RuleSessionDeletionCandidate, TrashAdapter,
     },
     destination::{
-        AdditionalFilePlan, DEFAULT_CAPACITY_RESERVE_BYTES, DestinationDisposition,
-        DestinationPlan, RuleDestinationPlan, plan_rule_file_from_metadata,
+        AdditionalFilePlan, DestinationDisposition, DestinationPlan, RuleDestinationPlan,
+        plan_rule_file_from_metadata,
     },
     error::{CoreError, PublicError, PublicErrorCode},
     events::{ActivityEntry, ActivitySeverity},
@@ -66,8 +66,6 @@ use crate::{
     rescan::{RescanDecision, RescanScheduler},
     rule_runtime::MatchedSource,
 };
-
-const RESCAN_INTERVAL: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BackupTrigger {
@@ -308,7 +306,7 @@ pub fn run_matched_sources_with_adapters(
         ensure_capacity(
             &destination,
             required_capacity_bytes,
-            DEFAULT_CAPACITY_RESERVE_BYTES,
+            state.free_space_reserve_bytes(),
         )?;
     }
 
@@ -1115,7 +1113,7 @@ impl DeviceOrchestrator {
             .name("backup-mic-device-events".to_owned())
             .spawn(move || {
                 let mut registry = DeviceRegistry::default();
-                let mut scheduler = RescanScheduler::new(RESCAN_INTERVAL);
+                let mut scheduler = RescanScheduler::new(state.rescan_interval());
                 let mut backup_pending = false;
                 while !thread_stop.load(Ordering::SeqCst) {
                     match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
@@ -1139,6 +1137,7 @@ impl DeviceOrchestrator {
                         }
                     }
                     let now = Instant::now();
+                    scheduler.set_interval(state.rescan_interval(), now);
                     let matched_sources = state.matched_sources();
                     for source_id in scheduler.mounted_sources() {
                         if !matched_sources.contains_key(&source_id) {

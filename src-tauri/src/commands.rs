@@ -4,7 +4,7 @@ use backup_core::{
     audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue},
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
-    preferences::PreferenceKey,
+    preferences::{BackupPreferences, PreferenceFlag, PreferenceLimit},
     rule::BackupRuleDraft,
     source::SourceId,
 };
@@ -23,7 +23,7 @@ use crate::{
 
 pub(crate) use backup_core::initial_setup::DESTINATION_SETTING;
 
-pub const REGISTERED_COMMANDS: [&str; 19] = [
+pub const REGISTERED_COMMANDS: [&str; 21] = [
     "get_app_snapshot",
     "backup_now",
     "cancel_backup",
@@ -41,6 +41,8 @@ pub const REGISTERED_COMMANDS: [&str; 19] = [
     "set_automatic_backup",
     "set_m4a_conversion",
     "set_automatic_trash",
+    "set_free_space_reserve",
+    "set_rescan_interval",
     "complete_initial_setup",
     "open_logs",
 ];
@@ -307,7 +309,7 @@ pub async fn set_automatic_backup(
     set_preference_for_state(
         state.inner(),
         "set_automatic_backup",
-        PreferenceKey::AutomaticBackup,
+        PreferenceFlag::AutomaticBackup,
         enabled,
         clock::now_string(),
     )
@@ -329,6 +331,60 @@ pub async fn set_automatic_trash(
     acknowledged: bool,
 ) -> Result<AppSnapshotDto, PublicError> {
     set_automatic_trash_for_state(state.inner(), enabled, acknowledged, clock::now_string()).await
+}
+
+/// Sets how much free space the destination must keep after a run.
+///
+/// The value is named `gibibytes`, not a caller-supplied settings key, so React still cannot
+/// reach an arbitrary setting. `PreferenceLimit` refuses anything outside its range before the
+/// write, so an out-of-range request changes nothing.
+#[tauri::command]
+pub async fn set_free_space_reserve(
+    state: State<'_, AppState>,
+    gibibytes: u32,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_free_space_reserve_for_state(state.inner(), gibibytes, clock::now_string()).await
+}
+
+pub async fn set_free_space_reserve_for_state(
+    state: &AppState,
+    gibibytes: u32,
+    occurred_at: String,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_limit_for_state(
+        state,
+        "set_free_space_reserve",
+        PreferenceLimit::FreeSpaceReserveGib,
+        gibibytes,
+        occurred_at,
+    )
+    .await
+}
+
+/// Sets how often a still-connected recorder is re-fingerprinted.
+///
+/// The running device monitor re-reads this every tick, so a change applies without a restart.
+#[tauri::command]
+pub async fn set_rescan_interval(
+    state: State<'_, AppState>,
+    seconds: u32,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_rescan_interval_for_state(state.inner(), seconds, clock::now_string()).await
+}
+
+pub async fn set_rescan_interval_for_state(
+    state: &AppState,
+    seconds: u32,
+    occurred_at: String,
+) -> Result<AppSnapshotDto, PublicError> {
+    set_limit_for_state(
+        state,
+        "set_rescan_interval",
+        PreferenceLimit::RescanIntervalSeconds,
+        seconds,
+        occurred_at,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -370,40 +426,55 @@ pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), Publi
         .map_err(|_| report.adapter("opener_adapter", "open_logs_failed", true))
 }
 
-pub(crate) async fn set_preference_for_state(
+/// The new value a settings write is recording.
+///
+/// `setting.saved` is a stable audit-log code, so a flag keeps logging `enabled` and a limit logs
+/// `value` rather than both being flattened into one shape.
+enum SavedSetting {
+    Flag { name: &'static str, enabled: bool },
+    Limit { name: &'static str, value: u32 },
+}
+
+/// Persists one setting, republishes the preferences the ledger actually holds, and records the
+/// change in the audit log.
+///
+/// The write runs in a blocking task so a slow SQLite commit cannot stall the async runtime, and
+/// `preference_save` serialises concurrent saves. An audit-log failure is reported but does not
+/// undo a value that is already durable — the ledger is the authority, the log is the account.
+async fn save_setting_for_state<Write>(
     state: &AppState,
     operation: &'static str,
-    key: PreferenceKey,
-    enabled: bool,
-    occurred_at: String,
-) -> Result<AppSnapshotDto, PublicError> {
+    saved: SavedSetting,
+    write: Write,
+) -> Result<AppSnapshotDto, PublicError>
+where
+    Write: FnOnce(&AppState) -> Result<BackupPreferences, CoreError> + Send + 'static,
+{
     let _save_guard = state.preference_save.lock().await;
     let report = Reported::new(state, operation);
     let worker_state = state.clone();
-    let joined = tauri::async_runtime::spawn_blocking(move || {
-        let mut ledger = worker_state.ledger.lock();
-        ledger.set_preference(key, enabled, &occurred_at)?;
-        ledger.read_preferences()
-    })
-    .await
-    .map_err(|_| report.adapter("setting_background_join", "setting_save_failed", true))?;
+    let joined = tauri::async_runtime::spawn_blocking(move || write(&worker_state))
+        .await
+        .map_err(|_| report.adapter("setting_background_join", "setting_save_failed", true))?;
     let preferences = report.at("setting_persistence", joined)?;
     let snapshot = state.apply_persisted_preferences(preferences);
-    let setting = match key {
-        PreferenceKey::AutomaticBackup => "automatic_backup",
-        PreferenceKey::M4aConversion => "m4a_conversion",
-        PreferenceKey::AutomaticTrash => "automatic_trash",
-    };
     let applies = if state.operation_is_active() {
         "next_run"
     } else {
         "next_operation"
     };
-    let fields = [
-        ("setting", AuditValue::Text(setting)),
-        ("enabled", AuditValue::Boolean(enabled)),
-        ("applies", AuditValue::Text(applies)),
-    ];
+    let fields = match saved {
+        SavedSetting::Flag { name, enabled } => [
+            ("setting", AuditValue::Text(name)),
+            ("enabled", AuditValue::Boolean(enabled)),
+            ("applies", AuditValue::Text(applies)),
+        ],
+        SavedSetting::Limit { name, value } => [
+            ("setting", AuditValue::Text(name)),
+            ("value", AuditValue::Unsigned(u64::from(value))),
+            ("applies", AuditValue::Text(applies)),
+        ],
+    };
     if let Err(error) = state.append_audit(
         &AuditEvent {
             occurred_at: clock::local_now(),
@@ -419,6 +490,44 @@ pub(crate) async fn set_preference_for_state(
     Ok(snapshot)
 }
 
+pub(crate) async fn set_preference_for_state(
+    state: &AppState,
+    operation: &'static str,
+    flag: PreferenceFlag,
+    enabled: bool,
+    occurred_at: String,
+) -> Result<AppSnapshotDto, PublicError> {
+    save_setting_for_state(
+        state,
+        operation,
+        SavedSetting::Flag {
+            name: flag.storage_key(),
+            enabled,
+        },
+        move |state| state.persist_flag(flag, enabled, &occurred_at),
+    )
+    .await
+}
+
+pub(crate) async fn set_limit_for_state(
+    state: &AppState,
+    operation: &'static str,
+    limit: PreferenceLimit,
+    value: u32,
+    occurred_at: String,
+) -> Result<AppSnapshotDto, PublicError> {
+    save_setting_for_state(
+        state,
+        operation,
+        SavedSetting::Limit {
+            name: limit.storage_key(),
+            value,
+        },
+        move |state| state.persist_limit(limit, value, &occurred_at),
+    )
+    .await
+}
+
 pub async fn set_m4a_conversion_for_state(
     state: &AppState,
     enabled: bool,
@@ -427,7 +536,7 @@ pub async fn set_m4a_conversion_for_state(
     set_preference_for_state(
         state,
         "set_m4a_conversion",
-        PreferenceKey::M4aConversion,
+        PreferenceFlag::M4aConversion,
         enabled,
         occurred_at,
     )
@@ -447,7 +556,7 @@ async fn set_automatic_trash_for_state(
     set_preference_for_state(
         state,
         "set_automatic_trash",
-        PreferenceKey::AutomaticTrash,
+        PreferenceFlag::AutomaticTrash,
         enabled,
         occurred_at,
     )
@@ -592,7 +701,7 @@ mod tests {
 
     #[test]
     fn exposes_exactly_the_nineteen_approved_commands() {
-        assert_eq!(REGISTERED_COMMANDS.len(), 19);
+        assert_eq!(REGISTERED_COMMANDS.len(), 21);
         assert!(REGISTERED_COMMANDS.contains(&"cancel_backup"));
         assert!(REGISTERED_COMMANDS.contains(&"complete_initial_setup"));
         let serialized = serde_json::to_string(&REGISTERED_COMMANDS).unwrap();

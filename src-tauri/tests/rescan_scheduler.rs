@@ -145,3 +145,66 @@ fn unmount_clears_deadline_fingerprint_and_pending_authority() {
         vec![second]
     );
 }
+
+#[test]
+fn a_new_interval_rebases_pending_deadlines_in_both_directions() {
+    let source = tempdir().unwrap();
+    fs::write(
+        source.path().join("TX01_MIC001_20260809_010203.wav"),
+        b"first",
+    )
+    .unwrap();
+    let source_id = SourceId::new();
+    let started = Instant::now();
+    let mut scheduler = RescanScheduler::new(Duration::from_secs(300));
+    scheduler.mount(source_id.clone(), fingerprint(source.path()), started);
+
+    // Shortening must not wait out the interval the source was mounted under.
+    scheduler.set_interval(Duration::from_secs(15), started);
+    assert!(
+        scheduler
+            .due_sources(started + Duration::from_secs(14))
+            .is_empty()
+    );
+    assert_eq!(
+        scheduler.due_sources(started + Duration::from_secs(15)),
+        vec![source_id.clone()]
+    );
+
+    // Lengthening from a point where the source is already due must push it out, not fire again.
+    let due_at = started + Duration::from_secs(15);
+    scheduler.set_interval(Duration::from_secs(600), due_at);
+    assert!(
+        scheduler
+            .due_sources(due_at + Duration::from_secs(599))
+            .is_empty()
+    );
+    assert_eq!(
+        scheduler.due_sources(due_at + Duration::from_secs(600)),
+        vec![source_id]
+    );
+}
+
+#[test]
+fn an_unchanged_interval_leaves_the_existing_deadline_alone() {
+    let source = tempdir().unwrap();
+    fs::write(
+        source.path().join("TX01_MIC001_20260809_010203.wav"),
+        b"first",
+    )
+    .unwrap();
+    let source_id = SourceId::new();
+    let started = Instant::now();
+    let mut scheduler = RescanScheduler::new(Duration::from_secs(15));
+    scheduler.mount(source_id.clone(), fingerprint(source.path()), started);
+
+    // Called on every monitor tick, so re-applying the same value must not keep a source from
+    // ever becoming due.
+    for tick in 0..14 {
+        scheduler.set_interval(Duration::from_secs(15), started + Duration::from_secs(tick));
+    }
+    assert_eq!(
+        scheduler.due_sources(started + Duration::from_secs(15)),
+        vec![source_id]
+    );
+}

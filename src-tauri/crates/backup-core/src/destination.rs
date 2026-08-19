@@ -21,8 +21,6 @@ use crate::{
     state::Transmitter,
 };
 
-pub const DEFAULT_CAPACITY_RESERVE_BYTES: u64 = 10 * 1024 * 1024 * 1024;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DestinationDisposition {
     Copy,
@@ -606,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn capacity_keeps_the_ten_gibibyte_safety_reserve_and_rejects_overflow() {
+    fn capacity_keeps_the_whole_reserve_and_rejects_overflow() {
         assert!(capacity_is_sufficient(110, 10, 100));
         assert!(!capacity_is_sufficient(109, 10, 100));
         assert!(!capacity_is_sufficient(u64::MAX, u64::MAX, 1));

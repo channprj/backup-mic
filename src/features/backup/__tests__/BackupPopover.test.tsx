@@ -75,6 +75,8 @@ function renderPopover(snapshot = complete) {
     setAutomaticBackup: vi.fn().mockResolvedValue(snapshot),
     setM4aConversion: vi.fn().mockResolvedValue(snapshot),
     setAutomaticTrash: vi.fn().mockResolvedValue(snapshot),
+    setFreeSpaceReserve: vi.fn().mockResolvedValue(snapshot),
+    setRescanInterval: vi.fn().mockResolvedValue(snapshot),
     openDestination: vi.fn().mockResolvedValue(undefined),
     openLogs: vi.fn().mockResolvedValue(undefined),
     quitApp: vi.fn().mockResolvedValue(undefined),

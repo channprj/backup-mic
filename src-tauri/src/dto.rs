@@ -150,15 +150,20 @@ pub struct BackupSettingsDto {
     pub m4a_conversion: bool,
     pub automatic_trash: bool,
     pub autostart: bool,
+    pub free_space_reserve_gib: u32,
+    pub rescan_interval_seconds: u32,
 }
 
 impl Default for BackupSettingsDto {
     fn default() -> Self {
+        let preferences = backup_core::preferences::BackupPreferences::default();
         Self {
-            automatic_backup: true,
-            m4a_conversion: true,
-            automatic_trash: false,
+            automatic_backup: preferences.automatic_backup,
+            m4a_conversion: preferences.m4a_conversion,
+            automatic_trash: preferences.automatic_trash,
             autostart: false,
+            free_space_reserve_gib: preferences.free_space_reserve_gib,
+            rescan_interval_seconds: preferences.rescan_interval_seconds,
         }
     }
 }

@@ -43,7 +43,7 @@
   "retirement_mode": "manual",
   "current_log_available": true,
   "destination_display": "~/Documents/Backup Mic",
-  "settings": { "automatic_backup": true, "m4a_conversion": true, "automatic_trash": false, "autostart": true },
+  "settings": { "automatic_backup": true, "m4a_conversion": true, "automatic_trash": false, "autostart": true, "free_space_reserve_gib": 10, "rescan_interval_seconds": 15 },
   "notification_status": "granted",
   "setup_state": "ready",
   "recent_activity": [

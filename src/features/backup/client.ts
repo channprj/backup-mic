@@ -4,6 +4,8 @@ import { z } from "zod";
 import {
   appSnapshotSchema,
   backupRuleDraftSchema,
+  freeSpaceReserveGibSchema,
+  rescanIntervalSecondsSchema,
   ruleTestResultSchema,
   trashProposalSummarySchema,
   type AppSnapshot,
@@ -93,6 +95,18 @@ export function setAutomaticTrash(
   });
 }
 
+export function setFreeSpaceReserve(gibibytes: number): Promise<AppSnapshot> {
+  return invokeSnapshot("set_free_space_reserve", {
+    gibibytes: freeSpaceReserveGibSchema.parse(gibibytes),
+  });
+}
+
+export function setRescanInterval(seconds: number): Promise<AppSnapshot> {
+  return invokeSnapshot("set_rescan_interval", {
+    seconds: rescanIntervalSecondsSchema.parse(seconds),
+  });
+}
+
 export async function openDestination(): Promise<void> {
   await invoke("open_destination");
 }
@@ -129,6 +143,8 @@ export const backupClient = {
   setAutomaticBackup,
   setM4aConversion,
   setAutomaticTrash,
+  setFreeSpaceReserve,
+  setRescanInterval,
   openDestination,
   openLogs,
   quitApp,

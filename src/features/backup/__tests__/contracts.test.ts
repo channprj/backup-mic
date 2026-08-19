@@ -38,6 +38,8 @@ const baseSnapshot = {
     m4a_conversion: true,
     automatic_trash: false,
     autostart: false,
+    free_space_reserve_gib: 10,
+    rescan_interval_seconds: 15,
   },
   notification_status: "unknown",
   setup_state: "needs_destination",
@@ -92,6 +94,45 @@ describe("app snapshot contract", () => {
     expect(parsed.settings.automatic_trash).toBe(false);
     expect(parsed.backup_rules[0].is_dji_preset).toBe(true);
     expect(parsed.backup_rules[0].date_folder_layout).toBe("year_month_day");
+  });
+
+  test("bounds the numeric settings to the range Rust accepts", () => {
+    const parsed = appSnapshotSchema.parse(baseSnapshot);
+    expect(parsed.settings.free_space_reserve_gib).toBe(10);
+    expect(parsed.settings.rescan_interval_seconds).toBe(15);
+
+    // Rust refuses anything outside these ranges before it writes, so a snapshot carrying an
+    // out-of-range value means the two sides disagree and must not be rendered.
+    for (const settings of [
+      { free_space_reserve_gib: 0 },
+      { free_space_reserve_gib: 513 },
+      { free_space_reserve_gib: 10.5 },
+      { rescan_interval_seconds: 4 },
+      { rescan_interval_seconds: 3601 },
+    ]) {
+      expect(
+        appSnapshotSchema.safeParse({
+          ...baseSnapshot,
+          settings: { ...baseSnapshot.settings, ...settings },
+        }).success,
+      ).toBe(false);
+    }
+
+    // Both ends of each range are valid, and so is a value between the offered presets.
+    for (const settings of [
+      { free_space_reserve_gib: 1 },
+      { free_space_reserve_gib: 512 },
+      { rescan_interval_seconds: 5 },
+      { rescan_interval_seconds: 47 },
+      { rescan_interval_seconds: 3600 },
+    ]) {
+      expect(
+        appSnapshotSchema.safeParse({
+          ...baseSnapshot,
+          settings: { ...baseSnapshot.settings, ...settings },
+        }).success,
+      ).toBe(true);
+    }
   });
 
   test("requires an explicit nullable error for every recorder source", () => {
