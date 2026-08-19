@@ -4,11 +4,9 @@ use backup_core::{
     error::PublicError,
     events::ActivityEntry,
     rule::{BackupRule, DateFolderLayout},
-    state::{BackupPhase, CurrentStage, DeletionPhase, Progress, Transmitter},
+    state::{BackupPhase, CurrentStage, DeletionPhase, Progress},
 };
 use serde::{Deserialize, Serialize};
-
-use crate::pairing::PairingCandidateSummary;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProgressDto {
@@ -130,17 +128,6 @@ impl From<&Progress> for ProgressDto {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct TransmitterSnapshotDto {
-    pub transmitter: Transmitter,
-    pub mounted: bool,
-    pub phase: BackupPhase,
-    pub progress: ProgressDto,
-    #[serde(rename = "retirement_outcome")]
-    pub deletion_phase: DeletionPhase,
-    pub deletion_ready: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NotificationStatusDto {
@@ -199,8 +186,6 @@ pub struct AppSnapshotDto {
     pub overall_progress: ProgressDto,
     pub sources: Vec<SourceSnapshotDto>,
     pub backup_rules: Vec<BackupRuleDto>,
-    #[serde(skip, default)]
-    pub transmitters: Vec<TransmitterSnapshotDto>,
     pub current_stage: Option<CurrentStage>,
     pub failure_stage: Option<CurrentStage>,
     pub setting_applies_next_run: bool,
@@ -215,8 +200,6 @@ pub struct AppSnapshotDto {
     pub settings: BackupSettingsDto,
     pub notification_status: NotificationStatusDto,
     pub setup_state: SetupStateDto,
-    #[serde(skip, default)]
-    pub pairing_candidates: Vec<PairingCandidateSummary>,
     pub recent_activity: Vec<ActivityEntry>,
     pub error: Option<PublicError>,
 }
@@ -315,7 +298,6 @@ mod tests {
             overall_progress: ProgressDto::from(&Progress::default()),
             sources: Vec::new(),
             backup_rules: Vec::new(),
-            transmitters: Vec::new(),
             current_stage: None,
             failure_stage: None,
             setting_applies_next_run: false,
@@ -328,7 +310,6 @@ mod tests {
             settings: BackupSettingsDto::default(),
             notification_status: NotificationStatusDto::Unknown,
             setup_state: SetupStateDto::NeedsDestination,
-            pairing_candidates: Vec::new(),
             recent_activity: Vec::new(),
             error: None,
         }

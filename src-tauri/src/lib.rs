@@ -9,7 +9,6 @@ pub mod legacy_app_data;
 pub mod lifecycle;
 pub mod manual_backup;
 pub mod orchestrator;
-pub mod pairing;
 pub mod platform;
 pub mod recovery_tool;
 pub mod rescan;

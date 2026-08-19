@@ -47,10 +47,7 @@ use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
-    app_state::{
-        AppState, OperationGuard, RuleDeletionState, publish_locked, update_source,
-        update_transmitter,
-    },
+    app_state::{AppState, OperationGuard, RuleDeletionState, publish_locked, update_source},
     artifact_pipeline::{
         finalize_prepared_m4a, order_conversion_cohort, prepare_m4a,
         retire_superseded_wavs_for_source, verify_published_artifact,
@@ -1602,13 +1599,6 @@ fn run_backup(
                     snapshot.error = source_error;
                 },
             );
-            if let Some(transmitter) = matched_legacy_transmitter(matched_source) {
-                update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                    snapshot.phase = effective_phase;
-                    snapshot.deletion_ready = deletion_ready;
-                    snapshot.deletion_phase = deletion_phase;
-                });
-            }
         }
         publish_locked(app, &mut runtime);
     }
@@ -1768,29 +1758,6 @@ fn is_device_removed(error: &PublicError) -> bool {
     error.message_code == "device_removed"
 }
 
-pub fn prepare_trash(
-    app: &AppHandle,
-    state: &AppState,
-    transmitter: Transmitter,
-) -> Result<TrashProposalSummaryDto, CoreError> {
-    let source_id = {
-        let runtime = state.runtime.lock();
-        runtime
-            .rule_deletions
-            .iter()
-            .find(|(source_id, _)| {
-                runtime
-                    .matched
-                    .get(*source_id)
-                    .and_then(matched_legacy_transmitter)
-                    == Some(transmitter)
-            })
-            .map(|(source_id, _)| source_id.clone())
-            .ok_or(CoreError::DeletionPreflightRefused)?
-    };
-    prepare_trash_for_source(app, state, &source_id)
-}
-
 pub fn prepare_trash_for_source(
     app: &AppHandle,
     state: &AppState,
@@ -1814,11 +1781,6 @@ pub fn prepare_trash_for_source(
         update_source(&mut runtime.snapshot, source_id, |snapshot| {
             snapshot.retirement_outcome = DeletionPhase::Preparing;
         });
-        if let Some(transmitter) = transmitter {
-            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.deletion_phase = DeletionPhase::Preparing;
-            });
-        }
         runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         publish_locked(app, &mut runtime);
         (source_label, destination_summary, transmitter)
@@ -1844,11 +1806,6 @@ pub fn prepare_trash_for_source(
         update_source(&mut runtime.snapshot, source_id, |snapshot| {
             snapshot.retirement_outcome = DeletionPhase::AwaitingConfirmation;
         });
-        if let Some(transmitter) = transmitter {
-            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.deletion_phase = DeletionPhase::AwaitingConfirmation;
-            });
-        }
         publish_locked(app, &mut runtime);
     }
     Ok(TrashProposalSummaryDto {
@@ -2063,11 +2020,6 @@ pub fn confirm_trash(
         update_source(&mut runtime.snapshot, &source_id, |snapshot| {
             snapshot.retirement_outcome = DeletionPhase::Revalidating;
         });
-        if let Some(transmitter) = transmitter {
-            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.deletion_phase = DeletionPhase::Revalidating;
-            });
-        }
         runtime.snapshot.current_stage = Some(CurrentStage::SourceRevalidation);
         publish_locked(app, &mut runtime);
         (source_id, transmitter)
@@ -2081,11 +2033,6 @@ pub fn confirm_trash(
         update_source(&mut runtime.snapshot, &source_for_deletion, |snapshot| {
             snapshot.retirement_outcome = DeletionPhase::Deleting;
         });
-        if let Some(transmitter) = transmitter {
-            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.deletion_phase = DeletionPhase::Deleting;
-            });
-        }
         publish_locked(&app_for_deletion, &mut runtime);
     };
     let fields = [("mode", AuditValue::Text("manual"))];
@@ -2119,19 +2066,6 @@ pub fn confirm_trash(
             snapshot.phase = BackupPhase::Error;
         }
     });
-    if let Some(transmitter) = transmitter {
-        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-            snapshot.deletion_phase = match report.outcome {
-                DeletionOutcome::Deleted => DeletionPhase::Deleted,
-                DeletionOutcome::Refused => DeletionPhase::Refused,
-                DeletionOutcome::PartiallyDeleted => DeletionPhase::PartiallyDeleted,
-            };
-            snapshot.deletion_ready = false;
-            if report.outcome != DeletionOutcome::Deleted {
-                snapshot.phase = BackupPhase::Error;
-            }
-        });
-    }
     if report.outcome == DeletionOutcome::PartiallyDeleted {
         runtime.snapshot.phase = BackupPhase::Error;
         runtime.snapshot.message_code = "partial_trash".to_owned();

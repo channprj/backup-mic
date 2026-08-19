@@ -513,31 +513,12 @@ impl Ledger {
             .map_err(CoreError::Ledger)
     }
 
+    /// Records the legacy DJI transmitter pairing. `paired_devices` seeds the dynamic-source
+    /// migration and the connected-hardware acceptance test; nothing pairs in bulk.
     pub fn pair_device(&mut self, device: &PairedDevice, paired_at: &str) -> Result<(), CoreError> {
-        self.pair_devices(std::slice::from_ref(device), paired_at)
-    }
-
-    pub fn pair_devices(
-        &mut self,
-        devices: &[PairedDevice],
-        paired_at: &str,
-    ) -> Result<(), CoreError> {
-        let transmitters = devices
-            .iter()
-            .map(|device| device.transmitter)
-            .collect::<std::collections::HashSet<_>>();
-        let uuids = devices
-            .iter()
-            .map(|device| device.expected_uuid.to_ascii_lowercase())
-            .collect::<std::collections::HashSet<_>>();
-        if transmitters.len() != devices.len() || uuids.len() != devices.len() {
-            return Err(CoreError::InvalidRequest);
-        }
-        let transaction = self.connection.transaction().map_err(CoreError::Ledger)?;
-        for device in devices {
-            transaction
-                .execute(
-                    r#"INSERT INTO paired_devices(
+        self.connection
+            .execute(
+                r#"INSERT INTO paired_devices(
                      transmitter, volume_uuid, protocol, media_name, nominal_capacity, paired_at
                    ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
                    ON CONFLICT(transmitter) DO UPDATE SET
@@ -546,18 +527,16 @@ impl Ledger {
                      media_name = excluded.media_name,
                      nominal_capacity = excluded.nominal_capacity,
                      paired_at = excluded.paired_at"#,
-                    params![
-                        transmitter_name(device.transmitter),
-                        device.expected_uuid,
-                        device.expected_protocol,
-                        device.expected_media_name,
-                        to_i64(device.expected_capacity)?,
-                        paired_at,
-                    ],
-                )
-                .map_err(CoreError::Ledger)?;
-        }
-        transaction.commit().map_err(CoreError::Ledger)?;
+                params![
+                    transmitter_name(device.transmitter),
+                    device.expected_uuid,
+                    device.expected_protocol,
+                    device.expected_media_name,
+                    to_i64(device.expected_capacity)?,
+                    paired_at,
+                ],
+            )
+            .map_err(CoreError::Ledger)?;
         Ok(())
     }
 

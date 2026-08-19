@@ -13,7 +13,6 @@ use backup_core::{
     backup::CancellationToken,
     batch::FrozenPreferences,
     deletion::{CompleteRuleDeletionSnapshot, DeletionProposalStore, ProposalInvalidation},
-    device::PairedDevice,
     error::{CoreError, PublicError},
     events::{ActivityEntry, ActivitySeverity},
     initial_setup::InitialSetupMarker,
@@ -24,10 +23,7 @@ use backup_core::{
         validate_rule,
     },
     rule_scanner::scan_rule_once,
-    source::{
-        LEGACY_TX01_SOURCE_ID, LEGACY_TX02_SOURCE_ID, MountedSourceAuthority, SourceId,
-        SourceRecord,
-    },
+    source::{MountedSourceAuthority, SourceId, SourceRecord},
     state::{BackupPhase, DeletionPhase, Progress, Transmitter},
 };
 use parking_lot::Mutex;
@@ -37,11 +33,10 @@ use crate::{
     dto::{
         AppSnapshotDto, ArtifactFormatDto, BackupRuleDto, BackupSettingsDto, NotificationStatusDto,
         ProgressDto, RetirementModeDto, RuleTestResultDto, SetupStateDto, SourceSnapshotDto,
-        TransmitterSnapshotDto, destination_display_for,
+        destination_display_for,
     },
     failure_reporter::{FailureEvent, FailureReporter, FailureWriteOutcome},
     manual_backup::{ManualBackupClaim, ManualBackupIntent},
-    pairing::{PairingAssignment, PairingManager},
     platform::device_registry::{MountedVolume, VolumeLifecycleEvent},
     rule_runtime::{MatchedSource, RuleVolumeMatch, match_mounted_volume},
 };
@@ -50,11 +45,8 @@ pub const SNAPSHOT_EVENT: &str = "app-snapshot-changed";
 
 pub(crate) struct RuntimeState {
     pub snapshot: AppSnapshotDto,
-    pub pairing: PairingManager,
-    pub paired: Vec<PairedDevice>,
     pub observed: HashMap<String, MountedVolume>,
     pub matched: HashMap<SourceId, MatchedSource>,
-    pub mounted: HashMap<Transmitter, MountedVolume>,
     pub destination: PathBuf,
     pub destination_configured: bool,
     pub destination_generation: u64,
@@ -111,7 +103,6 @@ impl AppState {
         autostart_enabled: bool,
         failure_root: PathBuf,
     ) -> Result<Self, CoreError> {
-        let paired = ledger.paired_devices()?;
         let preferences = ledger.read_preferences()?;
         let initial_setup_marker = ledger.initial_setup_marker()?;
         let rules = ledger.backup_rules(true)?;
@@ -141,10 +132,6 @@ impl AppState {
                     overall_progress: ProgressDto::from(&Progress::default()),
                     sources,
                     backup_rules,
-                    transmitters: vec![
-                        transmitter_snapshot(Transmitter::Tx01),
-                        transmitter_snapshot(Transmitter::Tx02),
-                    ],
                     current_stage: None,
                     failure_stage: None,
                     setting_applies_next_run: false,
@@ -170,15 +157,11 @@ impl AppState {
                     },
                     notification_status: NotificationStatusDto::Unknown,
                     setup_state,
-                    pairing_candidates: Vec::new(),
                     recent_activity: Vec::new(),
                     error: None,
                 },
-                pairing: PairingManager::default(),
-                paired,
                 observed: HashMap::new(),
                 matched: HashMap::new(),
-                mounted: HashMap::new(),
                 destination,
                 destination_configured,
                 destination_generation: 1,
@@ -478,15 +461,6 @@ impl AppState {
         self.operation_active.load(Ordering::SeqCst)
     }
 
-    pub fn mounted_roots(&self) -> HashMap<Transmitter, PathBuf> {
-        self.runtime
-            .lock()
-            .mounted
-            .iter()
-            .map(|(transmitter, mounted)| (*transmitter, mounted.descriptor.mount_root.clone()))
-            .collect()
-    }
-
     pub fn matched_sources(&self) -> HashMap<SourceId, MatchedSource> {
         self.runtime.lock().matched.clone()
     }
@@ -767,7 +741,6 @@ impl AppState {
                     .lock()
                     .invalidate(ProposalInvalidation::DeviceDisappeared);
                 let mut runtime = self.runtime.lock();
-                runtime.pairing.remove(&volume_uuid, mount_generation);
                 runtime.observed.remove(&volume_uuid);
                 let removed_source = runtime
                     .matched
@@ -781,7 +754,7 @@ impl AppState {
                             && matched.authority.descriptor.mount_generation == mount_generation
                     })
                     .map(|(source_id, matched)| (source_id.clone(), matched.clone()));
-                if let Some((source_id, matched)) = &removed_source {
+                if let Some((source_id, _)) = &removed_source {
                     runtime.matched.remove(source_id);
                     runtime.rule_deletions.remove(source_id);
                     runtime.rule_scan_generations.remove(source_id);
@@ -794,17 +767,7 @@ impl AppState {
                         snapshot.deletion_ready = false;
                         snapshot.retirement_outcome = DeletionPhase::Inactive;
                     });
-                    if let Some(transmitter) = legacy_transmitter(&matched.authority.source) {
-                        runtime.mounted.remove(&transmitter);
-                        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                            snapshot.mounted = false;
-                            snapshot.phase = BackupPhase::Idle;
-                            snapshot.deletion_ready = false;
-                            snapshot.deletion_phase = DeletionPhase::Inactive;
-                        });
-                    }
                 }
-                sync_pairing_snapshot(&mut runtime);
                 publish_locked(app, &mut runtime);
                 drop(runtime);
                 if let Some((source_id, matched)) = removed_source {
@@ -881,7 +844,6 @@ impl AppState {
                 let source_id = matched.authority.source.id.clone();
                 let source = matched.authority.source.clone();
                 let rule = matched.rule.clone();
-                let transmitter = legacy_transmitter(&source);
                 runtime.matched.insert(source_id.clone(), matched);
                 let should_schedule = backup_should_schedule(
                     runtime.preferences.automatic_backup,
@@ -892,14 +854,6 @@ impl AppState {
                 );
                 let source_phase = mounted_source_phase(should_schedule);
                 upsert_source_snapshot(&mut runtime.snapshot, &source, &rule, true, source_phase);
-                if let Some(transmitter) = transmitter {
-                    runtime.mounted.insert(transmitter, mounted);
-                    update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                        snapshot.mounted = true;
-                        snapshot.phase = source_phase;
-                        snapshot.deletion_ready = false;
-                    });
-                }
                 runtime.snapshot.phase = source_phase;
                 runtime.snapshot.message_code = "device_detected".to_owned();
                 runtime.snapshot.error = None;
@@ -932,7 +886,6 @@ impl AppState {
                 None
             }
         };
-        sync_pairing_snapshot(&mut runtime);
         let should_schedule = matched_source
             .as_ref()
             .and_then(|(source_id, should_schedule)| should_schedule.then(|| source_id.clone()));
@@ -974,54 +927,6 @@ impl AppState {
         should_schedule
     }
 
-    pub fn pair_devices(
-        &self,
-        app: &AppHandle,
-        assignments: &[PairingAssignment],
-        paired_at: &str,
-    ) -> Result<Vec<Transmitter>, CoreError> {
-        let mut runtime = self.runtime.lock();
-        let paired = {
-            let mut ledger = self.ledger.lock();
-            runtime.pairing.pair(assignments, &mut ledger, paired_at)?;
-            ledger.paired_devices()?
-        };
-        let mut mounted_transmitters = Vec::new();
-        for device in &paired {
-            let dji_rule = self.ledger.lock().dji_rule()?;
-            let source = SourceRecord {
-                id: legacy_source_id(device.transmitter),
-                rule_id: dji_rule.id,
-                volume_uuid: device.expected_uuid.clone(),
-                legacy_slot: Some(transmitter_name(device.transmitter).to_owned()),
-                display_name: format!("DJI Mic Mini 2S ({})", transmitter_name(device.transmitter)),
-            };
-            self.ledger.lock().upsert_source(&source, paired_at)?;
-            if let Some(mounted) = runtime
-                .observed
-                .values()
-                .find(|mounted| {
-                    mounted
-                        .descriptor
-                        .volume_uuid
-                        .eq_ignore_ascii_case(&device.expected_uuid)
-                })
-                .cloned()
-            {
-                runtime.mounted.insert(device.transmitter, mounted);
-                mounted_transmitters.push(device.transmitter);
-                update_transmitter(&mut runtime.snapshot, device.transmitter, |snapshot| {
-                    snapshot.mounted = true;
-                    snapshot.phase = BackupPhase::Detecting;
-                });
-            }
-        }
-        runtime.paired = paired;
-        sync_pairing_snapshot(&mut runtime);
-        publish_locked(app, &mut runtime);
-        Ok(mounted_transmitters)
-    }
-
     pub fn persist_destination_for_state(
         &self,
         app: &AppHandle,
@@ -1051,10 +956,6 @@ impl AppState {
         runtime.rule_deletions.clear();
         runtime.rule_scan_generations.clear();
         runtime.awaiting_rule_deletion = None;
-        for snapshot in &mut runtime.snapshot.transmitters {
-            snapshot.deletion_ready = false;
-            snapshot.deletion_phase = DeletionPhase::Inactive;
-        }
         for source in &mut runtime.snapshot.sources {
             source.deletion_ready = false;
             source.retirement_outcome = DeletionPhase::Inactive;
@@ -1112,12 +1013,6 @@ impl AppState {
         runtime.snapshot.failure_stage = runtime.snapshot.current_stage;
         runtime.snapshot.current_stage = None;
         runtime.snapshot.setting_applies_next_run = false;
-        if let Some(transmitter) = transmitter {
-            update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-                snapshot.phase = BackupPhase::Error;
-                snapshot.deletion_ready = false;
-            });
-        }
         publish_locked(app, &mut runtime);
     }
 
@@ -1142,10 +1037,6 @@ impl AppState {
         runtime.snapshot.failure_stage = runtime.snapshot.current_stage;
         runtime.snapshot.current_stage = None;
         runtime.snapshot.setting_applies_next_run = false;
-        update_transmitter(&mut runtime.snapshot, transmitter, |snapshot| {
-            snapshot.deletion_phase = DeletionPhase::Refused;
-            snapshot.deletion_ready = false;
-        });
         publish_locked(app, &mut runtime);
     }
 
@@ -1187,16 +1078,6 @@ impl AppState {
 
     pub fn awaiting_deletion_source(&self) -> Option<SourceId> {
         self.runtime.lock().awaiting_rule_deletion.clone()
-    }
-
-    pub fn awaiting_deletion_transmitter(&self) -> Option<Transmitter> {
-        self.runtime
-            .lock()
-            .snapshot
-            .transmitters
-            .iter()
-            .find(|snapshot| snapshot.deletion_phase == DeletionPhase::AwaitingConfirmation)
-            .map(|snapshot| snapshot.transmitter)
     }
 
     pub fn set_autostart(&self, app: &AppHandle, enabled: bool) {
@@ -1285,20 +1166,6 @@ pub(crate) fn publish_locked(app: &AppHandle, runtime: &mut RuntimeState) {
     let _ = app.emit(SNAPSHOT_EVENT, runtime.snapshot.clone());
 }
 
-pub(crate) fn update_transmitter(
-    snapshot: &mut AppSnapshotDto,
-    transmitter: Transmitter,
-    update: impl FnOnce(&mut TransmitterSnapshotDto),
-) {
-    if let Some(transmitter_snapshot) = snapshot
-        .transmitters
-        .iter_mut()
-        .find(|snapshot| snapshot.transmitter == transmitter)
-    {
-        update(transmitter_snapshot);
-    }
-}
-
 pub(crate) fn update_source(
     snapshot: &mut AppSnapshotDto,
     source_id: &SourceId,
@@ -1369,10 +1236,6 @@ fn refresh_rule_catalog(
     }
 }
 
-fn sync_pairing_snapshot(runtime: &mut RuntimeState) {
-    runtime.snapshot.pairing_candidates = runtime.pairing.summaries();
-}
-
 fn setup_state_for(
     destination_configured: bool,
     marker: Option<InitialSetupMarker>,
@@ -1441,24 +1304,7 @@ fn settle_cancelled_snapshot(snapshot: &mut AppSnapshotDto) -> bool {
         source.deletion_ready = false;
         source.error = None;
     }
-    for transmitter in &mut snapshot.transmitters {
-        transmitter.phase = BackupPhase::Idle;
-        transmitter.progress = ProgressDto::from(&Progress::default());
-        transmitter.deletion_phase = DeletionPhase::Inactive;
-        transmitter.deletion_ready = false;
-    }
     true
-}
-
-fn transmitter_snapshot(transmitter: Transmitter) -> TransmitterSnapshotDto {
-    TransmitterSnapshotDto {
-        transmitter,
-        mounted: false,
-        phase: BackupPhase::Idle,
-        progress: ProgressDto::from(&Progress::default()),
-        deletion_phase: DeletionPhase::Inactive,
-        deletion_ready: false,
-    }
 }
 
 fn activity_entry(code: &str, source_id: SourceId, severity: ActivitySeverity) -> ActivityEntry {
@@ -1490,21 +1336,6 @@ fn runtime_legacy_transmitter(state: &AppState, source_id: &SourceId) -> Option<
         .matched
         .get(source_id)
         .and_then(|matched| legacy_transmitter(&matched.authority.source))
-}
-
-fn legacy_source_id(transmitter: Transmitter) -> SourceId {
-    SourceId::parse(match transmitter {
-        Transmitter::Tx01 => LEGACY_TX01_SOURCE_ID,
-        Transmitter::Tx02 => LEGACY_TX02_SOURCE_ID,
-    })
-    .expect("legacy source IDs are canonical UUID literals")
-}
-
-fn transmitter_name(transmitter: Transmitter) -> &'static str {
-    match transmitter {
-        Transmitter::Tx01 => "TX01",
-        Transmitter::Tx02 => "TX02",
-    }
 }
 
 fn local_now() -> time::OffsetDateTime {
@@ -1556,10 +1387,6 @@ fn clear_retirement_authority(runtime: &mut RuntimeState) {
     runtime.rule_deletions.clear();
     runtime.rule_scan_generations.clear();
     runtime.awaiting_rule_deletion = None;
-    for transmitter in &mut runtime.snapshot.transmitters {
-        transmitter.deletion_ready = false;
-        transmitter.deletion_phase = DeletionPhase::Inactive;
-    }
     for source in &mut runtime.snapshot.sources {
         source.deletion_ready = false;
         source.retirement_outcome = DeletionPhase::Inactive;
@@ -1759,11 +1586,6 @@ mod tests {
                 && !source.deletion_ready
                 && source.retirement_outcome == DeletionPhase::Inactive
                 && source.error.is_none()
-        }));
-        assert!(snapshot.transmitters.iter().all(|transmitter| {
-            transmitter.phase == BackupPhase::Idle
-                && !transmitter.deletion_ready
-                && transmitter.deletion_phase == DeletionPhase::Inactive
         }));
         assert!(!settle_cancelled_snapshot(&mut snapshot));
     }
