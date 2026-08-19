@@ -15,7 +15,7 @@ fn product_identity_is_backup_mic_everywhere_public() {
     let config: Value = serde_json::from_str(include_str!("../tauri.conf.json")).unwrap();
     let main = include_str!("../src/main.rs");
     let library = include_str!("../src/lib.rs");
-    let orchestrator = include_str!("../src/orchestrator.rs");
+    let device_events = include_str!("../src/orchestrator/monitor.rs");
     let disk_monitor = include_str!("../src/platform/macos/mod.rs");
     let package_script = include_str!("../../scripts/package-local.sh");
 
@@ -30,7 +30,7 @@ fn product_identity_is_backup_mic_everywhere_public() {
     assert!(
         library.find("prepare_app_data(&app_data").unwrap() < library.find("Ledger::open").unwrap()
     );
-    assert!(orchestrator.contains("backup-mic-device-events"));
+    assert!(device_events.contains("backup-mic-device-events"));
     assert!(disk_monitor.contains("backup-mic-disk-arbitration"));
     assert!(package_script.contains("macos/Backup Mic.app"));
     assert!(package_script.contains("Contents/MacOS/backup-mic"));
