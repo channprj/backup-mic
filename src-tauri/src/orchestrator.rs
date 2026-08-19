@@ -43,7 +43,7 @@ use backup_core::{
 };
 use tauri::AppHandle;
 use tauri_plugin_notification::NotificationExt;
-use time::{OffsetDateTime, UtcOffset, format_description::well_known::Rfc3339};
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 use uuid::Uuid;
 
 use crate::{
@@ -52,6 +52,7 @@ use crate::{
         finalize_prepared_m4a, order_conversion_cohort, prepare_m4a,
         retire_superseded_wavs_for_source, verify_published_artifact,
     },
+    clock,
     dto::{ProgressDto, TrashProposalSummaryDto},
     manual_backup::ManualBackupClaim,
     platform::{
@@ -189,7 +190,7 @@ pub fn run_matched_sources_with_adapters(
         ];
         if let Err(error) = state.append_audit(
             &AuditEvent {
-                occurred_at: audit_now(),
+                occurred_at: clock::local_now(),
                 level: AuditLevel::Info,
                 code: "archive.migration_complete",
                 transmitter: None,
@@ -201,7 +202,7 @@ pub fn run_matched_sources_with_adapters(
         }
     }
     let preferences = state.frozen_preferences();
-    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+    let local_offset = clock::local_offset();
     let mut frozen_sources = matched_sources.to_vec();
     frozen_sources.sort_by(|left, right| left.authority.source.id.cmp(&right.authority.source.id));
     let mut outcomes = Vec::new();
@@ -589,7 +590,7 @@ fn process_prepared_source(
         };
     }
     let run_id = Uuid::new_v4().to_string();
-    let started_at = now_string();
+    let started_at = clock::now_string();
     {
         let mut ledger = state.ledger.lock();
         ledger.begin_batch_run(
@@ -631,7 +632,7 @@ fn process_prepared_source(
                         destination_root: destination,
                         source_id: &source.source_id,
                         backup_run_id: &run_id,
-                        verified_at: &now_string(),
+                        verified_at: &clock::now_string(),
                     },
                     &plan.source,
                     &plan.relative_destination,
@@ -694,7 +695,7 @@ fn process_prepared_source(
                         )
                     })?;
                 existing.backup_run_id.clone_from(&run_id);
-                existing.verified_at = now_string();
+                existing.verified_at = clock::now_string();
                 existing.id = state.ledger.lock().commit_verified_recording(&existing)?;
                 Ok(existing)
             })()
@@ -705,7 +706,7 @@ fn process_prepared_source(
                     destination_root: destination,
                     source_id: &source.source_id,
                     backup_run_id: &run_id,
-                    verified_at: &now_string(),
+                    verified_at: &clock::now_string(),
                 },
                 &prepared.plan,
                 &mut progress,
@@ -786,7 +787,7 @@ fn process_prepared_source(
                 .begin_conversion_cohort(&run_id, &ids, M4A_PROFILE_ID)?;
             for mut recording in cohort {
                 recording.backup_run_id.clone_from(&run_id);
-                recording.verified_at = now_string();
+                recording.verified_at = clock::now_string();
                 let prepared = match prepare_m4a(
                     destination,
                     &recording,
@@ -850,7 +851,7 @@ fn process_prepared_source(
         None
     };
     let deletion_ready = deletion_evidence.is_some();
-    let finished_at = now_string();
+    let finished_at = clock::now_string();
     state.ledger.lock().finish_backup_run(
         &run_id,
         &finished_at,
@@ -891,7 +892,7 @@ fn finish_source_failure(
     let public = error.public(None);
     state.ledger.lock().finish_backup_run(
         &run_id,
-        &now_string(),
+        &clock::now_string(),
         "partial_failure",
         Some(&public.message_code),
     )?;
@@ -1144,7 +1145,7 @@ impl DeviceOrchestrator {
                             scheduler.unmount(&source_id);
                         }
                     }
-                    let local_offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
+                    let local_offset = clock::local_offset();
                     for (source_id, matched) in &matched_sources {
                         if !scheduler.is_mounted(source_id) {
                             scheduler.mount(
@@ -1455,7 +1456,7 @@ fn run_backup(
     } else {
         overall_backup_phase(&outcomes)
     };
-    let finished_at = now_string();
+    let finished_at = clock::now_string();
     let total_files = outcomes.iter().try_fold(0_u64, |total, outcome| {
         total
             .checked_add(outcome.verified_files)
@@ -1694,7 +1695,7 @@ fn run_backup(
     ];
     state.append_audit(
         &AuditEvent {
-            occurred_at: audit_now(),
+            occurred_at: clock::local_now(),
             level: if phase == BackupPhase::PartialFailure {
                 AuditLevel::Error
             } else {
@@ -1742,7 +1743,7 @@ fn publish_waiting_for_device(app: &AppHandle, state: &AppState, audit_code: &'s
 fn append_reconnect_audit(state: &AppState, code: &'static str) {
     if let Err(error) = state.append_audit(
         &AuditEvent {
-            occurred_at: audit_now(),
+            occurred_at: clock::local_now(),
             level: AuditLevel::Info,
             code,
             transmitter: None,
@@ -1788,7 +1789,7 @@ pub fn prepare_trash_for_source(
     let fields = [("mode", AuditValue::Text("manual"))];
     state.append_audit(
         &AuditEvent {
-            occurred_at: audit_now(),
+            occurred_at: clock::local_now(),
             level: AuditLevel::Info,
             code: "retirement.preflight",
             transmitter,
@@ -1919,8 +1920,8 @@ pub fn confirm_rule_trash_with_adapter(
         destination_generation,
         scan_generation,
     };
-    let started_at = now_string();
-    let finished_at = now_string();
+    let started_at = clock::now_string();
+    let finished_at = clock::now_string();
     let result = {
         let mut ledger = state.ledger.lock();
         state.proposals.lock().confirm_rule_observed(
@@ -2038,7 +2039,7 @@ pub fn confirm_trash(
     let fields = [("mode", AuditValue::Text("manual"))];
     state.append_audit(
         &AuditEvent {
-            occurred_at: audit_now(),
+            occurred_at: clock::local_now(),
             level: AuditLevel::Info,
             code: "retirement.authorized",
             transmitter,
@@ -2076,7 +2077,7 @@ pub fn confirm_trash(
     if let Err(error) = state.record_activity(
         app,
         ActivityEntry {
-            occurred_at: now_string(),
+            occurred_at: clock::now_string(),
             code: match report.outcome {
                 DeletionOutcome::Deleted => "trash_complete",
                 DeletionOutcome::Refused => "trash_refused",
@@ -2116,7 +2117,7 @@ pub fn confirm_trash(
     ];
     state.append_audit(
         &AuditEvent {
-            occurred_at: audit_now(),
+            occurred_at: clock::local_now(),
             level: match report.outcome {
                 DeletionOutcome::Deleted => AuditLevel::Info,
                 DeletionOutcome::Refused => AuditLevel::Warning,
@@ -2167,17 +2168,6 @@ fn matched_legacy_transmitter(matched: &MatchedSource) -> Option<Transmitter> {
         Some("TX02") => Some(Transmitter::Tx02),
         _ => None,
     }
-}
-
-pub(crate) fn now_string() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
-}
-
-fn audit_now() -> OffsetDateTime {
-    let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
-    OffsetDateTime::now_utc().to_offset(offset)
 }
 
 fn adapter_public_error(message_code: &str, retryable: bool) -> PublicError {

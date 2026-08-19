@@ -281,8 +281,11 @@ impl AppState {
             os_kind: error.diagnostic_io_kind_code().map(str::to_owned),
             retryable: public.retryable,
         };
-        self.failure_reporter
-            .report(primary_destination.as_deref(), local_now(), &event)
+        self.failure_reporter.report(
+            primary_destination.as_deref(),
+            crate::clock::local_now(),
+            &event,
+        )
     }
 
     pub fn report_public_failure(
@@ -307,8 +310,11 @@ impl AppState {
             os_kind: None,
             retryable: error.retryable,
         };
-        self.failure_reporter
-            .report(primary_destination.as_deref(), local_now(), &event)
+        self.failure_reporter.report(
+            primary_destination.as_deref(),
+            crate::clock::local_now(),
+            &event,
+        )
     }
 
     pub fn backup_is_ready(&self) -> bool {
@@ -585,7 +591,7 @@ impl AppState {
             .values()
             .cloned()
             .collect::<Vec<_>>();
-        let local_offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+        let local_offset = crate::clock::local_offset();
         let mut matched_volumes = Vec::new();
         let mut matched_file_count = 0_u64;
         let mut conflicts = BTreeSet::new();
@@ -788,7 +794,7 @@ impl AppState {
                     if self.runtime.lock().destination_configured
                         && let Err(error) = self.append_audit(
                             &AuditEvent {
-                                occurred_at: local_now(),
+                                occurred_at: crate::clock::local_now(),
                                 level: AuditLevel::Warning,
                                 code: "device.removed",
                                 transmitter,
@@ -832,8 +838,8 @@ impl AppState {
                 &mut ledger,
                 &mounted,
                 &rules,
-                time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC),
-                &crate::orchestrator::now_string(),
+                crate::clock::local_offset(),
+                &crate::clock::now_string(),
             )
         };
         let mut runtime = self.runtime.lock();
@@ -911,7 +917,7 @@ impl AppState {
             if self.runtime.lock().destination_configured
                 && let Err(error) = self.append_audit(
                     &AuditEvent {
-                        occurred_at: local_now(),
+                        occurred_at: crate::clock::local_now(),
                         level: AuditLevel::Info,
                         code: "device.detected",
                         transmitter,
@@ -1336,11 +1342,6 @@ fn runtime_legacy_transmitter(state: &AppState, source_id: &SourceId) -> Option<
         .matched
         .get(source_id)
         .and_then(|matched| legacy_transmitter(&matched.authority.source))
-}
-
-fn local_now() -> time::OffsetDateTime {
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    time::OffsetDateTime::now_utc().to_offset(offset)
 }
 
 fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {

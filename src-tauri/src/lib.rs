@@ -2,6 +2,7 @@ pub const PRODUCT_NAME: &str = "Backup Mic";
 
 pub mod app_state;
 pub mod artifact_pipeline;
+pub mod clock;
 pub mod commands;
 pub mod dto;
 pub mod failure_reporter;
@@ -17,6 +18,7 @@ pub mod tray;
 pub mod window;
 
 use backup_core::{error::CoreError, ledger::Ledger};
+use clock::local_now;
 use commands::{DESTINATION_SETTING, persisted_destination};
 use failure_reporter::{FailureEvent, FailureReporter};
 use legacy_app_data::{LEGACY_BUNDLE_IDENTIFIER, prepare_app_data};
@@ -80,7 +82,7 @@ pub fn run() {
             let mut ledger = Ledger::open(app_data.join("ledger.sqlite3"))
                 .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             ledger
-                .mark_interrupted_runs(&orchestrator::now_string())
+                .mark_interrupted_runs(&clock::now_string())
                 .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             let (destination, destination_configured) = persisted_destination(
                 ledger
@@ -186,11 +188,6 @@ fn report_setup_adapter_failure(reporter: &FailureReporter, stage: &'static str)
             retryable: true,
         },
     );
-}
-
-fn local_now() -> time::OffsetDateTime {
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    time::OffsetDateTime::now_utc().to_offset(offset)
 }
 
 #[cfg(test)]

@@ -14,7 +14,7 @@ use backup_core::{
     recording::{ParsedRecordingName, RecordingObservation, archive_date_for_filename},
     rule_scanner::{RuleFileObservation, SelectedFileKind},
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::OffsetDateTime;
 
 use crate::{
     artifact_pipeline::{finalize_prepared_m4a, prepare_m4a, verify_published_artifact},
@@ -170,7 +170,7 @@ fn recover_one(
         return Ok(false);
     }
 
-    let verified_at = now_string();
+    let verified_at = crate::clock::now_string();
     let mut progress = progress_for_plans(std::slice::from_ref(&plan))?;
     let mut wav = prepare_backup_item_observed(
         &BackupItemContext {
@@ -241,10 +241,4 @@ fn canonical_directory(path: &Path) -> Result<std::path::PathBuf, CoreError> {
         return Err(CoreError::InvalidRequest);
     }
     fs::canonicalize(path).map_err(CoreError::CopyFailed)
-}
-
-fn now_string() -> String {
-    OffsetDateTime::now_utc()
-        .format(&Rfc3339)
-        .unwrap_or_else(|_| "1970-01-01T00:00:00Z".to_owned())
 }

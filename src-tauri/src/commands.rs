@@ -16,6 +16,7 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use crate::{
     app_state::AppState,
+    clock,
     dto::{AppSnapshotDto, RuleTestResultDto, TrashProposalSummaryDto},
     lifecycle::AppLifecycle,
     orchestrator,
@@ -129,7 +130,7 @@ pub(crate) async fn choose_destination_for_state(
         reported_public_error(state, "choose_destination", "destination_validation", error)
     })?;
     state
-        .persist_destination_for_state(app, destination, &orchestrator::now_string())
+        .persist_destination_for_state(app, destination, &clock::now_string())
         .map_err(|error| {
             reported_core_error(
                 state,
@@ -183,7 +184,7 @@ pub fn save_backup_rule(
     draft: BackupRuleDraft,
 ) -> Result<AppSnapshotDto, PublicError> {
     state
-        .save_backup_rule_for_state(draft, &orchestrator::now_string())
+        .save_backup_rule_for_state(draft, &clock::now_string())
         .map_err(|error| {
             reported_core_error(
                 state.inner(),
@@ -210,7 +211,7 @@ pub fn archive_backup_rule(
     rule_id: String,
 ) -> Result<AppSnapshotDto, PublicError> {
     state
-        .archive_backup_rule_for_state(&rule_id, &orchestrator::now_string())
+        .archive_backup_rule_for_state(&rule_id, &clock::now_string())
         .map_err(|error| {
             reported_core_error(
                 state.inner(),
@@ -234,7 +235,7 @@ pub fn archive_backup_rule(
 #[tauri::command]
 pub fn restore_dji_rule(state: State<'_, AppState>) -> Result<AppSnapshotDto, PublicError> {
     state
-        .restore_dji_rule_for_state(&orchestrator::now_string())
+        .restore_dji_rule_for_state(&clock::now_string())
         .map_err(|error| {
             reported_core_error(
                 state.inner(),
@@ -442,7 +443,7 @@ pub async fn set_automatic_backup(
         "set_automatic_backup",
         PreferenceKey::AutomaticBackup,
         enabled,
-        orchestrator::now_string(),
+        clock::now_string(),
     )
     .await
 }
@@ -452,7 +453,7 @@ pub async fn set_m4a_conversion(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<AppSnapshotDto, PublicError> {
-    set_m4a_conversion_for_state(state.inner(), enabled, orchestrator::now_string()).await
+    set_m4a_conversion_for_state(state.inner(), enabled, clock::now_string()).await
 }
 
 #[tauri::command]
@@ -461,13 +462,7 @@ pub async fn set_automatic_trash(
     enabled: bool,
     acknowledged: bool,
 ) -> Result<AppSnapshotDto, PublicError> {
-    set_automatic_trash_for_state(
-        state.inner(),
-        enabled,
-        acknowledged,
-        orchestrator::now_string(),
-    )
-    .await
+    set_automatic_trash_for_state(state.inner(), enabled, acknowledged, clock::now_string()).await
 }
 
 #[tauri::command]
@@ -477,7 +472,7 @@ pub async fn complete_initial_setup(
 ) -> Result<AppSnapshotDto, PublicError> {
     let _save_guard = state.preference_save.lock().await;
     state
-        .complete_initial_setup_for_state(&app, &orchestrator::now_string())
+        .complete_initial_setup_for_state(&app, &clock::now_string())
         .map_err(|error| {
             reported_core_error(
                 state.inner(),
@@ -520,12 +515,9 @@ pub async fn complete_initial_setup(
 
 #[tauri::command]
 pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    let logs = state
-        .log_directory(time::OffsetDateTime::now_utc().to_offset(offset))
-        .map_err(|error| {
-            reported_core_error(state.inner(), "open_logs", "log_resolution", error, None)
-        })?;
+    let logs = state.log_directory(clock::local_now()).map_err(|error| {
+        reported_core_error(state.inner(), "open_logs", "log_resolution", error, None)
+    })?;
     std::fs::create_dir_all(&logs)
         .map_err(backup_core::error::CoreError::AuditLogUnavailable)
         .map_err(|error| {
@@ -587,7 +579,7 @@ pub(crate) async fn set_preference_for_state(
     ];
     if let Err(error) = state.append_audit(
         &AuditEvent {
-            occurred_at: local_now(),
+            occurred_at: clock::local_now(),
             level: AuditLevel::Info,
             code: "setting.saved",
             transmitter: None,
@@ -705,11 +697,6 @@ fn adapter_error(message_code: &str, retryable: bool) -> PublicError {
     }
 }
 
-fn local_now() -> time::OffsetDateTime {
-    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
-    time::OffsetDateTime::now_utc().to_offset(offset)
-}
-
 fn reported_core_error(
     state: &AppState,
     operation: &'static str,
@@ -738,7 +725,7 @@ fn activity(
     severity: ActivitySeverity,
 ) -> ActivityEntry {
     ActivityEntry {
-        occurred_at: orchestrator::now_string(),
+        occurred_at: clock::now_string(),
         code: code.to_owned(),
         source_id,
         source_label: None,
