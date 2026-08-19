@@ -7,7 +7,6 @@ use backup_core::{
     preferences::PreferenceKey,
     rule::BackupRuleDraft,
     source::SourceId,
-    state::Transmitter,
 };
 use tauri::{AppHandle, Manager as _, State};
 use tauri_plugin_autostart::ManagerExt as _;
@@ -48,22 +47,15 @@ pub const REGISTERED_COMMANDS: [&str; 19] = [
 
 #[tauri::command]
 pub fn get_app_snapshot(state: State<'_, AppState>) -> Result<AppSnapshotDto, PublicError> {
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "get_app_snapshot",
-            "ledger_read",
-            error,
-            None,
-        )
-    })
+    Reported::new(state.inner(), "get_app_snapshot").snapshot()
 }
 
 #[tauri::command]
 pub fn backup_now(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
-    orchestrator::request_backup(app, state.inner().clone()).map_err(|error| {
-        reported_core_error(state.inner(), "backup_now", "operation_start", error, None)
-    })
+    Reported::new(state.inner(), "backup_now").at(
+        "operation_start",
+        orchestrator::request_backup(app, state.inner().clone()),
+    )
 }
 
 #[tauri::command]
@@ -86,15 +78,8 @@ pub(crate) async fn choose_destination_for_state(
     app: &AppHandle,
     state: &AppState,
 ) -> Result<AppSnapshotDto, PublicError> {
-    let reservation = state.reserve_operation().map_err(|error| {
-        reported_core_error(
-            state,
-            "choose_destination",
-            "operation_reservation",
-            error,
-            None,
-        )
-    })?;
+    let report = Reported::new(state, "choose_destination");
+    let reservation = report.at("operation_reservation", state.reserve_operation())?;
     let guard = reservation.acquire().await;
     let (sender, receiver) = tokio::sync::oneshot::channel();
     app.dialog()
@@ -104,42 +89,22 @@ pub(crate) async fn choose_destination_for_state(
         .pick_folder(move |selection| {
             let _ = sender.send(selection);
         });
-    let selection = receiver.await.map_err(|_| {
-        reported_public_error(
-            state,
-            "choose_destination",
-            "destination_dialog",
-            adapter_error("destination_dialog_failed", true),
-        )
-    })?;
+    let selection = receiver
+        .await
+        .map_err(|_| report.adapter("destination_dialog", "destination_dialog_failed", true))?;
     let Some(selection) = selection else {
-        return state.snapshot_with_activity().map_err(|error| {
-            reported_core_error(state, "choose_destination", "ledger_read", error, None)
-        });
+        return report.snapshot();
     };
     let _save_guard = state.preference_save.lock().await;
-    let selected = selection.into_path().map_err(|_| {
-        reported_public_error(
-            state,
-            "choose_destination",
-            "destination_validation",
-            adapter_error("destination_invalid", false),
-        )
-    })?;
-    let destination = validate_destination(&selected, state).map_err(|error| {
-        reported_public_error(state, "choose_destination", "destination_validation", error)
-    })?;
-    state
-        .persist_destination_for_state(app, destination, &clock::now_string())
-        .map_err(|error| {
-            reported_core_error(
-                state,
-                "choose_destination",
-                "destination_persistence",
-                error,
-                None,
-            )
-        })?;
+    let selected = selection
+        .into_path()
+        .map_err(|_| report.adapter("destination_validation", "destination_invalid", false))?;
+    let destination = validate_destination(&selected, state)
+        .map_err(|error| report.public("destination_validation", error))?;
+    report.at(
+        "destination_persistence",
+        state.persist_destination_for_state(app, destination, &clock::now_string()),
+    )?;
     if let Err(error) = state.record_activity(
         app,
         activity("destination_changed", None, None, ActivitySeverity::Info),
@@ -162,20 +127,10 @@ pub(crate) async fn choose_destination_for_state(
             Ok(())
             | Err(backup_core::error::CoreError::Busy)
             | Err(backup_core::error::CoreError::InvalidRequest) => {}
-            Err(error) => {
-                return Err(reported_core_error(
-                    state,
-                    "choose_destination",
-                    "backup_start",
-                    error,
-                    None,
-                ));
-            }
+            Err(error) => return Err(report.core("backup_start", error)),
         }
     }
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(state, "choose_destination", "ledger_read", error, None)
-    })
+    report.snapshot()
 }
 
 #[tauri::command]
@@ -183,26 +138,12 @@ pub fn save_backup_rule(
     state: State<'_, AppState>,
     draft: BackupRuleDraft,
 ) -> Result<AppSnapshotDto, PublicError> {
-    state
-        .save_backup_rule_for_state(draft, &clock::now_string())
-        .map_err(|error| {
-            reported_core_error(
-                state.inner(),
-                "save_backup_rule",
-                "rule_persistence",
-                error,
-                None,
-            )
-        })?;
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "save_backup_rule",
-            "ledger_read",
-            error,
-            None,
-        )
-    })
+    let report = Reported::new(state.inner(), "save_backup_rule");
+    report.at(
+        "rule_persistence",
+        state.save_backup_rule_for_state(draft, &clock::now_string()),
+    )?;
+    report.snapshot()
 }
 
 #[tauri::command]
@@ -210,50 +151,22 @@ pub fn archive_backup_rule(
     state: State<'_, AppState>,
     rule_id: String,
 ) -> Result<AppSnapshotDto, PublicError> {
-    state
-        .archive_backup_rule_for_state(&rule_id, &clock::now_string())
-        .map_err(|error| {
-            reported_core_error(
-                state.inner(),
-                "archive_backup_rule",
-                "rule_persistence",
-                error,
-                None,
-            )
-        })?;
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "archive_backup_rule",
-            "ledger_read",
-            error,
-            None,
-        )
-    })
+    let report = Reported::new(state.inner(), "archive_backup_rule");
+    report.at(
+        "rule_persistence",
+        state.archive_backup_rule_for_state(&rule_id, &clock::now_string()),
+    )?;
+    report.snapshot()
 }
 
 #[tauri::command]
 pub fn restore_dji_rule(state: State<'_, AppState>) -> Result<AppSnapshotDto, PublicError> {
-    state
-        .restore_dji_rule_for_state(&clock::now_string())
-        .map_err(|error| {
-            reported_core_error(
-                state.inner(),
-                "restore_dji_rule",
-                "rule_persistence",
-                error,
-                None,
-            )
-        })?;
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "restore_dji_rule",
-            "ledger_read",
-            error,
-            None,
-        )
-    })
+    let report = Reported::new(state.inner(), "restore_dji_rule");
+    report.at(
+        "rule_persistence",
+        state.restore_dji_rule_for_state(&clock::now_string()),
+    )?;
+    report.snapshot()
 }
 
 #[tauri::command]
@@ -261,9 +174,8 @@ pub fn test_backup_rule(
     state: State<'_, AppState>,
     draft: BackupRuleDraft,
 ) -> Result<RuleTestResultDto, PublicError> {
-    state.test_backup_rule_for_state(draft).map_err(|error| {
-        reported_core_error(state.inner(), "test_backup_rule", "rule_test", error, None)
-    })
+    Reported::new(state.inner(), "test_backup_rule")
+        .at("rule_test", state.test_backup_rule_for_state(draft))
 }
 
 #[tauri::command]
@@ -272,15 +184,8 @@ pub async fn prepare_trash(
     state: State<'_, AppState>,
     source_id: String,
 ) -> Result<TrashProposalSummaryDto, PublicError> {
-    let source_id = SourceId::parse(&source_id).map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "prepare_trash",
-            "request_validation",
-            error,
-            None,
-        )
-    })?;
+    let source_id = Reported::new(state.inner(), "prepare_trash")
+        .at("request_validation", SourceId::parse(&source_id))?;
     let state = state.inner().clone();
     let join_state = state.clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -295,11 +200,10 @@ pub async fn prepare_trash(
     })
     .await
     .map_err(|_| {
-        reported_public_error(
-            &join_state,
-            "prepare_trash",
+        Reported::new(&join_state, "prepare_trash").adapter(
             "background_join",
-            adapter_error("operation_failed", true),
+            "operation_failed",
+            true,
         )
     })?
 }
@@ -311,13 +215,8 @@ pub async fn confirm_trash(
     proposal_id: String,
 ) -> Result<AppSnapshotDto, PublicError> {
     if proposal_id.len() != 36 || !proposal_id.is_ascii() {
-        return Err(reported_core_error(
-            state.inner(),
-            "confirm_trash",
-            "request_validation",
-            CoreError::InvalidRequest,
-            None,
-        ));
+        return Err(Reported::new(state.inner(), "confirm_trash")
+            .core("request_validation", CoreError::InvalidRequest));
     }
     let state = state.inner().clone();
     let join_state = state.clone();
@@ -337,11 +236,10 @@ pub async fn confirm_trash(
     })
     .await
     .map_err(|_| {
-        reported_public_error(
-            &join_state,
-            "confirm_trash",
+        Reported::new(&join_state, "confirm_trash").adapter(
             "background_join",
-            adapter_error("operation_failed", true),
+            "operation_failed",
+            true,
         )
     })?
     .map_err(|error| {
@@ -363,26 +261,14 @@ pub fn set_autostart(
     } else {
         app.autolaunch().disable()
     };
-    result.map_err(|_| {
-        reported_public_error(
-            state.inner(),
-            "set_autostart",
-            "autostart_adapter",
-            adapter_error("autostart_failed", true),
-        )
-    })?;
-    let actual = app.autolaunch().is_enabled().map_err(|_| {
-        reported_public_error(
-            state.inner(),
-            "set_autostart",
-            "autostart_verification",
-            adapter_error("autostart_failed", true),
-        )
-    })?;
+    let report = Reported::new(state.inner(), "set_autostart");
+    result.map_err(|_| report.adapter("autostart_adapter", "autostart_failed", true))?;
+    let actual = app
+        .autolaunch()
+        .is_enabled()
+        .map_err(|_| report.adapter("autostart_verification", "autostart_failed", true))?;
     state.set_autostart(&app, actual);
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(state.inner(), "set_autostart", "ledger_read", error, None)
-    })
+    report.snapshot()
 }
 
 #[tauri::command]
@@ -391,46 +277,26 @@ pub fn open_destination(app: AppHandle, state: State<'_, AppState>) -> Result<()
     app.opener()
         .open_path(destination.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|_| {
-            reported_public_error(
-                state.inner(),
-                "open_destination",
+            Reported::new(state.inner(), "open_destination").adapter(
                 "opener_adapter",
-                adapter_error("open_destination_failed", true),
+                "open_destination_failed",
+                true,
             )
         })
 }
 
 #[tauri::command]
 pub fn show_settings(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
-    let settings = app.get_webview_window("settings").ok_or_else(|| {
-        reported_public_error(
-            state.inner(),
-            "show_settings",
-            "window_adapter",
-            adapter_error("settings_window_unavailable", true),
-        )
-    })?;
+    let report = Reported::new(state.inner(), "show_settings");
+    let unavailable = || report.adapter("window_adapter", "settings_window_unavailable", true);
+    let settings = app.get_webview_window("settings").ok_or_else(unavailable)?;
     if let Some(main) = app.get_webview_window("main") {
-        main.hide().map_err(|_| {
-            reported_public_error(
-                state.inner(),
-                "show_settings",
-                "window_adapter",
-                adapter_error("settings_window_unavailable", true),
-            )
-        })?;
+        main.hide().map_err(|_| unavailable())?;
     }
     settings
         .show()
         .and_then(|()| settings.set_focus())
-        .map_err(|_| {
-            reported_public_error(
-                state.inner(),
-                "show_settings",
-                "window_adapter",
-                adapter_error("settings_window_unavailable", true),
-            )
-        })
+        .map_err(|_| unavailable())
 }
 
 #[tauri::command]
@@ -471,17 +337,11 @@ pub async fn complete_initial_setup(
     state: State<'_, AppState>,
 ) -> Result<AppSnapshotDto, PublicError> {
     let _save_guard = state.preference_save.lock().await;
-    state
-        .complete_initial_setup_for_state(&app, &clock::now_string())
-        .map_err(|error| {
-            reported_core_error(
-                state.inner(),
-                "complete_initial_setup",
-                "setup_persistence",
-                error,
-                None,
-            )
-        })?;
+    let report = Reported::new(state.inner(), "complete_initial_setup");
+    report.at(
+        "setup_persistence",
+        state.complete_initial_setup_for_state(&app, &clock::now_string()),
+    )?;
     if state.automatic_backup_enabled() && state.backup_is_ready() {
         match orchestrator::start_backup(
             app,
@@ -491,48 +351,23 @@ pub async fn complete_initial_setup(
             Ok(())
             | Err(backup_core::error::CoreError::Busy)
             | Err(backup_core::error::CoreError::InvalidRequest) => {}
-            Err(error) => {
-                return Err(reported_core_error(
-                    state.inner(),
-                    "complete_initial_setup",
-                    "backup_start",
-                    error,
-                    None,
-                ));
-            }
+            Err(error) => return Err(report.core("backup_start", error)),
         }
     }
-    state.snapshot_with_activity().map_err(|error| {
-        reported_core_error(
-            state.inner(),
-            "complete_initial_setup",
-            "ledger_read",
-            error,
-            None,
-        )
-    })
+    report.snapshot()
 }
 
 #[tauri::command]
 pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
-    let logs = state.log_directory(clock::local_now()).map_err(|error| {
-        reported_core_error(state.inner(), "open_logs", "log_resolution", error, None)
-    })?;
-    std::fs::create_dir_all(&logs)
-        .map_err(backup_core::error::CoreError::AuditLogUnavailable)
-        .map_err(|error| {
-            reported_core_error(state.inner(), "open_logs", "log_creation", error, None)
-        })?;
+    let report = Reported::new(state.inner(), "open_logs");
+    let logs = report.at("log_resolution", state.log_directory(clock::local_now()))?;
+    report.at(
+        "log_creation",
+        std::fs::create_dir_all(&logs).map_err(CoreError::AuditLogUnavailable),
+    )?;
     app.opener()
         .open_path(logs.to_string_lossy().into_owned(), None::<&str>)
-        .map_err(|_| {
-            reported_public_error(
-                state.inner(),
-                "open_logs",
-                "opener_adapter",
-                adapter_error("open_logs_failed", true),
-            )
-        })
+        .map_err(|_| report.adapter("opener_adapter", "open_logs_failed", true))
 }
 
 pub(crate) async fn set_preference_for_state(
@@ -543,6 +378,7 @@ pub(crate) async fn set_preference_for_state(
     occurred_at: String,
 ) -> Result<AppSnapshotDto, PublicError> {
     let _save_guard = state.preference_save.lock().await;
+    let report = Reported::new(state, operation);
     let worker_state = state.clone();
     let joined = tauri::async_runtime::spawn_blocking(move || {
         let mut ledger = worker_state.ledger.lock();
@@ -550,17 +386,8 @@ pub(crate) async fn set_preference_for_state(
         ledger.read_preferences()
     })
     .await
-    .map_err(|_| {
-        reported_public_error(
-            state,
-            operation,
-            "setting_background_join",
-            adapter_error("setting_save_failed", true),
-        )
-    })?;
-    let preferences = joined.map_err(|error| {
-        reported_core_error(state, operation, "setting_persistence", error, None)
-    })?;
+    .map_err(|_| report.adapter("setting_background_join", "setting_save_failed", true))?;
+    let preferences = report.at("setting_persistence", joined)?;
     let snapshot = state.apply_persisted_preferences(preferences);
     let setting = match key {
         PreferenceKey::AutomaticBackup => "automatic_backup",
@@ -614,13 +441,8 @@ async fn set_automatic_trash_for_state(
     occurred_at: String,
 ) -> Result<AppSnapshotDto, PublicError> {
     if enabled && !acknowledged {
-        return Err(reported_core_error(
-            state,
-            "set_automatic_trash",
-            "request_validation",
-            CoreError::InvalidRequest,
-            None,
-        ));
+        return Err(Reported::new(state, "set_automatic_trash")
+            .core("request_validation", CoreError::InvalidRequest));
     }
     set_preference_for_state(
         state,
@@ -697,25 +519,54 @@ fn adapter_error(message_code: &str, retryable: bool) -> PublicError {
     }
 }
 
-fn reported_core_error(
-    state: &AppState,
+/// One command's failure-reporting identity.
+///
+/// Every command owes an error the same two things: a line in the failure log naming the
+/// operation and the stage that failed, and the redacted public form for React. Carrying both
+/// strings through each `map_err` by hand made the reporting longer than the work being
+/// reported, and made it easy for a stage name to drift from its command.
+#[derive(Clone, Copy)]
+struct Reported<'a> {
+    state: &'a AppState,
     operation: &'static str,
-    stage: &'static str,
-    error: CoreError,
-    transmitter: Option<Transmitter>,
-) -> PublicError {
-    state.report_failure(operation, stage, &error, transmitter, None);
-    error.public(transmitter)
 }
 
-fn reported_public_error(
-    state: &AppState,
-    operation: &'static str,
-    stage: &'static str,
-    error: PublicError,
-) -> PublicError {
-    state.report_public_failure(operation, stage, &error, None);
-    error
+impl<'a> Reported<'a> {
+    const fn new(state: &'a AppState, operation: &'static str) -> Self {
+        Self { state, operation }
+    }
+
+    /// Reports a core failure at `stage` and returns the redacted error React receives.
+    fn core(self, stage: &'static str, error: CoreError) -> PublicError {
+        self.state
+            .report_failure(self.operation, stage, &error, None, None);
+        error.public(None)
+    }
+
+    /// Reports an already-redacted failure at `stage`.
+    fn public(self, stage: &'static str, error: PublicError) -> PublicError {
+        self.state
+            .report_public_failure(self.operation, stage, &error, None);
+        error
+    }
+
+    /// Reports an adapter failure at `stage`. A Tauri plugin or OS call has no `CoreError` to
+    /// redact, so the safe message code is named here instead.
+    fn adapter(self, stage: &'static str, message_code: &str, retryable: bool) -> PublicError {
+        self.public(stage, adapter_error(message_code, retryable))
+    }
+
+    /// Attributes a core failure at `stage` to `result`.
+    fn at<T>(self, stage: &'static str, result: Result<T, CoreError>) -> Result<T, PublicError> {
+        result.map_err(|error| self.core(stage, error))
+    }
+
+    /// The canonical snapshot React renders. Mutating commands end here rather than returning
+    /// what they just wrote, because Rust state is authoritative and the UI must never show an
+    /// optimistic result.
+    fn snapshot(self) -> Result<AppSnapshotDto, PublicError> {
+        self.at("ledger_read", self.state.snapshot_with_activity())
+    }
 }
 
 fn activity(
