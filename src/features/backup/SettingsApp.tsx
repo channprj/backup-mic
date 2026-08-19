@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import {
   FileTextIcon,
   FolderOpenIcon,
@@ -21,45 +21,19 @@ import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Spinner } from "@/components/ui/spinner";
-import { Switch } from "@/components/ui/switch";
 import { backupClient, type BackupActions } from "./client";
 import type { AppSnapshot, BackupRule, BackupRuleDraft } from "./contracts";
 import { errorCopy, retirementOutcomeLabel } from "./format";
 import { RuleEditor } from "./RuleEditor";
 import { RuleList, duplicateRuleDraft } from "./RuleList";
+import {
+  SettingChoiceRow,
+  SettingRow,
+  freeSpaceReserveChoices,
+  rescanIntervalChoices,
+} from "./SettingsControls";
 import { useBackupSnapshot } from "./useBackupSnapshot";
-
-type Settings = AppSnapshot["settings"];
-type SettingKey = keyof Settings;
-type FlagKey = {
-  [Key in SettingKey]: Settings[Key] extends boolean ? Key : never;
-}[SettingKey];
-
-/// The choices the settings window offers. Rust accepts the whole range, so these are
-/// suggestions rather than the validation boundary.
-const freeSpaceReserveChoices = [5, 10, 20, 50, 100] as const;
-const rescanIntervalChoices = [
-  { value: 5, label: "5초" },
-  { value: 15, label: "15초" },
-  { value: 30, label: "30초" },
-  { value: 60, label: "1분" },
-  { value: 300, label: "5분" },
-] as const;
-
-interface ActionError {
-  messageCode: string;
-  title: string;
-  detail: string;
-}
-
-function commandError(error: unknown): ActionError {
-  if (typeof error === "object" && error !== null && "message_code" in error) {
-    const messageCode = String(error.message_code);
-    return { messageCode, ...errorCopy(messageCode) };
-  }
-  const messageCode = "setting_save_failed";
-  return { messageCode, ...errorCopy(messageCode) };
-}
+import { useSettingsPersistence } from "./useSettingsPersistence";
 
 export function SettingsApp() {
   const { snapshot, loading, errorCode, refresh } = useBackupSnapshot();
@@ -107,168 +81,28 @@ export function SettingsView({
   snapshot: AppSnapshot;
   actions: BackupActions;
 }) {
-  const [viewSnapshot, setViewSnapshot] = useState(snapshot);
-  const [pending, setPending] = useState<Set<SettingKey>>(new Set());
-  const [destinationPending, setDestinationPending] = useState(false);
-  const [destinationStatus, setDestinationStatus] = useState<string | null>(
-    null,
-  );
-  const [actionError, setActionError] = useState<ActionError | null>(null);
   const [confirmAutomaticTrash, setConfirmAutomaticTrash] = useState(false);
   const [editorRule, setEditorRule] = useState<BackupRule | null>(null);
   const [editorDraft, setEditorDraft] = useState<BackupRuleDraft | undefined>();
   const [editing, setEditing] = useState(false);
-  const [busyRuleId, setBusyRuleId] = useState<string | null>(null);
-
-  useEffect(() => {
-    setViewSnapshot((current) =>
-      snapshot.revision > current.revision ? snapshot : current,
-    );
-  }, [snapshot]);
-
-  function markPending(key: SettingKey, value: boolean) {
-    setPending((current) => {
-      const next = new Set(current);
-      if (value) next.add(key);
-      else next.delete(key);
-      return next;
-    });
-  }
-
-  async function persistSetting<Key extends SettingKey>(
-    key: Key,
-    value: Settings[Key],
-    operation: () => Promise<AppSnapshot>,
-  ) {
-    if (pending.has(key)) return;
-    const previous = viewSnapshot.settings[key];
-    setActionError(null);
-    markPending(key, true);
-    setViewSnapshot((current) => ({
-      ...current,
-      settings: { ...current.settings, [key]: value },
-    }));
-    try {
-      const persisted = await operation();
-      setViewSnapshot((current) => {
-        if (persisted.revision < current.revision) return current;
-        return {
-          ...persisted,
-          artifact_format:
-            key === "m4a_conversion"
-              ? persisted.artifact_format
-              : current.artifact_format,
-          retirement_mode:
-            key === "automatic_trash"
-              ? persisted.retirement_mode
-              : current.retirement_mode,
-          settings: {
-            ...current.settings,
-            [key]: persisted.settings[key],
-          },
-        };
-      });
-    } catch (error) {
-      setViewSnapshot((current) => ({
-        ...current,
-        settings: { ...current.settings, [key]: previous },
-      }));
-      setActionError({
-        ...commandError(error),
-        title: "설정을 저장하지 못했습니다",
-      });
-    } finally {
-      markPending(key, false);
-    }
-  }
-
-  async function chooseDestination() {
-    if (destinationPending) return;
-    const previousDisplay = viewSnapshot.destination_display;
-    setDestinationPending(true);
-    setDestinationStatus(null);
-    setActionError(null);
-    try {
-      const persisted = await actions.chooseDestination();
-      setViewSnapshot((current) => ({
-        ...persisted,
-        artifact_format: current.artifact_format,
-        retirement_mode: current.retirement_mode,
-        settings: current.settings,
-      }));
-      if (
-        persisted.destination_display &&
-        persisted.destination_display !== previousDisplay
-      ) {
-        setDestinationStatus("백업 폴더가 변경되었습니다");
-      }
-    } catch (error) {
-      setActionError({
-        ...commandError(error),
-        title: "백업 폴더를 변경하지 못했습니다",
-      });
-    } finally {
-      setDestinationPending(false);
-    }
-  }
+  const {
+    viewSnapshot,
+    pending,
+    destinationPending,
+    destinationStatus,
+    actionError,
+    busyRuleId,
+    persistSetting,
+    chooseDestination,
+    saveRule,
+    archiveRule,
+    restoreDjiRule,
+  } = useSettingsPersistence(snapshot, actions);
 
   function closeRuleEditor() {
     setEditing(false);
     setEditorRule(null);
     setEditorDraft(undefined);
-  }
-
-  async function saveRule(draft: BackupRuleDraft) {
-    if (busyRuleId !== null) return;
-    setBusyRuleId(draft.id ?? "new-rule");
-    setActionError(null);
-    try {
-      setViewSnapshot(await actions.saveBackupRule(draft));
-      closeRuleEditor();
-    } catch (error) {
-      setActionError({
-        ...commandError(error),
-        title: "규칙을 저장하지 못했습니다",
-      });
-    } finally {
-      setBusyRuleId(null);
-    }
-  }
-
-  async function archiveRule(ruleId: string) {
-    if (busyRuleId !== null) return;
-    setBusyRuleId(ruleId);
-    setActionError(null);
-    try {
-      setViewSnapshot(await actions.archiveBackupRule(ruleId));
-    } catch (error) {
-      setActionError({
-        ...commandError(error),
-        title: "규칙을 보관하지 못했습니다",
-      });
-    } finally {
-      setBusyRuleId(null);
-    }
-  }
-
-  async function restoreDjiRule() {
-    if (busyRuleId !== null) return;
-    const djiRuleId =
-      viewSnapshot.backup_rules.find((rule) => rule.is_dji_preset)?.id ??
-      "dji-preset";
-    setBusyRuleId(djiRuleId);
-    setActionError(null);
-    try {
-      setViewSnapshot(await actions.restoreDjiRule());
-      closeRuleEditor();
-    } catch (error) {
-      setActionError({
-        ...commandError(error),
-        title: "DJI 기본 규칙을 복원하지 못했습니다",
-      });
-    } finally {
-      setBusyRuleId(null);
-    }
   }
 
   const refusal = viewSnapshot.sources
@@ -284,7 +118,7 @@ export function SettingsView({
           <p>Backup Mic</p>
           <h1>설정</h1>
         </div>
-        <span>v0.260811.4</span>
+        <span>v{__APP_VERSION__}</span>
       </header>
 
       {actionError ? (
@@ -333,7 +167,9 @@ export function SettingsView({
               ]}
               busy={busyRuleId !== null}
               onCancel={closeRuleEditor}
-              onSave={saveRule}
+              onSave={async (draft) => {
+                if (await saveRule(draft)) closeRuleEditor();
+              }}
               onTest={actions.testBackupRule}
             />
           ) : (
@@ -355,8 +191,12 @@ export function SettingsView({
                 setEditorDraft(duplicateRuleDraft(rule));
                 setEditing(true);
               }}
-              onArchive={archiveRule}
-              onRestoreDji={restoreDjiRule}
+              onArchive={async (ruleId) => {
+                await archiveRule(ruleId);
+              }}
+              onRestoreDji={async () => {
+                if (await restoreDjiRule()) closeRuleEditor();
+              }}
             />
           )}
         </div>
@@ -569,94 +409,5 @@ export function SettingsView({
         </AlertDialogContent>
       </AlertDialog>
     </main>
-  );
-}
-
-/// A settings row whose value is one of a few numbers rather than on/off.
-///
-/// A value the app is storing but does not offer — a range is wider than the preset list, and an
-/// older build may have written something else — is shown as an extra option so the control never
-/// silently misreports what is in effect.
-function SettingChoiceRow({
-  id,
-  label,
-  description,
-  value,
-  choices,
-  pending,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  value: number;
-  choices: ReadonlyArray<{ value: number; label: string }>;
-  pending: boolean;
-  onChange: (value: number) => void;
-}) {
-  const options = choices.some((choice) => choice.value === value)
-    ? choices
-    : [...choices, { value, label: String(value) }].sort(
-        (left, right) => left.value - right.value,
-      );
-  return (
-    <div className="settings-row">
-      <label htmlFor={id}>
-        <strong>{label}</strong>
-        <span>{description}</span>
-      </label>
-      <div className="settings-control">
-        {pending ? <Spinner aria-label={`${label} 저장 중`} /> : null}
-        <select
-          id={id}
-          className="settings-choice"
-          aria-label={label}
-          value={value}
-          disabled={pending}
-          onChange={(event) => onChange(Number(event.currentTarget.value))}
-        >
-          {options.map((choice) => (
-            <option key={choice.value} value={choice.value}>
-              {choice.label}
-            </option>
-          ))}
-        </select>
-      </div>
-    </div>
-  );
-}
-
-function SettingRow({
-  id,
-  label,
-  description,
-  checked,
-  pending,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  checked: boolean;
-  pending: boolean;
-  onChange: (enabled: boolean) => void;
-}) {
-  return (
-    <div className="settings-row">
-      <label htmlFor={id}>
-        <strong>{label}</strong>
-        <span>{description}</span>
-      </label>
-      <div className="settings-control">
-        {pending ? <Spinner aria-label={`${label} 저장 중`} /> : null}
-        <Switch
-          id={id}
-          aria-label={label}
-          checked={checked}
-          disabled={pending}
-          onCheckedChange={onChange}
-        />
-      </div>
-    </div>
   );
 }

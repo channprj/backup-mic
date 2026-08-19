@@ -1,5 +1,6 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
+import packageManifest from "../../../../package.json";
 import completeFixture from "../../../../contracts/fixtures/backup-complete.json";
 import { SettingsView } from "../SettingsApp";
 import { appSnapshotSchema, type AppSnapshot } from "../contracts";
@@ -265,6 +266,12 @@ describe("SettingsView", () => {
       settings: { ...complete.settings, rescan_interval_seconds: 47 },
     });
     expect(screen.getByLabelText("연결된 녹음기 확인 주기")).toHaveValue("47");
+  });
+
+  it("shows the version the manifest actually declares", () => {
+    // The header used to carry a hand-typed version that drifted two releases behind the app.
+    renderSettings();
+    expect(screen.getByText(`v${packageManifest.version}`)).toBeInTheDocument();
   });
 
   it("keeps the archive directory editable after evidence exists", () => {
