@@ -16,7 +16,7 @@ fi
 
 if rg -n \
   'remove_file|remove_dir|\.Trashes|Command::|std::process|/bin/(ba)?sh|osascript|AppleScript|Finder' \
-  src-tauri/crates/backup-core/src/deletion.rs \
+  src-tauri/crates/backup-core/src/deletion \
   src-tauri/src/platform/macos/trash.rs; then
   echo "Production source retirement boundary failed." >&2
   exit 1
