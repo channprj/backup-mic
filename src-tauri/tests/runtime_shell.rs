@@ -48,6 +48,14 @@ fn legacy_identity_is_confined_to_migration_and_exact_installer_transition() {
 }
 
 #[test]
+fn installer_targets_the_current_users_applications_directory() {
+    let installer = include_str!("../../scripts/install-local.sh");
+
+    assert!(installer.contains("TARGET_PARENT=\"$HOME/Applications\""));
+    assert!(!installer.contains("/Users/channprj/Applications"));
+}
+
+#[test]
 fn installer_stop_helper_bounds_an_unresponsive_quit_request_with_exact_process_termination() {
     let mut child = Command::new("/bin/sleep").arg("30").spawn().unwrap();
     let pid = child.id().to_string();

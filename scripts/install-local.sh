@@ -3,9 +3,9 @@
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TARGET_APP="/Users/channprj/Applications/Backup Mic.app"
-LEGACY_TARGET_APP="/Users/channprj/Applications/DJI Mic Backup.app"
-TARGET_PARENT="/Users/channprj/Applications"
+TARGET_PARENT="$HOME/Applications"
+TARGET_APP="$TARGET_PARENT/Backup Mic.app"
+LEGACY_TARGET_APP="$TARGET_PARENT/DJI Mic Backup.app"
 EXPECTED_IDENTIFIER="com.channprj.BackupMic"
 LEGACY_IDENTIFIER="com.channprj.DJIMicBackup"
 EXPECTED_EXECUTABLE="backup-mic"

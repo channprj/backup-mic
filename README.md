@@ -61,12 +61,12 @@ headatever init 0 --dry-run
 headatever init 0 --push
 ./scripts/package-local.sh "$(tr -d '\r\n' < VERSION)"
 ./scripts/install-local.sh "src-tauri/target/release/bundle/macos/Backup Mic.app" "$(tr -d '\r\n' < VERSION)"
-open -a "/Users/channprj/Applications/Backup Mic.app"
+open -a "$HOME/Applications/Backup Mic.app"
 ```
 
 `VERSION`은 직접 만들거나 수정하지 않고 Headatever가 생성합니다. Headatever 릴리스 커밋과 annotated tag를 먼저 일반 push한 뒤에만 패키징합니다. 패키징 스크립트는 앱과 DMG의 번들 식별자, `CFBundleShortVersionString`, 최소 macOS 버전, arm64 아키텍처, deep strict ad-hoc 코드 서명, DMG와 SHA-256을 검사합니다. 이전 빌드 산출물은 정확한 `target/release/bundle/macos`·`dmg` 디렉터리만 비운 뒤 새 앱과 DMG가 각각 하나인지 확인합니다.
 
-설치 스크립트는 새 앱을 `/Users/channprj/Applications` 안의 권한이 제한된 임시 디렉터리에 먼저 복사해 검증합니다. 실행 중인 앱에 종료를 요청한 뒤 기존의 정확한 앱 번들을 임시 롤백 위치로 옮기고 새 앱을 원자적으로 설치합니다. 설치 후 검증이나 실행 파일 해시 비교가 실패하면 이전 앱을 복원합니다. 성공하면 이전 앱은 영구 삭제하지 않고 macOS 휴지통으로 이동합니다.
+설치 스크립트는 새 앱을 현재 사용자의 `~/Applications` 안에 있는 권한이 제한된 임시 디렉터리로 먼저 복사해 검증합니다. 실행 중인 앱에 종료를 요청한 뒤 기존의 정확한 앱 번들을 임시 롤백 위치로 옮기고 새 앱을 원자적으로 설치합니다. 설치 후 검증이나 실행 파일 해시 비교가 실패하면 이전 앱을 복원합니다. 성공하면 이전 앱은 영구 삭제하지 않고 macOS 휴지통으로 이동합니다.
 
 ## 처음 사용과 설정
 
