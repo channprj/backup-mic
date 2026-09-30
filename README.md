@@ -51,6 +51,8 @@
 
 ## 빌드와 로컬 설치
 
+개발 검사에는 Python 3.9 이상, Gitleaks 8.30 이상과 `cargo-audit`도 필요합니다. 설치 및 검사 범위는 [보안 검증 안내](SECURITY.md)를 참고하세요.
+
 요구 사항은 macOS 13 이상과 Apple Silicon Mac입니다. 이 로컬 패키지는 Developer ID 서명이나 공증을 하지 않는 개인용 ad-hoc 빌드입니다.
 
 ```bash
@@ -132,9 +134,9 @@ pnpm install --frozen-lockfile
 pnpm tauri dev
 ```
 
-`check.sh`는 Rust 포맷/테스트/Clippy, frontend 테스트/typecheck/build와 함께 128kbps 명령, 전체 복사 배리어, 변환-off 원본 유지, fallback 로그, 동시 설정 저장, 독립 검증기, 영구 원본 삭제, 셸 기반 오디오 실행, 임의 settings IPC, `.Trashes` 직접 조작을 검사합니다.
+`check.sh`는 전체 Git 이력·인덱스·작업 파일의 비밀정보 검사와 pnpm/Rust 의존성 감사를 먼저 실행합니다. 보안 검사만 실행하려면 `pnpm security:check`를 사용합니다. Rust 포맷/테스트/Clippy, frontend 테스트/typecheck/build와 함께 128kbps 명령, 전체 복사 배리어, 변환-off 원본 유지, fallback 로그, 동시 설정 저장, 독립 검증기, 영구 원본 삭제, 셸 기반 오디오 실행, 임의 settings IPC, `.Trashes` 직접 조작을 검사합니다.
 
-`accept-rule-fixtures.sh`는 새 64 MiB MS-DOS FAT32 이미지 두 개를 정확히 `/Volumes/ZOOM_RULETEST`와 `/Volumes/SONY_RULETEST`로 마운트합니다. 각 이미지의 이름, 용량, 외부·쓰기 가능 속성, sentinel과 PCM WAV를 확인한 뒤 생산 `DeviceRegistry`, glob 규칙 매처, 안정 스캔, 복사·SHA-256 검증, Apple M4A 변환과 독립 배치 배리어를 실행합니다. Zoom과 Sony의 서로 다른 경로, 보관 폴더, 프리픽스·서픽스가 섞이지 않는지도 확인합니다. 같은 이름의 기존 마운트나 연결된 DJI 볼륨은 사용하지 않으며, 종료 시 기록해 둔 디스크 이미지 장치만 분리합니다. 이 검사는 실제 USB 녹음기나 실제 Disk Arbitration 연결 세션의 증거로 간주하지 않습니다.
+`accept-rule-fixtures.sh`는 새 64 MiB MS-DOS FAT32 이미지 두 개를 정확히 `/Volumes/ZOOM_TEST`와 `/Volumes/SONY_TEST`로 마운트합니다. 각 이미지의 이름, 용량, 외부·쓰기 가능 속성, sentinel과 PCM WAV를 확인한 뒤 생산 `DeviceRegistry`, glob 규칙 매처, 안정 스캔, 복사·SHA-256 검증, Apple M4A 변환과 독립 배치 배리어를 실행합니다. Zoom과 Sony의 서로 다른 경로, 보관 폴더, 프리픽스·서픽스가 섞이지 않는지도 확인합니다. 같은 이름의 기존 마운트나 연결된 DJI 볼륨은 사용하지 않으며, 종료 시 기록해 둔 디스크 이미지 장치만 분리합니다. 이 검사는 실제 USB 녹음기나 실제 Disk Arbitration 연결 세션의 증거로 간주하지 않습니다.
 
 `accept-deletion-fixture.sh`는 새 64 MiB MS-DOS FAT32 이미지를 정확히 `/Volumes/DJI-DELTEST`로 마운트하고 sentinel을 기록한 뒤에만 실행됩니다. 테스트는 두 PCM WAV, 외부 M4A, 명시적·FAT32 생성 AppleDouble을 모두 백업한 상태에서 한 `TX_MIC…` 세션이 source 위치에서 사라지고 복구 가능 Trash에 폴더 전체로 존재하는지 확인합니다. 생산 Apple 도구로 FAT32 위에서 128kbps M4A를 만들고 검사하며, raw 추가 파일과 destination이 유지되고 ledger 증거가 있는 빈 세션 폴더도 휴지통으로 이동하는지 증명합니다. 이미 같은 이름의 마운트가 있으면 실행을 거부하고, 연결된 `DJI-MIC-1/2`는 대상으로 허용하지 않습니다.
 
