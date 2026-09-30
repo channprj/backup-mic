@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-APP_LEDGER="/Users/channprj/Library/Application Support/com.channprj.BackupMic/ledger.sqlite3"
+APP_LEDGER="$HOME/Library/Application Support/com.channprj.BackupMic/ledger.sqlite3"
 PROFILE_ID="aac_lc_128k_v1"
 diagnostic=0
 ledger="$APP_LEDGER"
@@ -13,6 +13,7 @@ Usage: verify-backup.sh [--diagnostic] [--ledger LEDGER] DESTINATION RULE_NAME=S
 
 The default output contains counts only. --diagnostic additionally prints
 relative paths and SHA-256 evidence. The command is read-only.
+The default ledger is in the current user's Application Support directory.
 EOF
   exit 2
 }

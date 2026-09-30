@@ -15,7 +15,7 @@
 - 같은 녹음을 다시 연결하면 ledger와 파일을 재검증하며 중복 복사본을 만들지 않습니다.
 - 네트워크 통신, 클라우드 업로드, 분석 도구, 전사 기능은 없습니다.
 
-새 설치의 기본 백업 위치는 `/Users/channprj/Documents/Backup Mic`입니다. 기존 설치는 SQLite에 저장된 백업 위치를 그대로 사용합니다. 날짜별 작업 기록은 다음 위치에 UTF-8 텍스트로 계속 추가됩니다.
+새 설치의 기본 백업 위치는 현재 사용자의 `~/Documents/Backup Mic`입니다. 기존 설치는 SQLite에 저장된 백업 위치를 그대로 사용합니다. 날짜별 작업 기록은 다음 위치에 UTF-8 텍스트로 계속 추가됩니다.
 
 ```text
 <백업 위치>/logs/YYYY/MM/YYMMDD-backup-mic.log
@@ -116,7 +116,7 @@ open -a "$HOME/Applications/Backup Mic.app"
 
 ```bash
 ./scripts/verify-backup.sh \
-  "/Users/channprj/Documents/Backup Mic" \
+  "$HOME/Documents/Backup Mic" \
   "DJI Mic Mini 2S=/Volumes/DJI-MIC-1" \
   "DJI Mic Mini 2S=/Volumes/DJI-MIC-2" \
   "Zoom H1n=/Volumes/ZOOM_H1N"
