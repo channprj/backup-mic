@@ -51,7 +51,7 @@
 
 ## 빌드와 로컬 설치
 
-개발 검사에는 Python 3.9 이상, Gitleaks 8.30 이상과 `cargo-audit`도 필요합니다. 설치 및 검사 범위는 [보안 검증 안내](SECURITY.md)를 참고하세요.
+개발 검사에는 Python 3.9 이상, Gitleaks 8.30 이상과 `cargo-audit`도 필요합니다. `brew install gitleaks cargo-audit`로 감사 도구를 설치할 수 있습니다. 보안 검사는 전체 Git 이력이 있는 저장소와 네트워크 접근이 필요합니다.
 
 요구 사항은 macOS 13 이상과 Apple Silicon Mac입니다. 이 로컬 패키지는 Developer ID 서명이나 공증을 하지 않는 개인용 ad-hoc 빌드입니다.
 

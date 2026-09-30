@@ -25,7 +25,3 @@ src-tauri/icons/Square*.png
 src-tauri/icons/StoreLogo.png
 src-tauri/icons/icon.ico
 *.log
-
-!docs/
-!docs/superpowers/
-!docs/superpowers/**
