@@ -6,8 +6,8 @@ PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURE_BASE="${TMPDIR:-/tmp}"
 FIXTURE_BASE="${FIXTURE_BASE%/}"
 FIXTURE_TEMP="$(mktemp -d "$FIXTURE_BASE/backup-mic-rule-fixtures.XXXXXX")"
-ZOOM_MOUNT="/Volumes/ZOOM_RULETEST"
-SONY_MOUNT="/Volumes/SONY_RULETEST"
+ZOOM_MOUNT="/Volumes/ZOOM_TEST"
+SONY_MOUNT="/Volumes/SONY_TEST"
 SENTINEL=".backup-mic-rule-fixture"
 EXPECTED_BYTES=$((64 * 1024 * 1024))
 MINIMUM_BYTES=$((60 * 1024 * 1024))
@@ -25,6 +25,7 @@ cleanup() {
     if ! hdiutil detach "$device" >/dev/null; then
       cleanup_ready=0
       echo "Fixture device could not be detached safely: $device" >&2
+      if [[ "$status" -eq 0 ]]; then status=1; fi
     fi
   done
   if [[ "$cleanup_ready" -eq 1 ]]; then
@@ -65,13 +66,15 @@ create_fixture() {
   local attached_device identifier partition_device total_size
 
   hdiutil create -quiet -size 64m -fs 'MS-DOS FAT32' -volname "$label" "$image"
+  cleanup_ready=0
   hdiutil attach -plist -nobrowse "$image" > "$attach"
-  attached_device="$(plutil -extract 'system-entities.0.dev-entry' raw -o - "$attach")"
+  attached_device="$(python3 "$PROJECT_ROOT/scripts/fixture-device.py" "$attach")"
   [[ "$attached_device" =~ ^/dev/disk[0-9]+$ ]] || {
     echo "Rule fixture attachment did not return an isolated disk device." >&2
     exit 1
   }
   ATTACHED_DEVICES+=("$attached_device")
+  cleanup_ready=1
   if [[ ! -d "$mount_root" || -L "$mount_root" ]]; then
     echo "Rule fixture did not mount at its exact isolated path." >&2
     exit 1
@@ -122,10 +125,14 @@ write_pcm_wav() {
     /usr/bin/printf '\001' | /bin/dd of="$output" bs=1 seek=44 conv=notrunc 2>/dev/null
   fi
   /usr/bin/afinfo "$output" >/dev/null
+  # Apple audio tools may add a metadata companion on FAT32. This fixture
+  # models one recorder WAV, so remove only its generated companion.
+  rm -f -- "$(dirname "$output")/._$(basename "$output")"
 }
 
-create_fixture "ZOOM_RULETEST" "$ZOOM_MOUNT"
-create_fixture "SONY_RULETEST" "$SONY_MOUNT"
+# FAT volume labels are limited to 11 characters.
+create_fixture "ZOOM_TEST" "$ZOOM_MOUNT"
+create_fixture "SONY_TEST" "$SONY_MOUNT"
 write_pcm_wav "$ZOOM_MOUNT/RECORD/FOLDER01/ZOOM0001.WAV" 0
 write_pcm_wav "$SONY_MOUNT/REC_FILE/FOLDER01/SONY0001.WAV" 1
 sync

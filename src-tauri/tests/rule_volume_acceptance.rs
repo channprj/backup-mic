@@ -44,8 +44,8 @@ impl Clock for InstantClock {
 #[test]
 #[ignore = "requires scripts/accept-rule-fixtures.sh"]
 fn backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline() {
-    let zoom_root = required_fixture("BACKUP_MIC_ZOOM_RULE_FIXTURE", "ZOOM_RULETEST");
-    let sony_root = required_fixture("BACKUP_MIC_SONY_RULE_FIXTURE", "SONY_RULETEST");
+    let zoom_root = required_fixture("BACKUP_MIC_ZOOM_RULE_FIXTURE", "ZOOM_TEST");
+    let sony_root = required_fixture("BACKUP_MIC_SONY_RULE_FIXTURE", "SONY_TEST");
     assert_ne!(zoom_root, sony_root);
 
     let state_root = tempdir().unwrap();
@@ -84,7 +84,7 @@ fn backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline() {
     let mut matching_ledger = Ledger::open(&ledger_path).unwrap();
     let rules = matching_ledger.backup_rules(false).unwrap();
     let mut matched_sources = Vec::new();
-    for (index, (label, root)) in [("ZOOM_RULETEST", &zoom_root), ("SONY_RULETEST", &sony_root)]
+    for (index, (label, root)) in [("ZOOM_TEST", &zoom_root), ("SONY_TEST", &sony_root)]
         .into_iter()
         .enumerate()
     {
@@ -134,12 +134,15 @@ fn backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline() {
     .unwrap();
 
     assert_eq!(outcomes.len(), 2);
-    assert!(outcomes.iter().all(|outcome| {
-        outcome.phase == BackupPhase::CompletedDeletionPending
-            && outcome.deletion_ready
-            && outcome.verified_files == 1
-            && outcome.error.is_none()
-    }));
+    assert!(
+        outcomes.iter().all(|outcome| {
+            outcome.phase == BackupPhase::CompletedDeletionPending
+                && outcome.deletion_ready
+                && outcome.verified_files == 1
+                && outcome.error.is_none()
+        }),
+        "{outcomes:?}"
+    );
     assert_ne!(outcomes[0].batch_run_id, outcomes[1].batch_run_id);
 
     let ledger = Ledger::open(&ledger_path).unwrap();
@@ -148,14 +151,14 @@ fn backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline() {
     let mut hash_prefixes = Vec::new();
     for (label, root, source_relative, archive, expected_name) in [
         (
-            "ZOOM_RULETEST",
+            "ZOOM_TEST",
             &zoom_root,
             Path::new("RECORD/FOLDER01/ZOOM0001.WAV"),
             "Zoom H1n",
             "zoom-ZOOM0001-field.m4a",
         ),
         (
-            "SONY_RULETEST",
+            "SONY_TEST",
             &sony_root,
             Path::new("REC_FILE/FOLDER01/SONY0001.WAV"),
             "Sony PCM",
@@ -172,9 +175,20 @@ fn backs_up_two_isolated_fat32_rule_volumes_through_the_production_pipeline() {
         assert_eq!(audio.sample_rate_hz, 48_000);
         assert_eq!(audio.channel_count, 1);
         assert!(recording.artifact.relative_path.starts_with(archive));
+        let source_date =
+            time::OffsetDateTime::from_unix_timestamp_nanos(recording.source_mtime_ns)
+                .unwrap()
+                .to_offset(backup_mic_lib::clock::local_offset())
+                .date();
+        let expected_name = format!(
+            "{:02}{:02}{:02}-{expected_name}",
+            source_date.year().rem_euclid(100),
+            source_date.month() as u8,
+            source_date.day()
+        );
         assert_eq!(
             recording.artifact.relative_path.file_name().unwrap(),
-            expected_name
+            expected_name.as_str()
         );
 
         let source_digest = hash_file(&root.join(source_relative)).unwrap();

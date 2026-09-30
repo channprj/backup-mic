@@ -198,6 +198,22 @@ fn foundation_moves_only_the_requested_generic_session_on_the_isolated_fat32_fix
     let source_digest = hash_file(&source_path).unwrap();
     let destination_digest = hash_file(&destination_path).unwrap();
     let source_mtime_ns = modified_nanos(&fs::metadata(&source_path).unwrap()).unwrap();
+    // Apple audio tools can create an AppleDouble sidecar on FAT32. This fixture
+    // deliberately models one recording; unexpected files correctly block the
+    // complete-session preflight. Remove only this fixture's generated metadata.
+    let sidecar = zoom_session.join("._ZOOM0001.wav");
+    if sidecar.exists() {
+        fs::remove_file(sidecar).unwrap();
+    }
+    let observed = backup_core::rule_scanner::scan_rule_once(
+        &zoom_root,
+        &backup_core::rule::compile_rule(rule.clone()).unwrap(),
+        time::UtcOffset::UTC,
+    )
+    .unwrap();
+    assert_eq!(observed.files.len(), 1, "{observed:?}");
+    assert_eq!(observed.files[0].relative_path, source_relative);
+    assert_eq!(observed.files[0].modified_nanos, source_mtime_ns);
     let recording_id = "fat32-zoom-recording".to_owned();
     ledger
         .commit_verified_recording(&VerifiedRecording {
