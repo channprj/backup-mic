@@ -5,7 +5,17 @@ set -euo pipefail
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$PROJECT_ROOT"
 
-if rg -n \
+bash scripts/security-check.sh
+python3 scripts/test-security-check.py
+
+# A missing path or scanner failure is not a successful boundary check.
+no_matches() {
+  local status=0
+  rg "$@" || status=$?
+  [[ "$status" -eq 1 ]]
+}
+
+if ! no_matches -n \
   '@tauri-apps/plugin|/Volumes/|/Users/|mount_root|volume_uuid|source_path' \
   src \
   --glob '!preview.tsx' \
@@ -14,7 +24,7 @@ if rg -n \
   exit 1
 fi
 
-if rg -n \
+if ! no_matches -n \
   'remove_file|remove_dir|\.Trashes|Command::|std::process|/bin/(ba)?sh|osascript|AppleScript|Finder' \
   src-tauri/crates/backup-core/src/deletion \
   src-tauri/src/platform/macos/trash.rs; then
@@ -22,21 +32,21 @@ if rg -n \
   exit 1
 fi
 
-if rg -n \
+if ! no_matches -n \
   '/bin/(ba)?sh|osascript|AppleScript|Finder|\.arg\("-c"\)|Command::new\([^"/]' \
   src-tauri/src/platform/macos/audio.rs; then
   echo "Apple audio tools must be invoked directly without a shell." >&2
   exit 1
 fi
 
-if rg -n \
+if ! no_matches -n \
   'set_setting[[:space:]]*\([[:space:]]*key|setting_key|source_uuid|source_hash|trash_destination|process_command' \
   src-tauri/src/commands.rs; then
   echo "Arbitrary settings, path, or process IPC boundary failed." >&2
   exit 1
 fi
 
-if rg -n 'TO''DO|TB''D|todo''!|unimplemented''!' src src-tauri scripts README.md --glob '!target/**'; then
+if ! no_matches -n 'TO''DO|TB''D|todo''!|unimplemented''!' src src-tauri scripts README.md --glob '!target/**'; then
   echo "Unresolved implementation marker found." >&2
   exit 1
 fi

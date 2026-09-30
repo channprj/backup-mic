@@ -10,6 +10,7 @@
     "typecheck": "tsc -b --pretty false",
     "test": "vitest run",
     "test:watch": "vitest",
+    "security:check": "bash scripts/security-check.sh",
     "tauri": "tauri"
   },
   "dependencies": {
