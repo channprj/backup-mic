@@ -1,5 +1,5 @@
 use std::{
-    fs::{self, OpenOptions},
+    fs::File,
     io::Write as _,
     path::{Path, PathBuf},
     sync::Mutex,
@@ -8,6 +8,8 @@ use std::{
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 use crate::{error::CoreError, state::Transmitter};
+
+mod storage;
 
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -50,18 +52,21 @@ pub trait AuditSink: Send + Sync {
 
 #[derive(Debug, Clone)]
 pub struct FileAuditLog {
+    root: PathBuf,
     log_root: PathBuf,
 }
 
 impl FileAuditLog {
     pub fn new(destination_root: impl AsRef<Path>) -> Self {
         Self {
+            root: destination_root.as_ref().to_path_buf(),
             log_root: destination_root.as_ref().join("logs"),
         }
     }
 
     pub fn new_log_root(log_root: impl AsRef<Path>) -> Self {
         Self {
+            root: log_root.as_ref().to_path_buf(),
             log_root: log_root.as_ref().to_path_buf(),
         }
     }
@@ -78,6 +83,24 @@ impl FileAuditLog {
                 year % 100
             ))
     }
+
+    /// Creates the calendar directory without following links below the configured root.
+    /// Used by both the writer and the command that opens the log folder.
+    pub fn ensure_directory(&self, occurred_at: OffsetDateTime) -> Result<PathBuf, CoreError> {
+        let path = self.path_for(occurred_at);
+        self.open_parent(&path)?;
+        path.parent()
+            .map(PathBuf::from)
+            .ok_or(CoreError::InvalidAuditEvent)
+    }
+
+    fn open_parent(&self, path: &Path) -> Result<File, CoreError> {
+        let relative = path
+            .parent()
+            .and_then(|parent| parent.strip_prefix(&self.root).ok())
+            .ok_or(CoreError::InvalidAuditEvent)?;
+        storage::directory(&self.root, relative).map_err(CoreError::AuditLogUnavailable)
+    }
 }
 
 impl AuditSink for FileAuditLog {
@@ -89,16 +112,13 @@ impl AuditSink for FileAuditLog {
         validate_event(event)?;
         let line = encode_event(event)?;
         let path = self.path_for(event.occurred_at);
-        let parent = path.parent().ok_or(CoreError::InvalidAuditEvent)?;
         let _guard = WRITE_LOCK.lock().map_err(|_| {
             CoreError::AuditLogUnavailable(std::io::Error::other("audit writer lock poisoned"))
         })?;
-        fs::create_dir_all(parent).map_err(CoreError::AuditLogUnavailable)?;
-        let mut file = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&path)
-            .map_err(CoreError::AuditLogUnavailable)?;
+        let parent = self.open_parent(&path)?;
+        let name = path.file_name().ok_or(CoreError::InvalidAuditEvent)?;
+        let mut file =
+            storage::append_file(&parent, name).map_err(CoreError::AuditLogUnavailable)?;
         file.write_all(line.as_bytes())
             .map_err(CoreError::AuditLogUnavailable)?;
         if durability == AuditDurability::SyncData {
@@ -222,6 +242,7 @@ fn transmitter_name(transmitter: Transmitter) -> &'static str {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use tempfile::tempdir;
     use time::macros::datetime;
 

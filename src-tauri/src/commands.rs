@@ -417,10 +417,6 @@ pub async fn complete_initial_setup(
 pub fn open_logs(app: AppHandle, state: State<'_, AppState>) -> Result<(), PublicError> {
     let report = Reported::new(state.inner(), "open_logs");
     let logs = report.at("log_resolution", state.log_directory(clock::local_now()))?;
-    report.at(
-        "log_creation",
-        std::fs::create_dir_all(&logs).map_err(CoreError::AuditLogUnavailable),
-    )?;
     app.opener()
         .open_path(logs.to_string_lossy().into_owned(), None::<&str>)
         .map_err(|_| report.adapter("opener_adapter", "open_logs_failed", true))

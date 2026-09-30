@@ -188,3 +188,159 @@ fn core_errors_expose_stable_codes_without_private_source_text() {
     assert_eq!(error.diagnostic_io_kind_code(), Some("permission_denied"));
     assert!(!error.diagnostic_code().contains("/Volumes/"));
 }
+
+#[cfg(unix)]
+fn append_test_event(log: &FileAuditLog) -> Result<std::path::PathBuf, CoreError> {
+    log.append(
+        &AuditEvent {
+            occurred_at: timestamp(),
+            level: AuditLevel::Info,
+            code: "scan.complete",
+            transmitter: None,
+            fields: &[],
+        },
+        AuditDurability::SyncData,
+    )
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_log_refuses_linked_leaf_without_modifying_its_target() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = tempdir().unwrap();
+    let destination = fixture.path().join("destination");
+    let outside = fixture.path().join("outside.txt");
+    fs::write(&outside, b"keep this file unchanged").unwrap();
+    let log = FileAuditLog::new(&destination);
+    let path = log.path_for(timestamp());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    symlink(&outside, &path).unwrap();
+
+    assert!(matches!(
+        append_test_event(&log),
+        Err(CoreError::AuditLogUnavailable(_))
+    ));
+    assert_eq!(fs::read(&outside).unwrap(), b"keep this file unchanged");
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_log_refuses_links_at_every_directory_boundary() {
+    use std::os::unix::fs::symlink;
+
+    for relative in [
+        "destination",
+        "destination/logs",
+        "destination/logs/2026",
+        "destination/logs/2026/08",
+    ] {
+        let fixture = tempdir().unwrap();
+        let outside = fixture.path().join("outside");
+        fs::create_dir(&outside).unwrap();
+        let link = fixture.path().join(relative);
+        fs::create_dir_all(link.parent().unwrap()).unwrap();
+        symlink(&outside, &link).unwrap();
+        let log = FileAuditLog::new(fixture.path().join("destination"));
+
+        assert!(
+            matches!(
+                append_test_event(&log),
+                Err(CoreError::AuditLogUnavailable(_))
+            ),
+            "accepted {relative}"
+        );
+        assert!(log.ensure_directory(timestamp()).is_err());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fallback_log_refuses_a_linked_root() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = tempdir().unwrap();
+    let outside = fixture.path().join("outside");
+    fs::create_dir(&outside).unwrap();
+    let fallback = fixture.path().join("fallback");
+    symlink(&outside, &fallback).unwrap();
+
+    assert!(matches!(
+        append_test_event(&FileAuditLog::new_log_root(fallback)),
+        Err(CoreError::AuditLogUnavailable(_))
+    ));
+    assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_log_refuses_hard_linked_files() {
+    let fixture = tempdir().unwrap();
+    let outside = fixture.path().join("outside.txt");
+    fs::write(&outside, b"untouched").unwrap();
+    let log = FileAuditLog::new(fixture.path().join("destination"));
+    let path = log.path_for(timestamp());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    fs::hard_link(&outside, &path).unwrap();
+
+    assert!(matches!(
+        append_test_event(&log),
+        Err(CoreError::AuditLogUnavailable(_))
+    ));
+    assert_eq!(fs::read(&outside).unwrap(), b"untouched");
+}
+
+#[cfg(unix)]
+#[test]
+fn newly_created_audit_logs_are_owner_only() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let fixture = tempdir().unwrap();
+    let log = FileAuditLog::new(fixture.path());
+    let path = append_test_event(&log).unwrap();
+    assert_eq!(
+        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn audit_log_refuses_dangling_links_and_special_files() {
+    use std::os::unix::fs::symlink;
+    use std::os::unix::net::UnixListener;
+
+    let fixture = tempdir().unwrap();
+    let log = FileAuditLog::new(fixture.path().join("destination"));
+    let path = log.path_for(timestamp());
+    fs::create_dir_all(path.parent().unwrap()).unwrap();
+    let outside = fixture.path().join("must-not-be-created");
+    symlink(&outside, &path).unwrap();
+    assert!(append_test_event(&log).is_err());
+    assert!(!outside.exists());
+    fs::remove_file(&path).unwrap();
+
+    let _socket = UnixListener::bind(&path).unwrap();
+    assert!(append_test_event(&log).is_err());
+    fs::remove_file(&path).unwrap();
+    fs::create_dir(&path).unwrap();
+    assert!(append_test_event(&log).is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn fallback_log_can_create_missing_parent_directories() {
+    let fixture = tempdir().unwrap();
+    let log = FileAuditLog::new_log_root(fixture.path().join("missing/parents/fallback"));
+    let path = append_test_event(&log).unwrap();
+    assert!(fs::read_to_string(path).unwrap().contains("scan.complete"));
+}

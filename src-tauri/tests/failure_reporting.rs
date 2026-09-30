@@ -140,3 +140,26 @@ fn app_state_reports_adapter_failures_with_the_public_support_code() {
     assert!(output.contains("operation=\"set_autostart\""));
     assert!(output.contains("error_code=\"autostart_failed\""));
 }
+
+#[cfg(unix)]
+#[test]
+fn linked_primary_logs_fall_back_without_touching_the_link_target() {
+    use std::os::unix::fs::symlink;
+
+    let destination = tempdir().unwrap();
+    let outside = tempdir().unwrap();
+    let fallback = tempdir().unwrap();
+    symlink(outside.path(), destination.path().join("logs")).unwrap();
+    let reporter = FailureReporter::new(fallback.path());
+
+    assert_eq!(
+        reporter.report(
+            Some(destination.path()),
+            datetime!(2026-08-10 09:30:15 +09:00),
+            &setting_failure(),
+        ),
+        FailureWriteOutcome::Fallback
+    );
+    assert_eq!(fs::read_dir(outside.path()).unwrap().count(), 0);
+    assert!(only_daily_log(fallback.path().to_path_buf()).is_file());
+}

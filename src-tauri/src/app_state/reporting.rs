@@ -110,11 +110,7 @@ impl AppState {
         if !runtime.destination_configured {
             return Err(CoreError::InvalidRequest);
         }
-        FileAuditLog::new(&runtime.destination)
-            .path_for(occurred_at)
-            .parent()
-            .map(PathBuf::from)
-            .ok_or(CoreError::InvalidRequest)
+        FileAuditLog::new(&runtime.destination).ensure_directory(occurred_at)
     }
 }
 
