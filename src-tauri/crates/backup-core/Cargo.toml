@@ -1,6 +1,7 @@
 [package]
 name = "backup-core"
 version = "0.260815.0"
+license = "MIT"
 edition = "2024"
 rust-version = "1.97"
 
