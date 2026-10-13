@@ -5,6 +5,7 @@ use std::path::PathBuf;
 use backup_core::audit_log::{AuditDurability, AuditEvent, AuditSink, FileAuditLog};
 use backup_core::error::{CoreError, PublicError};
 use backup_core::events::{ActivityEntry, ActivitySeverity};
+use backup_core::ledger::MAX_ACTIVITY_ENTRIES;
 use backup_core::source::SourceId;
 use backup_core::state::Transmitter;
 use tauri::AppHandle;
@@ -93,7 +94,7 @@ impl AppState {
         let recent_activity = {
             let mut ledger = self.ledger.lock();
             ledger.append_activity(&entry)?;
-            ledger.recent_activity(8)?
+            ledger.recent_activity(MAX_ACTIVITY_ENTRIES)?
         };
         let mut runtime = self.runtime.lock();
         runtime.snapshot.recent_activity = runtime

@@ -21,7 +21,7 @@ use std::time::Instant;
 use backup_core::backup::CancellationToken;
 use backup_core::deletion::{CompleteRuleDeletionSnapshot, DeletionProposalStore};
 use backup_core::error::CoreError;
-use backup_core::ledger::Ledger;
+use backup_core::ledger::{Ledger, MAX_ACTIVITY_ENTRIES};
 use backup_core::preferences::BackupPreferences;
 use backup_core::rule::BackupRule;
 use backup_core::source::{MountedSourceAuthority, SourceId};
@@ -190,7 +190,7 @@ impl AppState {
     }
 
     pub fn snapshot_with_activity(&self) -> Result<AppSnapshotDto, CoreError> {
-        let recent_activity = self.ledger.lock().recent_activity(8)?;
+        let recent_activity = self.ledger.lock().recent_activity(MAX_ACTIVITY_ENTRIES)?;
         Ok(self.snapshot().with_activity(recent_activity))
     }
 

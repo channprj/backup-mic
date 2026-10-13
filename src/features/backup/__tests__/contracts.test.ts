@@ -198,7 +198,7 @@ describe("app snapshot contract", () => {
     ).toBe(false);
   });
 
-  test("rejects more activity entries than the popover contract allows", () => {
+  test.each([0, 8, 9, 50, 51])("accepts up to fifty activity entries (count: %i)", (count) => {
     const activity = {
       occurred_at: "2026-08-09T00:00:00Z",
       code: "device_detected",
@@ -210,9 +210,9 @@ describe("app snapshot contract", () => {
     } as const;
     const result = appSnapshotSchema.safeParse({
       ...baseSnapshot,
-      recent_activity: Array.from({ length: 9 }, () => activity),
+      recent_activity: Array.from({ length: count }, () => activity),
     });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(count <= 50);
   });
 
   test("rejects unknown fields that could smuggle authority", () => {

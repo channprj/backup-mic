@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import completeFixture from "../../../../contracts/fixtures/backup-complete.json";
 import copyingFixture from "../../../../contracts/fixtures/backup-copying.json";
@@ -86,6 +86,30 @@ function renderPopover(snapshot = complete) {
 }
 
 describe("BackupPopover", () => {
+  it("renders all fifty recent activities in the snapshot's newest-first order", () => {
+    const snapshot = appSnapshotSchema.parse({
+      ...complete,
+      recent_activity: Array.from({ length: 50 }, (_, index) => ({
+        occurred_at: `2026-08-09T00:00:${String(54 - index).padStart(2, "0")}Z`,
+        code: "device_detected",
+        source_id: null,
+        source_label: `Recorder ${54 - index}`,
+        count_value: null,
+        byte_value: null,
+        severity: "info",
+      })),
+    });
+    renderPopover(snapshot);
+
+    const feed = within(screen.getByRole("region", { name: "최근 활동" }));
+    expect(feed.getByText("50")).toBeInTheDocument();
+    const entries = feed.getAllByRole("listitem");
+    expect(entries).toHaveLength(50);
+    entries.forEach((entry, index) => {
+      expect(entry).toHaveTextContent(`Recorder ${54 - index}`);
+    });
+  });
+
   it("blocks every backup surface except Quit until setup review is complete", () => {
     renderPopover({ ...complete, setup_state: "needs_destination" });
 

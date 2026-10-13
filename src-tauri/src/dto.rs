@@ -3,6 +3,7 @@ use std::path::Path;
 use backup_core::{
     error::PublicError,
     events::ActivityEntry,
+    ledger::MAX_ACTIVITY_ENTRIES,
     rule::{BackupRule, DateFolderLayout},
     state::{BackupPhase, CurrentStage, DeletionPhase, Progress},
 };
@@ -210,11 +211,11 @@ pub struct AppSnapshotDto {
 }
 
 impl AppSnapshotDto {
+    /// Enrich the ledger's newest-first entries without changing their order.
     pub fn with_activity(mut self, recent_activity: Vec<ActivityEntry>) -> Self {
         self.recent_activity = recent_activity
             .into_iter()
-            .rev()
-            .take(8)
+            .take(MAX_ACTIVITY_ENTRIES)
             .map(|mut activity| {
                 if let Some(source_id) = &activity.source_id
                     && let Some(source) = self
@@ -374,17 +375,20 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_exposes_only_the_newest_eight_activity_entries() {
-        let entries = (0..10).map(activity).collect();
+    fn snapshot_preserves_newest_first_order_and_exposes_at_most_fifty_entries() {
+        let entries = (0..55).rev().map(activity).collect();
         let snapshot = empty_snapshot().with_activity(entries);
-        assert_eq!(snapshot.recent_activity.len(), 8);
+        assert_eq!(snapshot.recent_activity.len(), 50);
         assert_eq!(
-            snapshot.recent_activity[0].occurred_at,
-            "2026-08-09T00:00:09Z"
-        );
-        assert_eq!(
-            snapshot.recent_activity[7].occurred_at,
-            "2026-08-09T00:00:02Z"
+            snapshot
+                .recent_activity
+                .iter()
+                .map(|entry| entry.occurred_at.clone())
+                .collect::<Vec<_>>(),
+            (5..55)
+                .rev()
+                .map(|index| activity(index).occurred_at)
+                .collect::<Vec<_>>()
         );
     }
 

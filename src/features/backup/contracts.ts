@@ -166,7 +166,7 @@ export const appSnapshotSchema = z
       "needs_settings_review",
       "ready",
     ]),
-    recent_activity: z.array(activitySchema).max(8),
+    recent_activity: z.array(activitySchema).max(50),
     error: publicErrorSchema.nullable(),
   })
   .strict();
