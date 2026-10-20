@@ -36,6 +36,22 @@ pub struct AudioDescription {
     pub duration_micros: u64,
 }
 
+pub const HEADER_ONLY_WAV_CODE: &str = "header_only_wav";
+
+pub fn is_header_only_wave(audio: &AudioDescription) -> bool {
+    audio.container == "WAVE"
+        && audio.codec == "lpcm"
+        && audio.audio_bytes == 0
+        && audio.packets == 0
+        && audio.valid_frames == 0
+        && audio.total_frames == 0
+        && audio.priming_frames == 0
+        && audio.remainder_frames == 0
+        && audio.duration_micros == 0
+        && audio.sample_rate_hz > 0
+        && audio.channels > 0
+}
+
 pub fn validate_m4a_artifact(
     source: &AudioDescription,
     converted: &AudioDescription,

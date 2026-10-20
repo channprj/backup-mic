@@ -4,11 +4,12 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+use crate::artifact::HEADER_ONLY_WAV_CODE;
 use crate::artifact::{ConversionStatus, OutputFormat};
 use crate::batch::{BatchPhase, M4A_PROFILE_ID};
 use crate::error::CoreError;
 use crate::filesystem::{is_safe_additional_relative_path, is_safe_relative_path};
-use crate::ledger::Ledger;
+use crate::ledger::{Ledger, VerifiedRecording};
 use crate::rule::{BackupRule, compile_rule};
 use crate::rule_scanner::{SelectedFileKind, scan_rule_once};
 
@@ -188,6 +189,27 @@ pub(super) fn validate_rule_snapshot_shape(
     Ok(())
 }
 
+fn artifact_authorizes_source_retirement(recording: &VerifiedRecording) -> bool {
+    match recording.artifact.format {
+        OutputFormat::M4a => {
+            recording.conversion_status == ConversionStatus::Complete
+                && recording.conversion_error_code.is_none()
+                && recording
+                    .artifact
+                    .audio
+                    .as_ref()
+                    .is_some_and(|audio| audio.codec == "aac")
+        }
+        OutputFormat::Wav => {
+            recording.conversion_status == ConversionStatus::NotRequired
+                && recording.conversion_error_code.as_deref() == Some(HEADER_ONLY_WAV_CODE)
+                && recording.artifact.audio.is_none()
+                && recording.source_sha256 == recording.artifact.sha256
+                && recording.source_size == recording.artifact.byte_count
+        }
+    }
+}
+
 pub(super) fn verify_rule_ledger_authority(
     ledger: &Ledger,
     proposal: &DeletionProposal,
@@ -215,13 +237,7 @@ pub(super) fn verify_rule_ledger_authority(
             || recording.artifact.relative_path != candidate.destination_relative_path
             || recording.artifact.byte_count != candidate.destination_size
             || recording.artifact.sha256 != candidate.destination_sha256
-            || recording.artifact.format != OutputFormat::M4a
-            || recording.conversion_status != ConversionStatus::Complete
-            || recording
-                .artifact
-                .audio
-                .as_ref()
-                .is_none_or(|audio| audio.codec != "aac")
+            || !artifact_authorizes_source_retirement(&recording)
         {
             return Err(CoreError::DeletionPreflightRefused);
         }
@@ -433,4 +449,77 @@ pub(super) fn verify_rule_session_inventory(
         return Err(CoreError::SourceChanged);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::artifact::{
+        ConversionStatus, HEADER_ONLY_WAV_CODE, OutputFormat, RetirementStatus, VerifiedArtifact,
+        VerifiedAudioProperties,
+    };
+    use crate::ledger::VerifiedRecording;
+    use crate::source::SourceId;
+
+    use super::artifact_authorizes_source_retirement;
+
+    fn recording(format: OutputFormat) -> VerifiedRecording {
+        let hash = "a".repeat(64);
+        VerifiedRecording {
+            id: "recording".to_owned(),
+            source_id: SourceId::new(),
+            source_relative_path: "TX_MIC001_20261015_154457/TX01_MIC035.wav".into(),
+            source_size: 4,
+            source_mtime_ns: 1,
+            source_sha256: hash.clone(),
+            artifact: VerifiedArtifact {
+                relative_path: "dji/2026/10/20/empty.wav".into(),
+                format,
+                byte_count: 4,
+                sha256: hash,
+                audio: None,
+            },
+            conversion_status: ConversionStatus::NotRequired,
+            conversion_error_code: None,
+            retirement_status: RetirementStatus::Present,
+            retired_session_relative_path: None,
+            verified_at: "2026-10-20T16:13:42Z".to_owned(),
+            backup_run_id: "run".to_owned(),
+        }
+    }
+
+    fn aac() -> VerifiedAudioProperties {
+        VerifiedAudioProperties {
+            codec: "aac".to_owned(),
+            sample_rate_hz: 48_000,
+            channel_count: 1,
+            valid_frames: 48_000,
+            duration_micros: 1_000_000,
+        }
+    }
+
+    #[test]
+    fn only_a_proven_header_only_wav_or_a_finished_m4a_authorizes_retirement() {
+        let mut m4a = recording(OutputFormat::M4a);
+        m4a.conversion_status = ConversionStatus::Complete;
+        m4a.artifact.audio = Some(aac());
+        assert!(artifact_authorizes_source_retirement(&m4a));
+
+        m4a.conversion_error_code = Some(HEADER_ONLY_WAV_CODE.to_owned());
+        assert!(!artifact_authorizes_source_retirement(&m4a));
+
+        let wav = recording(OutputFormat::Wav);
+        assert!(!artifact_authorizes_source_retirement(&wav));
+
+        let mut marked = wav.clone();
+        marked.conversion_error_code = Some(HEADER_ONLY_WAV_CODE.to_owned());
+        assert!(artifact_authorizes_source_retirement(&marked));
+
+        marked.source_sha256 = "b".repeat(64);
+        assert!(!artifact_authorizes_source_retirement(&marked));
+
+        let mut with_audio = wav;
+        with_audio.conversion_error_code = Some(HEADER_ONLY_WAV_CODE.to_owned());
+        with_audio.artifact.audio = Some(aac());
+        assert!(!artifact_authorizes_source_retirement(&with_audio));
+    }
 }

@@ -246,6 +246,7 @@ impl Ledger {
                      AND NOT EXISTS (
                        SELECT 1 FROM recordings
                        WHERE backup_run_id = ?2 AND artifact_format = 'wav'
+                         AND IFNULL(conversion_error_code, '') != 'header_only_wav'
                      )"#,
                 params![crate::batch::M4A_PROFILE_ID, backup_run_id],
             )

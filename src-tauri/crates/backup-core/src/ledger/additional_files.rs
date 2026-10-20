@@ -291,6 +291,7 @@ impl Ledger {
                           retired_session_relative_path
                    FROM recordings
                    WHERE source_id = ?1 AND artifact_format = 'wav'
+                     AND IFNULL(conversion_error_code, '') != 'header_only_wav'
                    ORDER BY destination_relative_path, id"#,
             )
             .map_err(CoreError::Ledger)?;

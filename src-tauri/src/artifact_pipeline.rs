@@ -7,7 +7,10 @@ use std::{
 };
 
 use backup_core::{
-    artifact::{ConversionStatus, OutputFormat, VerifiedArtifact, validate_m4a_artifact},
+    artifact::{
+        ConversionStatus, OutputFormat, VerifiedArtifact, is_header_only_wave,
+        validate_m4a_artifact,
+    },
     backup::CancellationToken,
     deletion::TrashAdapter,
     error::CoreError,
@@ -210,6 +213,34 @@ pub fn publish_m4a(
         recording: prepared.recording,
         superseded_wav: prepared.superseded_wav_relative_path,
     })
+}
+
+pub fn prove_header_only_wav(
+    destination_root: &Path,
+    wav: &VerifiedRecording,
+    tools: &dyn AudioTools,
+) -> Result<bool, CoreError> {
+    if wav.artifact.format != OutputFormat::Wav
+        || wav.conversion_status != ConversionStatus::NotRequired
+        || wav.artifact.audio.is_some()
+        || wav.source_size != wav.artifact.byte_count
+        || wav.source_sha256 != wav.artifact.sha256
+        || !is_safe_relative_path(&wav.artifact.relative_path)
+    {
+        return Ok(false);
+    }
+    let canonical_root =
+        fs::canonicalize(destination_root).map_err(|_| CoreError::DestinationUnavailable)?;
+    let wav_path = resolve_regular(&canonical_root, &wav.artifact.relative_path)?;
+    let source_audio = tools.inspect(&wav_path)?;
+    if !is_header_only_wave(&source_audio) {
+        return Ok(false);
+    }
+    let digest = hash_file(&wav_path)?;
+    if digest.size != wav.artifact.byte_count || digest.sha256 != wav.artifact.sha256 {
+        return Err(CoreError::HashMismatch);
+    }
+    Ok(true)
 }
 
 pub fn prepare_m4a(
@@ -603,5 +634,104 @@ fn cleanup_owned_part(path: &Path) {
         .is_some_and(|value| value.starts_with('.') && value.contains(".m4a.part-"))
     {
         let _ = fs::remove_file(path);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use backup_core::artifact::{AudioDescription, RetirementStatus};
+    use backup_core::source::SourceId;
+
+    use super::{
+        AudioTools, ConversionStatus, CoreError, OutputFormat, VerifiedArtifact, VerifiedRecording,
+        hash_file, prove_header_only_wav,
+    };
+
+    struct FixedAudio(AudioDescription);
+
+    impl AudioTools for FixedAudio {
+        fn inspect(&self, _path: &std::path::Path) -> Result<AudioDescription, CoreError> {
+            Ok(self.0.clone())
+        }
+
+        fn convert_aac_lc_128k(
+            &self,
+            _input: &std::path::Path,
+            _output: &std::path::Path,
+        ) -> Result<(), CoreError> {
+            Err(CoreError::InvalidRequest)
+        }
+    }
+
+    fn header_only() -> AudioDescription {
+        AudioDescription {
+            container: "WAVE".to_owned(),
+            codec: "lpcm".to_owned(),
+            sample_rate_hz: 48_000,
+            channels: 1,
+            audio_bytes: 0,
+            packets: 0,
+            frames_per_packet: 1,
+            valid_frames: 0,
+            total_frames: 0,
+            priming_frames: 0,
+            remainder_frames: 0,
+            duration_micros: 0,
+        }
+    }
+
+    fn wav_on_disk(root: &std::path::Path) -> VerifiedRecording {
+        let relative = std::path::Path::new("dji/2026/10/20/empty.wav");
+        let path = root.join(relative);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, b"header").unwrap();
+        let digest = hash_file(&path).unwrap();
+        VerifiedRecording {
+            id: "empty".to_owned(),
+            source_id: SourceId::new(),
+            source_relative_path: "TX_MIC001_20261015_154457/TX01_MIC035.wav".into(),
+            source_size: digest.size,
+            source_mtime_ns: 1,
+            source_sha256: digest.sha256.clone(),
+            artifact: VerifiedArtifact {
+                relative_path: relative.to_path_buf(),
+                format: OutputFormat::Wav,
+                byte_count: digest.size,
+                sha256: digest.sha256,
+                audio: None,
+            },
+            conversion_status: ConversionStatus::NotRequired,
+            conversion_error_code: None,
+            retirement_status: RetirementStatus::Present,
+            retired_session_relative_path: None,
+            verified_at: "2026-10-20T16:13:42Z".to_owned(),
+            backup_run_id: "run".to_owned(),
+        }
+    }
+
+    #[test]
+    fn a_header_only_wav_is_proven_only_when_its_hash_matches() {
+        let root = tempfile::tempdir().unwrap();
+        let recording = wav_on_disk(root.path());
+        assert!(
+            prove_header_only_wav(root.path(), &recording, &FixedAudio(header_only())).unwrap()
+        );
+
+        let mut mismatched = recording.clone();
+        let wrong = "b".repeat(64);
+        mismatched.artifact.sha256.clone_from(&wrong);
+        mismatched.source_sha256 = wrong;
+        assert!(matches!(
+            prove_header_only_wav(root.path(), &mismatched, &FixedAudio(header_only())),
+            Err(CoreError::HashMismatch)
+        ));
+
+        let mut audible = header_only();
+        audible.audio_bytes = 4;
+        audible.packets = 1;
+        audible.valid_frames = 1;
+        audible.total_frames = 1;
+        audible.duration_micros = 1;
+        assert!(!prove_header_only_wav(root.path(), &recording, &FixedAudio(audible)).unwrap());
     }
 }

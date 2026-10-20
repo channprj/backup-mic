@@ -1,7 +1,8 @@
 use backup_core::{
     additional_file::{AdditionalFileClass, VerifiedAdditionalFile},
     artifact::{
-        ConversionStatus, OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties,
+        ConversionStatus, HEADER_ONLY_WAV_CODE, OutputFormat, RetirementStatus, VerifiedArtifact,
+        VerifiedAudioProperties,
     },
     batch::{BatchPhase, FrozenPreferences, M4A_PROFILE_ID},
     error::CoreError,
@@ -252,4 +253,110 @@ fn a_fresh_destination_copy_replaces_stale_m4a_evidence() {
     assert_eq!(replaced.conversion_status, ConversionStatus::NotRequired);
     assert_eq!(replaced.backup_run_id, "run-after-destination-change");
     assert_eq!(ledger.superseded_wav_evidence("recording-1").unwrap(), None);
+}
+
+#[test]
+fn a_header_only_wav_finishes_the_barrier_and_survives_reuse() {
+    let directory = tempdir().unwrap();
+    let mut ledger = Ledger::open(directory.path().join("ledger.sqlite3")).unwrap();
+    let source_id = test_source(&mut ledger);
+    let preferences = FrozenPreferences {
+        automatic_backup: true,
+        m4a_conversion: true,
+        automatic_trash: true,
+    };
+    ledger
+        .begin_batch_run(
+            "run-1",
+            &source_id,
+            "2026-08-10T00:00:00Z",
+            8,
+            preferences,
+        )
+        .unwrap();
+    ledger
+        .advance_batch_phase("run-1", BatchPhase::Copying)
+        .unwrap();
+    let empty = wav_recording("empty", &source_id, "empty.wav", 'a');
+    let audible = wav_recording("audible", &source_id, "audible.wav", 'b');
+    ledger.commit_verified_recording(&empty).unwrap();
+    ledger.commit_verified_recording(&audible).unwrap();
+    ledger
+        .advance_batch_phase("run-1", BatchPhase::CopiesVerified)
+        .unwrap();
+    assert!(matches!(
+        ledger.commit_empty_m4a_barrier("run-1"),
+        Err(CoreError::InvalidRequest)
+    ));
+
+    ledger.mark_header_only_wav("empty").unwrap();
+    ledger.mark_header_only_wav("empty").unwrap();
+    assert!(matches!(
+        ledger.mark_header_only_wav("missing"),
+        Err(CoreError::InvalidRequest)
+    ));
+    let remaining = ledger
+        .historical_wav_recordings_for_source(&source_id)
+        .unwrap();
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].id, "audible");
+    assert!(matches!(
+        ledger.commit_empty_m4a_barrier("run-1"),
+        Err(CoreError::InvalidRequest)
+    ));
+    ledger.mark_header_only_wav("audible").unwrap();
+    assert!(
+        ledger
+            .historical_wav_recordings_for_source(&source_id)
+            .unwrap()
+            .is_empty()
+    );
+    ledger.commit_empty_m4a_barrier("run-1").unwrap();
+
+    ledger
+        .begin_batch_run("run-2", &source_id, "2026-08-10T00:02:00Z", 0, preferences)
+        .unwrap();
+    let mut replay = empty.clone();
+    replay.id = "replay".to_owned();
+    replay.backup_run_id = "run-2".to_owned();
+    replay.verified_at = "2026-08-10T00:02:00Z".to_owned();
+    assert_eq!(ledger.commit_verified_recording(&replay).unwrap(), "empty");
+    let mut other_code = replay.clone();
+    other_code.conversion_error_code = Some("other".to_owned());
+    assert!(matches!(
+        ledger.commit_verified_recording(&other_code),
+        Err(CoreError::LedgerCorrupt)
+    ));
+    let stored = ledger.verified_recording("empty").unwrap().unwrap();
+    assert_eq!(
+        stored.conversion_error_code.as_deref(),
+        Some(HEADER_ONLY_WAV_CODE)
+    );
+    assert_eq!(stored.backup_run_id, "run-2");
+    assert_eq!(stored.artifact.format, OutputFormat::Wav);
+    assert!(stored.artifact.audio.is_none());
+    assert!(
+        ledger
+            .historical_wav_recordings_for_source(&source_id)
+            .unwrap()
+            .is_empty()
+    );
+
+    let mut forged = wav_recording("forged", &source_id, "forged.wav", 'c');
+    forged.conversion_error_code = Some(HEADER_ONLY_WAV_CODE.to_owned());
+    forged.backup_run_id = "run-2".to_owned();
+    assert!(matches!(
+        ledger.commit_verified_recording(&forged),
+        Err(CoreError::InvalidRequest)
+    ));
+
+    let real = wav_recording("real", &source_id, "real.wav", 'd');
+    ledger.commit_verified_recording(&real).unwrap();
+    ledger
+        .replace_verified_artifact(&m4a_recording("real", &source_id, "real.wav", 'd'))
+        .unwrap();
+    assert!(matches!(
+        ledger.mark_header_only_wav("real"),
+        Err(CoreError::InvalidRequest)
+    ));
 }

@@ -122,7 +122,11 @@ fn parse_afinfo(xml: &[u8]) -> Result<AudioDescription, CoreError> {
         .into_iter()
         .next()
         .ok_or(CoreError::ArtifactInvalid)?;
-    if !track.duration.is_finite() || track.duration <= 0.0 {
+    let header_only = track.audio_packets == 0 && track.audio_bytes == 0 && track.duration == 0.0;
+    if !track.duration.is_finite()
+        || track.duration < 0.0
+        || (track.duration == 0.0 && !header_only)
+    {
         return Err(CoreError::ArtifactInvalid);
     }
     let frames_per_packet = track.frames_per_packet.unwrap_or(1);
@@ -141,7 +145,10 @@ fn parse_afinfo(xml: &[u8]) -> Result<AudioDescription, CoreError> {
             )
         });
     let duration_micros = (track.duration * 1_000_000.0).round();
-    if duration_micros <= 0.0 || duration_micros > u64::MAX as f64 {
+    if duration_micros > u64::MAX as f64
+        || duration_micros < 0.0
+        || (duration_micros == 0.0 && !header_only)
+    {
         return Err(CoreError::ArtifactInvalid);
     }
     Ok(AudioDescription {
@@ -163,4 +170,65 @@ fn parse_afinfo(xml: &[u8]) -> Result<AudioDescription, CoreError> {
         remainder_frames,
         duration_micros: duration_micros as u64,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use backup_core::artifact::is_header_only_wave;
+
+    use super::parse_afinfo;
+
+    const HEADER_ONLY_WAVE: &str = r#"<?xml version="1.0" encoding="UTF8"?>
+<audio_info xmlns="http://apple.com/core_audio/audio_info">
+  <audio_file audio_file_id="0">
+    <file_type>'WAVE'</file_type>
+    <tracks>
+      <track track_id="1">
+        <num_channels>1</num_channels>
+        <sample_rate units="Hz">48000</sample_rate>
+        <format_type>lpcm</format_type>
+        <audio_bytes units="bytes">0</audio_bytes>
+        <audio_packets>0</audio_packets>
+        <duration units="sec">0.000000</duration>
+      </track>
+    </tracks>
+  </audio_file>
+</audio_info>
+"#;
+
+    #[test]
+    fn a_header_only_wave_parses_and_a_zero_duration_packet_does_not() {
+        let parsed = parse_afinfo(HEADER_ONLY_WAVE.as_bytes()).expect("header-only wave");
+        assert_eq!(parsed.container, "WAVE");
+        assert_eq!(parsed.codec, "lpcm");
+        assert_eq!(parsed.sample_rate_hz, 48_000);
+        assert_eq!(parsed.channels, 1);
+        assert_eq!(parsed.audio_bytes, 0);
+        assert_eq!(parsed.packets, 0);
+        assert_eq!(parsed.valid_frames, 0);
+        assert_eq!(parsed.total_frames, 0);
+        assert_eq!(parsed.priming_frames, 0);
+        assert_eq!(parsed.remainder_frames, 0);
+        assert_eq!(parsed.duration_micros, 0);
+        assert!(is_header_only_wave(&parsed));
+
+        let mut audible = parsed.clone();
+        audible.audio_bytes = 4;
+        audible.packets = 1;
+        audible.valid_frames = 1;
+        audible.total_frames = 1;
+        audible.duration_micros = 1;
+        assert!(!is_header_only_wave(&audible));
+
+        let with_packets = HEADER_ONLY_WAVE
+            .replace(
+                "<audio_packets>0</audio_packets>",
+                "<audio_packets>1</audio_packets>",
+            )
+            .replace(
+                "<audio_bytes units=\"bytes\">0</audio_bytes>",
+                "<audio_bytes units=\"bytes\">4</audio_bytes>",
+            );
+        assert!(parse_afinfo(with_packets.as_bytes()).is_err());
+    }
 }

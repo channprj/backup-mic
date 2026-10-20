@@ -21,8 +21,8 @@ use uuid::Uuid;
 
 use crate::app_state::AppState;
 use crate::artifact_pipeline::{
-    finalize_prepared_m4a, order_conversion_cohort, prepare_m4a, retire_superseded_wavs_for_source,
-    verify_published_artifact,
+    finalize_prepared_m4a, order_conversion_cohort, prepare_m4a, prove_header_only_wav,
+    retire_superseded_wavs_for_source, verify_published_artifact,
 };
 use crate::clock;
 use crate::platform::macos::audio::AudioTools;
@@ -250,10 +250,25 @@ pub(super) fn process_prepared_source(
                 Err(error) => return finish_source_failure(state, source, run_id, error),
             }
         };
-        if cohort.is_empty() {
+        let mut convertible = Vec::new();
+        for recording in cohort {
+            if let Err(error) = cancellation.check() {
+                return finish_source_failure(state, source, run_id, error);
+            }
+            match prove_header_only_wav(destination, &recording, audio_tools) {
+                Ok(true) => {
+                    if let Err(error) = state.ledger.lock().mark_header_only_wav(&recording.id) {
+                        return finish_source_failure(state, source, run_id, error);
+                    }
+                }
+                Ok(false) => convertible.push(recording),
+                Err(error) => return finish_source_failure(state, source, run_id, error),
+            }
+        }
+        if convertible.is_empty() {
             state.ledger.lock().commit_empty_m4a_barrier(&run_id)?;
         } else {
-            let ids = cohort
+            let ids = convertible
                 .iter()
                 .map(|recording| recording.id.clone())
                 .collect::<Vec<_>>();
@@ -261,7 +276,7 @@ pub(super) fn process_prepared_source(
                 .ledger
                 .lock()
                 .begin_conversion_cohort(&run_id, &ids, M4A_PROFILE_ID)?;
-            for mut recording in cohort {
+            for mut recording in convertible {
                 recording.backup_run_id.clone_from(&run_id);
                 recording.verified_at = clock::now_string();
                 let prepared = match prepare_m4a(

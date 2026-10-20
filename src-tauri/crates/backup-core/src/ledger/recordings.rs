@@ -91,6 +91,12 @@ impl Ledger {
             existing_retired_session,
         )) = existing
         {
+            let keeps_header_only_mark = existing_conversion_error.as_deref()
+                == Some(crate::artifact::HEADER_ONLY_WAV_CODE)
+                && recording.conversion_error_code.is_none()
+                && recording.artifact.format == OutputFormat::Wav
+                && recording.conversion_status == ConversionStatus::NotRequired
+                && audio.is_none();
             if existing_path != destination_relative_path
                 || optional_u64(Some(existing_size))? != Some(recording.artifact.byte_count)
                 || existing_hash != recording.artifact.sha256
@@ -101,7 +107,8 @@ impl Ledger {
                 || optional_u64(existing_valid_frames)? != audio.map(|value| value.valid_frames)
                 || optional_u64(existing_duration)? != audio.map(|value| value.duration_micros)
                 || parse_conversion_status(&existing_conversion)? != recording.conversion_status
-                || existing_conversion_error != recording.conversion_error_code
+                || (existing_conversion_error != recording.conversion_error_code
+                    && !keeps_header_only_mark)
                 || parse_retirement_status(&existing_retirement)? != recording.retirement_status
                 || existing_retired_session.as_deref() != retired_session_relative_path
             {
@@ -117,6 +124,11 @@ impl Ledger {
                 .map_err(CoreError::Ledger)?;
             id
         } else {
+            if recording.conversion_error_code.as_deref()
+                == Some(crate::artifact::HEADER_ONLY_WAV_CODE)
+            {
+                return Err(CoreError::InvalidRequest);
+            }
             transaction
                 .execute(
                     r#"INSERT INTO recordings(
@@ -701,6 +713,32 @@ impl Ledger {
                      AND superseded_wav_size IS NOT NULL
                      AND superseded_wav_sha256 IS NOT NULL"#,
                 params![recording_id, status],
+            )
+            .map_err(CoreError::Ledger)?;
+        if changed != 1 {
+            return Err(CoreError::InvalidRequest);
+        }
+        Ok(())
+    }
+
+    pub fn mark_header_only_wav(&mut self, recording_id: &str) -> Result<(), CoreError> {
+        let changed = self
+            .connection
+            .execute(
+                r#"UPDATE recordings
+                   SET conversion_error_code = 'header_only_wav'
+                   WHERE id = ?1
+                     AND artifact_format = 'wav'
+                     AND conversion_status = 'not_required'
+                     AND (conversion_error_code IS NULL OR conversion_error_code = 'header_only_wav')
+                     AND artifact_codec IS NULL
+                     AND artifact_sample_rate_hz IS NULL
+                     AND artifact_channel_count IS NULL
+                     AND artifact_valid_frames IS NULL
+                     AND artifact_duration_micros IS NULL
+                     AND source_sha256 = destination_sha256
+                     AND source_size = destination_size"#,
+                [recording_id],
             )
             .map_err(CoreError::Ledger)?;
         if changed != 1 {
