@@ -154,7 +154,6 @@
     "best_of": 5,
     "temperature": 0.0,
     "temperature_increment": 0.2,
-    "initial_prompt": "백업 마이크 회의록",
     "threads": 0,
     "use_gpu": true,
     "flash_attention": true,
@@ -167,6 +166,24 @@
     "suppress_non_speech": false,
     "condition_on_previous_text": false
   },
+  "dictionary_enabled": true,
+  "dictionary": [
+    {
+      "id": "dictionary-1",
+      "term": "Backup Mic",
+      "aliases": [
+        "백업 마이크",
+        "backup mike"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "dictionary-2",
+      "term": "DJI",
+      "aliases": [],
+      "enabled": false
+    }
+  ],
   "job": {
     "phase": "transcribing",
     "current_item": "DJI_20261028_101500_TX01.m4a",

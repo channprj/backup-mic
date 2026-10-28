@@ -1160,19 +1160,24 @@ button:not(:disabled):active {
 }
 
 .settings-number:disabled,
-.settings-prompt:disabled {
+.settings-text-input:disabled,
+.settings-textarea:disabled {
   opacity: 0.62;
 }
 
-.settings-prompt-row {
-  flex-wrap: wrap;
+.settings-text-input {
+  width: 100%;
+  min-height: 30px;
+  padding: 5px 8px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 12px;
 }
 
-.settings-prompt-row > label {
-  flex-basis: 100%;
-}
-
-.settings-prompt {
+.settings-textarea {
   width: 100%;
   min-height: 64px;
   padding: 6px 8px;
@@ -1186,17 +1191,145 @@ button:not(:disabled):active {
   resize: vertical;
 }
 
-.settings-prompt[aria-invalid="true"] {
+.settings-textarea[aria-invalid="true"] {
   border-color: var(--destructive);
 }
 
-.settings-row .settings-prompt-count {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
+.dictionary-body,
+.dictionary-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px 12px;
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
-.settings-row .settings-prompt-count.is-over {
+.dictionary-toolbar,
+.dictionary-editor-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dictionary-count {
+  margin-left: auto;
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.dictionary-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.dictionary-chip {
+  display: inline-flex;
+  align-items: center;
+  overflow: hidden;
+  border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--foreground);
+}
+
+.dictionary-chip[data-disabled] {
+  border-color: var(--border);
+  background: transparent;
+  color: var(--muted-foreground);
+  text-decoration: line-through;
+}
+
+.dictionary-chip button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font-size: 12px;
+}
+
+.dictionary-chip-label {
+  padding: 3px 4px 3px 10px;
+}
+
+.dictionary-chip-aliases {
+  color: var(--muted-foreground);
+  font-size: 10px;
+}
+
+.dictionary-chip-delete {
+  padding: 3px 8px 3px 4px;
+}
+
+.dictionary-chip-delete svg {
+  width: 12px;
+  height: 12px;
+}
+
+.dictionary-empty {
+  margin: 0;
+  color: var(--muted-foreground);
+  font-size: 11px;
+}
+
+.dictionary-editor > label,
+.dictionary-editor-switch > label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.dictionary-editor strong {
+  font-size: 12px;
+  font-weight: 590;
+}
+
+.dictionary-editor label span {
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.dictionary-editor code {
+  font-size: 10px;
+}
+
+.dictionary-editor-switch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dictionary-editor-actions {
+  justify-content: flex-end;
+}
+
+.dictionary-textarea {
+  min-height: 160px;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+.dictionary-error {
+  margin: 0;
   color: var(--destructive);
+  font-size: 11px;
+}
+
+.dictionary-example {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 10px;
+  line-height: 1.5;
+  white-space: pre-wrap;
 }
 
 .settings-advanced > summary {

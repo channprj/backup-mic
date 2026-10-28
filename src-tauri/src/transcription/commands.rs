@@ -5,6 +5,7 @@
 
 use backup_core::{
     audit_log::{AuditLevel, AuditValue},
+    dictionary::normalize_dictionary,
     error::{CoreError, PublicError},
     transcription::{ModelChoice, TranscriptionSettings, whisper_model},
 };
@@ -14,16 +15,20 @@ use tauri_plugin_opener::OpenerExt as _;
 
 use super::{
     TranscriptionService,
-    dto::{TranscriptionFolder, TranscriptionOptionsDto, TranscriptionSnapshotDto},
+    dto::{
+        TranscriptionDictionaryDto, TranscriptionFolder, TranscriptionOptionsDto,
+        TranscriptionSnapshotDto,
+    },
     models::validate_custom_model,
     public_error,
 };
 use crate::clock;
 
-pub const REGISTERED_COMMANDS: [&str; 12] = [
+pub const REGISTERED_COMMANDS: [&str; 13] = [
     "get_transcription_snapshot",
     "set_transcription_enabled",
     "save_transcription_options",
+    "save_transcription_dictionary",
     "select_whisper_model",
     "choose_custom_whisper_model",
     "choose_transcription_folder",
@@ -94,6 +99,27 @@ pub async fn save_transcription_options(
             settings.include_existing_recordings = options.include_existing_recordings;
             settings.formats = options.formats;
             settings.whisper = options.whisper;
+            Ok(())
+        },
+    )
+    .await
+}
+
+/// Replaces the dictionary. Entries are normalized the way WakeNote does — trimmed, aliases
+/// deduplicated, ids made unique — and the stored settings refuse anything over the limits.
+#[tauri::command]
+pub async fn save_transcription_dictionary(
+    app: AppHandle,
+    service: State<'_, TranscriptionService>,
+    dictionary: TranscriptionDictionaryDto,
+) -> CommandResult {
+    save(
+        &app,
+        service.inner(),
+        "save_transcription_dictionary",
+        move |settings| {
+            settings.dictionary_enabled = dictionary.enabled;
+            settings.dictionary = normalize_dictionary(dictionary.entries);
             Ok(())
         },
     )

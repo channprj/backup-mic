@@ -1,7 +1,5 @@
 import { z } from "zod";
 
-// Mirrors `MAX_INITIAL_PROMPT_CHARS` in Rust, which counts characters rather than UTF-16 units.
-export const maxInitialPromptChars = 600;
 // whisper.cpp runs at most eight decoders, bounding both beam size and best-of.
 export const maxWhisperDecoders = 8;
 
@@ -33,13 +31,6 @@ export const whisperOptionsSchema = z
     best_of: decoderCountSchema,
     temperature: z.number().min(0).max(1),
     temperature_increment: z.number().min(0).max(1),
-    initial_prompt: z
-      .string()
-      .refine(
-        (prompt) =>
-          [...prompt].length <= maxInitialPromptChars && !prompt.includes("\0"),
-        "Initial prompt is too long",
-      ),
     threads: z.number().int().min(0).max(32),
     use_gpu: z.boolean(),
     flash_attention: z.boolean(),
@@ -51,6 +42,39 @@ export const whisperOptionsSchema = z
     suppress_blank: z.boolean(),
     suppress_non_speech: z.boolean(),
     condition_on_previous_text: z.boolean(),
+  })
+  .strict();
+
+// Mirrors `backup_core::dictionary`: at most 1,000 entries, 32 aliases each, 128 characters a
+// value, counted in characters rather than UTF-16 units.
+export const maxDictionaryEntries = 1000;
+export const maxDictionaryAliases = 32;
+export const maxDictionaryTextChars = 128;
+
+const dictionaryTextSchema = z
+  .string()
+  .min(1)
+  .refine(
+    (value) =>
+      value === value.trim() &&
+      [...value].length <= maxDictionaryTextChars &&
+      !/\p{Cc}/u.test(value),
+    "Dictionary values must be trimmed, short, and free of control characters",
+  );
+
+export const dictionaryEntrySchema = z
+  .object({
+    id: dictionaryTextSchema,
+    term: dictionaryTextSchema,
+    aliases: z.array(dictionaryTextSchema).max(maxDictionaryAliases),
+    enabled: z.boolean(),
+  })
+  .strict();
+
+export const transcriptionDictionarySchema = z
+  .object({
+    enabled: z.boolean(),
+    entries: z.array(dictionaryEntrySchema).max(maxDictionaryEntries),
   })
   .strict();
 
@@ -119,6 +143,8 @@ export const transcriptionSnapshotSchema = z
       .nullable(),
     formats: transcriptFormatsSchema,
     whisper: whisperOptionsSchema,
+    dictionary_enabled: z.boolean(),
+    dictionary: z.array(dictionaryEntrySchema).max(maxDictionaryEntries),
     job: z
       .object({
         phase: transcriptionPhaseSchema,
@@ -138,5 +164,9 @@ export type TranscriptionFolder = z.infer<typeof transcriptionFolderSchema>;
 export type TranscriptFormats = z.infer<typeof transcriptFormatsSchema>;
 export type WhisperOptions = z.infer<typeof whisperOptionsSchema>;
 export type TranscriptionOptions = z.infer<typeof transcriptionOptionsSchema>;
+export type DictionaryEntry = z.infer<typeof dictionaryEntrySchema>;
+export type TranscriptionDictionary = z.infer<
+  typeof transcriptionDictionarySchema
+>;
 export type TranscriptionSnapshot = z.infer<typeof transcriptionSnapshotSchema>;
 export type WhisperModel = TranscriptionSnapshot["models"][number];

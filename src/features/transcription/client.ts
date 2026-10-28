@@ -2,9 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { z } from "zod";
 import {
+  transcriptionDictionarySchema,
   transcriptionFolderSchema,
   transcriptionOptionsSchema,
   transcriptionSnapshotSchema,
+  type TranscriptionDictionary,
   type TranscriptionFolder,
   type TranscriptionOptions,
   type TranscriptionSnapshot,
@@ -34,6 +36,14 @@ export function saveTranscriptionOptions(
 ): Promise<TranscriptionSnapshot> {
   return invokeSnapshot("save_transcription_options", {
     options: transcriptionOptionsSchema.parse(options),
+  });
+}
+
+export function saveTranscriptionDictionary(
+  dictionary: TranscriptionDictionary,
+): Promise<TranscriptionSnapshot> {
+  return invokeSnapshot("save_transcription_dictionary", {
+    dictionary: transcriptionDictionarySchema.parse(dictionary),
   });
 }
 
@@ -105,6 +115,7 @@ export const transcriptionClient = {
   getTranscriptionSnapshot,
   setTranscriptionEnabled,
   saveTranscriptionOptions,
+  saveTranscriptionDictionary,
   selectWhisperModel,
   chooseCustomWhisperModel,
   chooseTranscriptionFolder,

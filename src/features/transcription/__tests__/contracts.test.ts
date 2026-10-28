@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import transcriptionFixture from "../../../../contracts/fixtures/transcription-snapshot.json";
 import {
+  transcriptionDictionarySchema,
   transcriptionOptionsSchema,
   transcriptionSnapshotSchema,
   whisperOptionsSchema,
@@ -41,7 +42,6 @@ describe("transcription contracts", () => {
       { logprob_threshold: 0.5 },
       { threads: 33 },
       { max_segment_length: 1001 },
-      { initial_prompt: "가".repeat(601) },
     ]) {
       expect(
         whisperOptionsSchema.safeParse({ ...defaultWhisperOptions, ...refused })
@@ -49,12 +49,39 @@ describe("transcription contracts", () => {
         JSON.stringify(refused),
       ).toBe(false);
     }
+  });
+
+  test("mirrors the Rust dictionary limits", () => {
+    const entry = {
+      id: "dictionary-1",
+      term: "WakeNote",
+      aliases: [],
+      enabled: true,
+    };
     expect(
-      whisperOptionsSchema.safeParse({
-        ...defaultWhisperOptions,
-        initial_prompt: "가".repeat(600),
+      transcriptionDictionarySchema.safeParse({
+        enabled: true,
+        entries: [entry],
       }).success,
     ).toBe(true);
+    for (const refused of [
+      { ...entry, term: " WakeNote" },
+      { ...entry, term: "가".repeat(129) },
+      {
+        ...entry,
+        aliases: Array.from({ length: 33 }, (_, index) => `a${index}`),
+      },
+      { ...entry, aliases: ["tab\tinside"] },
+      { ...entry, extra: true },
+    ]) {
+      expect(
+        transcriptionDictionarySchema.safeParse({
+          enabled: true,
+          entries: [refused],
+        }).success,
+        JSON.stringify(refused),
+      ).toBe(false);
+    }
   });
 
   test("never sends options without a transcript format", () => {

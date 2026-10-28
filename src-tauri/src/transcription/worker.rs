@@ -15,6 +15,7 @@ use std::{
 
 use backup_core::{
     audit_log::{AuditLevel, AuditValue},
+    dictionary::DictionaryContext,
     error::CoreError,
     transcription::{ModelChoice, TranscriptionSettings, whisper_model},
 };
@@ -238,6 +239,8 @@ impl TranscriptionService {
             let app = app.clone();
             Box::new(move |percent: i32| service.set_progress(&app, percent))
         };
+        let dictionary =
+            DictionaryContext::compile(settings.dictionary_enabled, &settings.dictionary);
         let started = Instant::now();
         let result = transcribe_one(
             candidate,
@@ -246,6 +249,7 @@ impl TranscriptionService {
                 model_path: &self.selected_model_path(),
                 model_label: &model_label,
                 options: &settings.whisper,
+                dictionary: &dictionary,
                 cancel,
             },
             decoder,

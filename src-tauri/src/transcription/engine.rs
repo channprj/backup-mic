@@ -139,12 +139,13 @@ fn is_pcm16_mono_16k(format: &[u8]) -> bool {
 
 /// Runs a model over decoded samples.
 pub trait TranscriptionEngine: Send {
-    /// `progress` receives whisper.cpp's percentage; `cancel` stops the run between decoder
-    /// steps.
+    /// `prompt` is the dictionary's hint, `progress` receives whisper.cpp's percentage, and
+    /// `cancel` stops the run between decoder steps.
     fn transcribe(
         &mut self,
         model_path: &Path,
         options: &WhisperOptions,
+        prompt: Option<&str>,
         samples: &[f32],
         cancel: Arc<AtomicBool>,
         progress: Box<dyn FnMut(i32) + Send>,
@@ -205,6 +206,7 @@ impl TranscriptionEngine for WhisperEngine {
         &mut self,
         model_path: &Path,
         options: &WhisperOptions,
+        prompt: Option<&str>,
         samples: &[f32],
         cancel: Arc<AtomicBool>,
         progress: Box<dyn FnMut(i32) + Send>,
@@ -235,8 +237,10 @@ impl TranscriptionEngine for WhisperEngine {
         parameters.set_suppress_blank(options.suppress_blank);
         parameters.set_suppress_nst(options.suppress_non_speech);
         parameters.set_no_context(!options.condition_on_previous_text);
-        if !options.initial_prompt.is_empty() {
-            parameters.set_initial_prompt(&options.initial_prompt);
+        // The dictionary refuses control characters, so the prompt can never hold the NUL
+        // byte `set_initial_prompt` panics on.
+        if let Some(prompt) = prompt.filter(|prompt| !prompt.contains('\0')) {
+            parameters.set_initial_prompt(prompt);
         }
         parameters.set_print_special(false);
         parameters.set_print_progress(false);
@@ -423,6 +427,7 @@ mod tests {
             .transcribe(
                 &model,
                 &options,
+                Some("Backup Mic"),
                 &samples,
                 Arc::new(AtomicBool::new(false)),
                 Box::new(move |percent| *reported.lock().unwrap() = percent),
@@ -444,6 +449,7 @@ mod tests {
         let cancelled = engine.transcribe(
             &model,
             &options,
+            None,
             &samples,
             Arc::new(AtomicBool::new(true)),
             Box::new(|_| {}),

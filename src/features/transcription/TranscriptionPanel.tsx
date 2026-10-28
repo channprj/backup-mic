@@ -21,8 +21,8 @@ import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { errorCopy, formatBytes, formatTime } from "../backup/format";
 import { SettingChoiceRow, SettingRow } from "../backup/SettingsControls";
 import { transcriptionClient, type TranscriptionActions } from "./client";
+import { DictionarySection } from "./DictionarySection";
 import {
-  maxInitialPromptChars,
   type TranscriptFormats,
   type TranscriptionFolder,
   type TranscriptionSnapshot,
@@ -266,6 +266,13 @@ export function TranscriptionView({
         </div>
       </section>
 
+      <DictionarySection
+        enabled={view.dictionary_enabled}
+        entries={view.dictionary}
+        pending={pending.has("dictionary")}
+        onSave={persistence.saveDictionary}
+      />
+
       <section
         className="settings-section"
         aria-labelledby="whisper-options-title"
@@ -354,13 +361,6 @@ export function TranscriptionView({
             pending={optionsPending}
             onCommit={(increment) =>
               setWhisper({ temperature_increment: increment })
-            }
-          />
-          <PromptRow
-            value={view.whisper.initial_prompt}
-            pending={optionsPending}
-            onCommit={(initialPrompt) =>
-              setWhisper({ initial_prompt: initialPrompt })
             }
           />
         </div>
@@ -911,65 +911,6 @@ function NumberRow({
           }}
         />
       </div>
-    </div>
-  );
-}
-
-function PromptRow({
-  value,
-  pending,
-  onCommit,
-}: {
-  value: string;
-  pending: boolean;
-  onCommit: (value: string) => void;
-}) {
-  const [draft, setDraft] = useState(value);
-  const [editing, setEditing] = useState(false);
-  const length = [...draft].length;
-  const tooLong = length > maxInitialPromptChars;
-
-  useEffect(() => {
-    if (!editing) setDraft(value);
-  }, [editing, value]);
-
-  return (
-    <div className="settings-row settings-prompt-row">
-      <label htmlFor="whisper-initial-prompt">
-        <strong>초기 프롬프트</strong>
-        <span>
-          자주 나오는 이름, 전문 용어, 원하는 문체를 적으면 그 표기를 따릅니다.
-          비워 두면 쓰지 않습니다.
-        </span>
-      </label>
-      <textarea
-        id="whisper-initial-prompt"
-        className="settings-prompt"
-        aria-label="초기 프롬프트"
-        rows={3}
-        value={draft}
-        disabled={pending}
-        aria-invalid={tooLong || undefined}
-        aria-describedby="whisper-initial-prompt-count"
-        onFocus={() => setEditing(true)}
-        onChange={(event) => setDraft(event.currentTarget.value)}
-        onBlur={() => {
-          setEditing(false);
-          if (tooLong || draft.includes("\0")) {
-            setDraft(value);
-            return;
-          }
-          if (draft !== value) onCommit(draft);
-        }}
-      />
-      <span
-        id="whisper-initial-prompt-count"
-        className={
-          tooLong ? "settings-prompt-count is-over" : "settings-prompt-count"
-        }
-      >
-        {length} / {maxInitialPromptChars}
-      </span>
     </div>
   );
 }

@@ -81,6 +81,7 @@ fn webview_capability_has_no_direct_plugin_authority() {
 #[test]
 fn transcription_fixture_is_exactly_what_rust_sends() {
     use backup_core::{
+        dictionary::DictionaryEntry,
         error::{PublicError, PublicErrorCode},
         transcription::{TranscriptFormats, WHISPER_MODELS, WhisperOptions},
     };
@@ -124,9 +125,23 @@ fn transcription_fixture_is_exactly_what_rust_sends() {
         formats: TranscriptFormats::default(),
         whisper: WhisperOptions {
             language: "ko".to_owned(),
-            initial_prompt: "백업 마이크 회의록".to_owned(),
             ..WhisperOptions::default()
         },
+        dictionary_enabled: true,
+        dictionary: vec![
+            DictionaryEntry {
+                id: "dictionary-1".to_owned(),
+                term: "Backup Mic".to_owned(),
+                aliases: vec!["백업 마이크".to_owned(), "backup mike".to_owned()],
+                enabled: true,
+            },
+            DictionaryEntry {
+                id: "dictionary-2".to_owned(),
+                term: "DJI".to_owned(),
+                aliases: Vec::new(),
+                enabled: false,
+            },
+        ],
         job: TranscriptionJobDto {
             phase: TranscriptionPhaseDto::Transcribing,
             current_item: Some("DJI_20261028_101500_TX01.m4a".to_owned()),

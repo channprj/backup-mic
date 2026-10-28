@@ -23,7 +23,8 @@ const fresh: TranscriptionSnapshot = {
   selected_model: { ...fixture.selected_model, ready: false },
   models: fixture.models.map((model) => ({ ...model, installed: false })),
   download: null,
-  whisper: { ...fixture.whisper, language: "auto", initial_prompt: "" },
+  whisper: { ...fixture.whisper, language: "auto" },
+  dictionary: [],
   job: {
     ...fixture.job,
     phase: "idle",
@@ -56,6 +57,13 @@ function renderView(snapshot: TranscriptionSnapshot = fresh) {
       .fn()
       .mockImplementation((options) =>
         Promise.resolve(next(snapshot, options)),
+      ),
+    saveTranscriptionDictionary: vi
+      .fn()
+      .mockImplementation(({ enabled, entries }) =>
+        Promise.resolve(
+          next(snapshot, { dictionary_enabled: enabled, dictionary: entries }),
+        ),
       ),
     selectWhisperModel: vi.fn().mockResolvedValue(snapshot),
     chooseCustomWhisperModel: vi.fn().mockResolvedValue(snapshot),
@@ -172,16 +180,122 @@ describe("TranscriptionView", () => {
     );
   });
 
-  it("refuses an initial prompt longer than whisper.cpp keeps", () => {
+  it("adds a dictionary word with aliases from the entry editor", async () => {
     const { actions } = renderView();
-    const prompt = screen.getByRole("textbox", { name: "초기 프롬프트" });
-    fireEvent.focus(prompt);
-    fireEvent.change(prompt, { target: { value: "가".repeat(601) } });
-    expect(prompt).toHaveAttribute("aria-invalid", "true");
-    expect(screen.getByText("601 / 600")).toBeInTheDocument();
-    fireEvent.blur(prompt);
-    expect(actions.saveTranscriptionOptions).not.toHaveBeenCalled();
-    expect(prompt).toHaveValue("");
+    expect(
+      screen.getByText("아직 등록한 단어가 없습니다."),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "단어 추가" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "정식 표기" }), {
+      target: { value: " Backup Mic " },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "별칭" }), {
+      target: { value: "백업 마이크, backup mic, backup mike, 백업 마이크" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+
+    await waitFor(() =>
+      expect(actions.saveTranscriptionDictionary).toHaveBeenCalledWith({
+        enabled: true,
+        entries: [
+          {
+            id: "dictionary-1",
+            term: "Backup Mic",
+            aliases: ["백업 마이크", "backup mike"],
+            enabled: true,
+          },
+        ],
+      }),
+    );
+    expect(
+      await screen.findByRole("button", { name: "Backup Mic 편집" }),
+    ).toBeInTheDocument();
+  });
+
+  it("edits and deletes dictionary chips", async () => {
+    const { actions } = renderView(fixture);
+    fireEvent.click(screen.getByRole("button", { name: "Backup Mic 편집" }));
+    expect(screen.getByRole("textbox", { name: "별칭" })).toHaveValue(
+      "백업 마이크, backup mike",
+    );
+    fireEvent.click(screen.getByRole("switch", { name: "이 단어 사용" }));
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    await waitFor(() =>
+      expect(actions.saveTranscriptionDictionary).toHaveBeenLastCalledWith({
+        enabled: true,
+        entries: [
+          { ...fixture.dictionary[0], enabled: false },
+          fixture.dictionary[1],
+        ],
+      }),
+    );
+
+    fireEvent.click(await screen.findByRole("button", { name: "DJI 삭제" }));
+    await waitFor(() =>
+      expect(actions.saveTranscriptionDictionary).toHaveBeenLastCalledWith({
+        enabled: true,
+        entries: [{ ...fixture.dictionary[0], enabled: false }],
+      }),
+    );
+  });
+
+  it("applies the text form and points at the line it cannot read", async () => {
+    const { actions } = renderView(fixture);
+    fireEvent.click(screen.getByRole("button", { name: "텍스트로 편집" }));
+    const text = screen.getByRole("textbox", { name: "사전 텍스트" });
+    expect(text).toHaveValue(
+      "# 정식 표기 = 별칭, 별칭\nBackup Mic = 백업 마이크, backup mike\nDJI\n",
+    );
+
+    fireEvent.change(text, {
+      target: { value: "Backup Mic = 백업 마이크\n= orphan alias\n" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "적용" }));
+    expect(
+      within(screen.getByRole("group", { name: "사전 텍스트 편집" })).getByRole(
+        "alert",
+      ),
+    ).toHaveTextContent("2번째 줄: 정식 표기가 비어 있습니다");
+    expect(actions.saveTranscriptionDictionary).not.toHaveBeenCalled();
+
+    fireEvent.change(text, {
+      target: {
+        value: "# 메모\nBackup Mic = 백업 마이크\n\nWakeNote = 웨이크 노트\n",
+      },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "적용" }));
+    await waitFor(() =>
+      expect(actions.saveTranscriptionDictionary).toHaveBeenCalledWith({
+        enabled: true,
+        entries: [
+          { ...fixture.dictionary[0], aliases: ["백업 마이크"] },
+          {
+            id: "dictionary-2",
+            term: "WakeNote",
+            aliases: ["웨이크 노트"],
+            enabled: true,
+          },
+        ],
+      }),
+    );
+  });
+
+  it("keeps the editor open with an alert when Rust refuses the dictionary", async () => {
+    const { actions } = renderView();
+    actions.saveTranscriptionDictionary.mockRejectedValueOnce({
+      message_code: "invalid_request",
+    });
+    fireEvent.click(screen.getByRole("button", { name: "단어 추가" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "정식 표기" }), {
+      target: { value: "WakeNote" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "저장" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "사전을 저장하지 못했습니다",
+    );
+    expect(screen.getByRole("textbox", { name: "정식 표기" })).toHaveValue(
+      "WakeNote",
+    );
   });
 
   it("shows a running download and transcription with their stop buttons", () => {

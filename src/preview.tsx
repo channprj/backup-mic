@@ -157,6 +157,8 @@ function TranscriptionPreview() {
       getTranscriptionSnapshot: async () => snapshot,
       setTranscriptionEnabled: (enabled) => apply({ enabled }),
       saveTranscriptionOptions: (options) => apply(options),
+      saveTranscriptionDictionary: ({ enabled, entries }) =>
+        apply({ dictionary_enabled: enabled, dictionary: entries }),
       selectWhisperModel: (id) =>
         apply({
           selected_model: {

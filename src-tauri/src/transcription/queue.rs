@@ -17,6 +17,7 @@ use std::{
 
 use backup_core::{
     artifact::ConversionStatus,
+    dictionary::DictionaryContext,
     filesystem::is_safe_relative_path,
     ledger::VerifiedRecording,
     transcription::{TranscriptFormat, TranscriptionSettings, WhisperOptions},
@@ -127,10 +128,12 @@ pub struct Job<'a> {
     pub model_path: &'a Path,
     pub model_label: &'a str,
     pub options: &'a WhisperOptions,
+    pub dictionary: &'a DictionaryContext,
     pub cancel: Arc<AtomicBool>,
 }
 
-/// Decodes, transcribes, and writes the missing transcript files for one recording.
+/// Decodes, transcribes, applies the dictionary, and writes the missing transcript files for
+/// one recording.
 pub fn transcribe_one(
     candidate: &Candidate,
     job: &Job<'_>,
@@ -142,14 +145,18 @@ pub fn transcribe_one(
     if job.cancel.load(Ordering::SeqCst) {
         return Err(EngineError::Cancelled);
     }
-    let transcript = engine.transcribe(
+    let mut transcript = engine.transcribe(
         job.model_path,
         job.options,
+        job.dictionary.prompt(),
         &samples,
         job.cancel.clone(),
         progress,
     )?;
     drop(samples);
+    for segment in &mut transcript.segments {
+        segment.text = job.dictionary.correct(&segment.text);
+    }
     let files_written = write_transcript(
         job.output_root,
         &candidate.relative_path,
@@ -168,6 +175,7 @@ pub fn transcribe_one(
 mod tests {
     use backup_core::{
         artifact::{OutputFormat, RetirementStatus, VerifiedArtifact, VerifiedAudioProperties},
+        dictionary::DictionaryEntry,
         source::{LEGACY_TX01_SOURCE_ID, SourceId},
         transcription::TranscriptFormats,
     };
@@ -336,6 +344,7 @@ mod tests {
 
     struct ScriptedEngine {
         calls: usize,
+        prompt: Option<String>,
     }
 
     impl TranscriptionEngine for ScriptedEngine {
@@ -343,11 +352,13 @@ mod tests {
             &mut self,
             _model_path: &Path,
             _options: &WhisperOptions,
+            prompt: Option<&str>,
             samples: &[f32],
             cancel: Arc<AtomicBool>,
             mut progress: Box<dyn FnMut(i32) + Send>,
         ) -> Result<Transcript, EngineError> {
             self.calls += 1;
+            self.prompt = prompt.map(str::to_owned);
             assert_eq!(samples.len(), 16_000);
             if cancel.load(Ordering::SeqCst) {
                 return Err(EngineError::Cancelled);
@@ -358,7 +369,7 @@ mod tests {
                 segments: vec![Segment {
                     start_ms: 0,
                     end_ms: 1_000,
-                    text: "테스트".to_owned(),
+                    text: "백업마이크 테스트".to_owned(),
                 }],
             })
         }
@@ -378,12 +389,25 @@ mod tests {
             fixture.output.path(),
             &HashSet::new(),
         );
-        let mut engine = ScriptedEngine { calls: 0 };
+        let mut engine = ScriptedEngine {
+            calls: 0,
+            prompt: None,
+        };
+        let dictionary = DictionaryContext::compile(
+            true,
+            &[DictionaryEntry {
+                id: "dictionary-1".to_owned(),
+                term: "백업 마이크".to_owned(),
+                aliases: vec!["백업마이크".to_owned()],
+                enabled: true,
+            }],
+        );
         let job = Job {
             output_root: fixture.output.path(),
             model_path: Path::new("/models/ggml-medium.bin"),
             model_label: "Medium",
             options: &settings.whisper,
+            dictionary: &dictionary,
             cancel: Arc::new(AtomicBool::new(false)),
         };
 
@@ -405,8 +429,10 @@ mod tests {
         );
         assert_eq!(
             fs::read_to_string(fixture.output.path().join("DJI/a.txt")).unwrap(),
-            "테스트\n"
+            "백업 마이크 테스트\n",
+            "aliases become the canonical term before anything is written"
         );
+        assert_eq!(engine.prompt.as_deref(), Some("백업 마이크"));
         assert!(fixture.pending(recordings, &settings).is_empty());
     }
 
@@ -426,6 +452,7 @@ mod tests {
             model_path: Path::new("/models/ggml-medium.bin"),
             model_label: "Medium",
             options: &settings.whisper,
+            dictionary: &DictionaryContext::default(),
             cancel: Arc::new(AtomicBool::new(true)),
         };
 
@@ -433,7 +460,10 @@ mod tests {
             &candidates[0],
             &job,
             &SilenceDecoder,
-            &mut ScriptedEngine { calls: 0 },
+            &mut ScriptedEngine {
+                calls: 0,
+                prompt: None,
+            },
             Box::new(|_| {}),
         );
         assert_eq!(result.unwrap_err(), EngineError::Cancelled);

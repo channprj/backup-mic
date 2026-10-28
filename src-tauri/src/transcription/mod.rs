@@ -235,6 +235,8 @@ impl TranscriptionService {
             download,
             formats: settings.formats,
             whisper: settings.whisper,
+            dictionary_enabled: settings.dictionary_enabled,
+            dictionary: settings.dictionary,
             job,
             error,
         }

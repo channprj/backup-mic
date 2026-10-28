@@ -8,6 +8,7 @@ use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::dictionary::{DictionaryEntry, validate_dictionary};
 use crate::error::CoreError;
 
 /// The settings-table key holding the whole transcription configuration as one JSON object.
@@ -25,12 +26,6 @@ pub const DEFAULT_WHISPER_MODEL: &str = "medium";
 /// move, and a moved file would then fail verification forever instead of being a new model.
 pub const WHISPER_MODEL_REVISION: &str = "5359861c739e955e79d9a303bcbc70fb988958b1";
 const WHISPER_MODEL_REPOSITORY: &str = "https://huggingface.co/ggerganov/whisper.cpp/resolve";
-
-/// The longest initial prompt accepted, in characters.
-///
-/// whisper.cpp keeps only the last half of its 448-token text context for the prompt, so a
-/// longer prompt is silently truncated; refusing it keeps the setting honest.
-pub const MAX_INITIAL_PROMPT_CHARS: usize = 600;
 
 /// whisper.cpp runs at most this many decoders, which bounds both beam size and best-of.
 pub const MAX_WHISPER_DECODERS: u8 = 8;
@@ -323,8 +318,6 @@ pub struct WhisperOptions {
     pub temperature: f32,
     /// How much to raise the temperature when a segment fails the thresholds; 0 disables it.
     pub temperature_increment: f32,
-    /// Text the decoder treats as preceding speech: names, terms, or a style to imitate.
-    pub initial_prompt: String,
     /// CPU threads; 0 lets whisper.cpp choose.
     pub threads: u8,
     /// Run the model on the Metal GPU.
@@ -354,7 +347,6 @@ impl Default for WhisperOptions {
             best_of: 5,
             temperature: 0.0,
             temperature_increment: 0.2,
-            initial_prompt: String::new(),
             threads: 0,
             use_gpu: true,
             flash_attention: true,
@@ -379,14 +371,11 @@ impl WhisperOptions {
         let language_known =
             self.language == AUTO_LANGUAGE || WHISPER_LANGUAGES.contains(&self.language.as_str());
         let decoders = 1..=MAX_WHISPER_DECODERS;
-        let prompt_valid = self.initial_prompt.chars().count() <= MAX_INITIAL_PROMPT_CHARS
-            && !self.initial_prompt.contains('\0');
         let valid = language_known
             && decoders.contains(&self.beam_size)
             && decoders.contains(&self.best_of)
             && in_range(self.temperature, 0.0, 1.0)
             && in_range(self.temperature_increment, 0.0, 1.0)
-            && prompt_valid
             && self.threads <= 32
             && in_range(self.no_speech_threshold, 0.0, 1.0)
             && in_range(self.entropy_threshold, 0.0, 10.0)
@@ -408,7 +397,7 @@ fn in_range(value: f32, low: f32, high: f32) -> bool {
 ///
 /// The three paths are absent until the user picks one, so the defaults can follow the app's
 /// own folders instead of being frozen into the ledger on first launch.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct TranscriptionSettings {
     pub enabled: bool,
@@ -422,6 +411,26 @@ pub struct TranscriptionSettings {
     pub model: ModelChoice,
     pub formats: TranscriptFormats,
     pub whisper: WhisperOptions,
+    /// Whether the dictionary below is applied; entries are kept either way.
+    pub dictionary_enabled: bool,
+    pub dictionary: Vec<DictionaryEntry>,
+}
+
+impl Default for TranscriptionSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            enabled_since: None,
+            include_existing_recordings: false,
+            output_directory: None,
+            models_directory: None,
+            model: ModelChoice::default(),
+            formats: TranscriptFormats::default(),
+            whisper: WhisperOptions::default(),
+            dictionary_enabled: true,
+            dictionary: Vec::new(),
+        }
+    }
 }
 
 impl TranscriptionSettings {
@@ -436,7 +445,8 @@ impl TranscriptionSettings {
             ModelChoice::Custom { path } => is_safe_absolute_path(path),
         };
         if paths_valid && model_valid && !self.formats.selected().is_empty() {
-            self.whisper.validate()
+            self.whisper.validate()?;
+            validate_dictionary(&self.dictionary)
         } else {
             Err(CoreError::InvalidRequest)
         }
@@ -525,9 +535,14 @@ mod tests {
             },
             whisper: WhisperOptions {
                 language: "ko".to_owned(),
-                initial_prompt: "백업 마이크 회의".to_owned(),
                 ..WhisperOptions::default()
             },
+            dictionary: vec![DictionaryEntry {
+                id: "dictionary-1".to_owned(),
+                term: "백업 마이크".to_owned(),
+                aliases: vec!["백업마이크".to_owned()],
+                enabled: true,
+            }],
             ..TranscriptionSettings::default()
         };
         let encoded = settings.encode().unwrap();
@@ -595,14 +610,6 @@ mod tests {
                 ..WhisperOptions::default()
             },
             WhisperOptions {
-                initial_prompt: "nul\0byte".to_owned(),
-                ..WhisperOptions::default()
-            },
-            WhisperOptions {
-                initial_prompt: "가".repeat(MAX_INITIAL_PROMPT_CHARS + 1),
-                ..WhisperOptions::default()
-            },
-            WhisperOptions {
                 threads: 33,
                 ..WhisperOptions::default()
             },
@@ -625,7 +632,6 @@ mod tests {
             language: "yue".to_owned(),
             beam_size: MAX_WHISPER_DECODERS,
             best_of: 1,
-            initial_prompt: "가".repeat(MAX_INITIAL_PROMPT_CHARS),
             ..WhisperOptions::default()
         };
         assert!(accepted.validate().is_ok());

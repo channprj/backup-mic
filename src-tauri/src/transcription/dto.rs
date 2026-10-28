@@ -5,6 +5,7 @@
 //! dialog.
 
 use backup_core::{
+    dictionary::DictionaryEntry,
     error::PublicError,
     transcription::{TranscriptFormats, WhisperOptions},
 };
@@ -24,6 +25,8 @@ pub struct TranscriptionSnapshotDto {
     pub download: Option<ModelDownloadDto>,
     pub formats: TranscriptFormats,
     pub whisper: WhisperOptions,
+    pub dictionary_enabled: bool,
+    pub dictionary: Vec<DictionaryEntry>,
     pub job: TranscriptionJobDto,
     pub error: Option<PublicError>,
 }
@@ -111,6 +114,14 @@ pub struct TranscriptionOptionsDto {
     pub include_existing_recordings: bool,
     pub formats: TranscriptFormats,
     pub whisper: WhisperOptions,
+}
+
+/// The whole dictionary as the window edits it. Rust normalizes the entries before storing them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranscriptionDictionaryDto {
+    pub enabled: bool,
+    pub entries: Vec<DictionaryEntry>,
 }
 
 /// The two folders the transcription settings let the user choose.

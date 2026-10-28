@@ -61,7 +61,6 @@ export const defaultWhisperOptions: TranscriptionSnapshot["whisper"] = {
   best_of: 5,
   temperature: 0,
   temperature_increment: 0.2,
-  initial_prompt: "",
   threads: 0,
   use_gpu: true,
   flash_attention: true,

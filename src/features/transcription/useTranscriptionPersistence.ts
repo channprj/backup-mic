@@ -2,12 +2,17 @@ import { useEffect, useState } from "react";
 import { errorCopy } from "../backup/format";
 import type { ActionError } from "../backup/useSettingsPersistence";
 import type { TranscriptionActions } from "./client";
-import type { TranscriptionOptions, TranscriptionSnapshot } from "./contracts";
+import type {
+  DictionaryEntry,
+  TranscriptionOptions,
+  TranscriptionSnapshot,
+} from "./contracts";
 
 /** The parts of the view a pending write can cover; each disables its own controls. */
 export type PendingKey =
   | "enabled"
   | "options"
+  | "dictionary"
   | "model"
   | "output_folder"
   | "models_folder"
@@ -16,7 +21,12 @@ export type PendingKey =
 
 type EditableFields = Pick<
   TranscriptionSnapshot,
-  "enabled" | "include_existing_recordings" | "formats" | "whisper"
+  | "enabled"
+  | "include_existing_recordings"
+  | "formats"
+  | "whisper"
+  | "dictionary_enabled"
+  | "dictionary"
 >;
 
 function commandError(error: unknown, title: string): ActionError {
@@ -116,6 +126,27 @@ export function useTranscriptionPersistence(
         () => actions.saveTranscriptionOptions(options),
         options,
       );
+    },
+    /** Resolves to whether Rust accepted the dictionary, so an editor knows to close. */
+    saveDictionary: async (
+      enabled: boolean,
+      entries: DictionaryEntry[],
+    ): Promise<boolean> => {
+      let saved = false;
+      await run(
+        "dictionary",
+        "사전을 저장하지 못했습니다",
+        async () => {
+          const persisted = await actions.saveTranscriptionDictionary({
+            enabled,
+            entries,
+          });
+          saved = true;
+          return persisted;
+        },
+        { dictionary_enabled: enabled, dictionary: entries },
+      );
+      return saved;
     },
     selectModel: (modelId: string) =>
       run("model", "모델을 선택하지 못했습니다", () =>
