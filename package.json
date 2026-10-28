@@ -12,6 +12,9 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "security:check": "bash scripts/security-check.sh",
+    "setup:hooks": "node scripts/setup-hooks.mjs",
+    "prepare": "pnpm run setup:hooks",
+    "tasks:check": "node scripts/task-refs.mjs range",
     "tauri": "tauri"
   },
   "dependencies": {
