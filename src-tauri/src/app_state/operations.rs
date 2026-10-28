@@ -107,6 +107,28 @@ impl AppState {
         self.operation_active.load(Ordering::SeqCst)
     }
 
+    /// Whether a backup or trash run is in progress, which quitting would cancel.
+    pub fn work_is_active(&self) -> bool {
+        self.work_active.load(Ordering::SeqCst)
+    }
+
+    /// Stops admitting operations and cancels the running one. Returns whether a backup or
+    /// trash run was in progress.
+    ///
+    /// Closing, reading the work flag, and cancelling happen under the same lock begin_operation
+    /// holds while it checks closing and installs its token. A run either sees the close and is
+    /// refused, or is installed first and has its token cancelled here.
+    pub fn close_for_quit(&self) -> bool {
+        let working = {
+            let cancellation = self.cancellation.lock();
+            self.closing.store(true, Ordering::SeqCst);
+            cancellation.cancel();
+            self.work_is_active()
+        };
+        self.cancel_manual_backup();
+        working
+    }
+
     pub(crate) fn backup_destination_snapshot(&self) -> (PathBuf, u64) {
         let runtime = self.runtime.lock();
         (runtime.destination.clone(), runtime.destination_generation)
@@ -158,28 +180,41 @@ impl AppState {
     }
 
     pub fn begin_operation(&self) -> Result<OperationGuard, CoreError> {
-        if self.operation_reserved.load(Ordering::SeqCst) {
+        if self.operation_reserved.load(Ordering::SeqCst) || self.closing.load(Ordering::SeqCst) {
             return Err(CoreError::Busy);
         }
         self.operation_active
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| CoreError::Busy)?;
         let cancellation = CancellationToken::default();
-        *self.cancellation.lock() = cancellation.clone();
+        {
+            let mut installed = self.cancellation.lock();
+            if self.closing.load(Ordering::SeqCst) {
+                self.operation_active.store(false, Ordering::SeqCst);
+                return Err(CoreError::Busy);
+            }
+            self.work_active.store(true, Ordering::SeqCst);
+            *installed = cancellation.clone();
+        }
         Ok(OperationGuard {
             active: Arc::clone(&self.operation_active),
             cancellation,
             reservation: None,
+            work: Some(Arc::clone(&self.work_active)),
         })
     }
 
     pub(crate) fn reserve_operation(&self) -> Result<OperationReservation, CoreError> {
+        if self.closing.load(Ordering::SeqCst) {
+            return Err(CoreError::Busy);
+        }
         self.operation_reserved
             .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .map_err(|_| CoreError::Busy)?;
         Ok(OperationReservation {
             active: Arc::clone(&self.operation_active),
             reserved: Some(Arc::clone(&self.operation_reserved)),
+            closing: Arc::clone(&self.closing),
             cancellation: Arc::clone(&self.cancellation),
         })
     }
@@ -189,10 +224,14 @@ pub struct OperationGuard {
     active: Arc<AtomicBool>,
     pub cancellation: CancellationToken,
     reservation: Option<Arc<AtomicBool>>,
+    work: Option<Arc<AtomicBool>>,
 }
 
 impl Drop for OperationGuard {
     fn drop(&mut self) {
+        if let Some(work) = self.work.take() {
+            work.store(false, Ordering::SeqCst);
+        }
         self.active.store(false, Ordering::SeqCst);
         if let Some(reservation) = self.reservation.take() {
             reservation.store(false, Ordering::SeqCst);
@@ -203,16 +242,19 @@ impl Drop for OperationGuard {
 pub(crate) struct OperationReservation {
     active: Arc<AtomicBool>,
     reserved: Option<Arc<AtomicBool>>,
+    closing: Arc<AtomicBool>,
     cancellation: Arc<Mutex<CancellationToken>>,
 }
 
 impl OperationReservation {
     pub(crate) async fn acquire(mut self) -> OperationGuard {
         loop {
-            if self
-                .active
-                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-                .is_ok()
+            // A quit keeps the slot free until exit; the waiting change never takes it.
+            if !self.closing.load(Ordering::SeqCst)
+                && self
+                    .active
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
             {
                 let cancellation = CancellationToken::default();
                 *self.cancellation.lock() = cancellation.clone();
@@ -220,6 +262,7 @@ impl OperationReservation {
                     active: Arc::clone(&self.active),
                     cancellation,
                     reservation: self.reserved.take(),
+                    work: None,
                 };
             }
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;

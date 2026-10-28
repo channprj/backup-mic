@@ -11,6 +11,7 @@ pub mod lifecycle;
 pub mod manual_backup;
 pub mod orchestrator;
 pub mod platform;
+pub mod quit;
 pub mod recovery_tool;
 pub mod rescan;
 pub mod rule_runtime;
@@ -39,6 +40,12 @@ pub fn run() {
             None,
         ))
         .manage(AppLifecycle::default())
+        .menu(quit::app_menu)
+        .on_menu_event(|app, event| {
+            if event.id() == quit::QUIT_MENU_ID {
+                quit::ask_to_quit(app, "menu");
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             commands::get_app_snapshot,
             commands::backup_now,
@@ -157,12 +164,14 @@ pub fn run() {
         .on_window_event(window::handle_event)
         .build(tauri::generate_context!())
         .expect("failed to build Backup Mic");
-    app.run(|app, event| {
-        if let tauri::RunEvent::ExitRequested { api, .. } = event
-            && !app.state::<AppLifecycle>().is_quitting()
+    app.run(|app, event| match event {
+        tauri::RunEvent::ExitRequested { api, .. }
+            if !app.state::<AppLifecycle>().is_quitting() =>
         {
             api.prevent_exit();
         }
+        tauri::RunEvent::Exit => quit::settle_on_exit(app),
+        _ => {}
     });
 }
 

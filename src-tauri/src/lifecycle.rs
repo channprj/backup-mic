@@ -8,15 +8,39 @@ use crate::app_state::{AppState, loggable_label};
 #[derive(Default)]
 pub struct AppLifecycle {
     quitting: AtomicBool,
+    confirming_quit: AtomicBool,
+    settled: AtomicBool,
 }
 
 impl AppLifecycle {
-    pub fn request_quit(&self) {
-        self.quitting.store(true, Ordering::SeqCst);
+    /// Marks the app as quitting. Returns true only for the first request, so one quit runs.
+    pub fn request_quit(&self) -> bool {
+        !self.quitting.swap(true, Ordering::SeqCst)
     }
 
     pub fn is_quitting(&self) -> bool {
         self.quitting.load(Ordering::SeqCst)
+    }
+
+    /// Claims the one quit confirmation dialog; false while another is already open.
+    pub fn begin_quit_confirmation(&self) -> bool {
+        self.confirming_quit
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+    }
+
+    pub fn end_quit_confirmation(&self) {
+        self.confirming_quit.store(false, Ordering::SeqCst);
+    }
+
+    /// Marks that the quit has finished waiting for the cancelled run, so the exit that
+    /// follows does not wait again.
+    pub fn mark_settled(&self) {
+        self.settled.store(true, Ordering::SeqCst);
+    }
+
+    pub fn is_settled(&self) -> bool {
+        self.settled.load(Ordering::SeqCst)
     }
 }
 
@@ -75,7 +99,7 @@ fn record_start(state: &AppState, version: &str, unfinished: &[UnfinishedBackupR
     }
 }
 
-fn append_lifecycle(
+pub(crate) fn append_lifecycle(
     state: &AppState,
     level: AuditLevel,
     code: &'static str,
@@ -122,6 +146,25 @@ mod tests {
             .unwrap()
             .path();
         std::fs::read_to_string(day).unwrap()
+    }
+
+    #[test]
+    fn only_one_quit_confirmation_is_open_at_a_time() {
+        let lifecycle = AppLifecycle::default();
+
+        assert!(lifecycle.begin_quit_confirmation());
+        assert!(!lifecycle.begin_quit_confirmation());
+        lifecycle.end_quit_confirmation();
+        assert!(lifecycle.begin_quit_confirmation());
+    }
+
+    #[test]
+    fn only_the_first_quit_request_proceeds() {
+        let lifecycle = AppLifecycle::default();
+
+        assert!(lifecycle.request_quit());
+        assert!(!lifecycle.request_quit());
+        assert!(lifecycle.is_quitting());
     }
 
     #[test]

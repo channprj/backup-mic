@@ -75,6 +75,10 @@ pub struct AppState {
     pub(crate) preference_save: Arc<tokio::sync::Mutex<()>>,
     pub(super) operation_active: Arc<AtomicBool>,
     pub(super) operation_reserved: Arc<AtomicBool>,
+    /// Set while a backup or trash run holds the slot; a destination change does not count.
+    pub(super) work_active: Arc<AtomicBool>,
+    /// Set once the app starts quitting; no operation is admitted after it.
+    pub(super) closing: Arc<AtomicBool>,
     pub(super) cancellation: Arc<Mutex<CancellationToken>>,
     pub(super) manual_backup: Arc<ManualBackupIntent>,
     pub(super) failure_reporter: FailureReporter,
@@ -179,6 +183,8 @@ impl AppState {
             preference_save: Arc::new(tokio::sync::Mutex::new(())),
             operation_active: Arc::new(AtomicBool::new(false)),
             operation_reserved: Arc::new(AtomicBool::new(false)),
+            work_active: Arc::new(AtomicBool::new(false)),
+            closing: Arc::new(AtomicBool::new(false)),
             cancellation: Arc::new(Mutex::new(CancellationToken::default())),
             manual_backup: Arc::new(ManualBackupIntent::default()),
             failure_reporter: FailureReporter::new(failure_root),
@@ -453,6 +459,62 @@ mod tests {
         assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
         drop(first);
         assert!(state.begin_operation().is_ok());
+    }
+
+    #[test]
+    fn closing_cancels_the_running_work_and_admits_nothing_new() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+        let running = state.begin_operation().unwrap();
+
+        assert!(state.close_for_quit());
+        assert!(running.cancellation.is_cancelled());
+        drop(running);
+        assert!(!state.work_is_active());
+        assert!(matches!(state.begin_operation(), Err(CoreError::Busy)));
+        assert!(matches!(state.reserve_operation(), Err(CoreError::Busy)));
+    }
+
+    #[tokio::test]
+    async fn a_destination_change_holds_the_slot_without_counting_as_work() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+
+        let backup = state.begin_operation().unwrap();
+        let reservation = state.reserve_operation().unwrap();
+        assert!(state.work_is_active());
+        drop(backup);
+        assert!(!state.work_is_active());
+
+        let picker = reservation.acquire().await;
+        assert!(state.operation_is_active());
+        assert!(!state.work_is_active());
+        assert!(!state.close_for_quit());
+        drop(picker);
+    }
+
+    #[tokio::test]
+    async fn a_destination_change_waiting_for_the_slot_never_takes_it_during_a_quit() {
+        let state_directory = tempdir().unwrap();
+        let destination = tempdir().unwrap();
+        let ledger = Ledger::open(state_directory.path().join("ledger.sqlite3")).unwrap();
+        let state = AppState::new(ledger, destination.path().to_path_buf(), true, false).unwrap();
+        let backup = state.begin_operation().unwrap();
+        let reservation = state.reserve_operation().unwrap();
+
+        assert!(state.close_for_quit());
+        drop(backup);
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(300), reservation.acquire())
+                .await
+                .is_err()
+        );
+        assert!(!state.operation_is_active());
     }
 
     #[tokio::test]

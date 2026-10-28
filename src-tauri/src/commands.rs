@@ -17,7 +17,6 @@ use crate::{
     app_state::AppState,
     clock,
     dto::{AppSnapshotDto, RuleTestResultDto, TrashProposalSummaryDto},
-    lifecycle::AppLifecycle,
     orchestrator,
 };
 
@@ -560,10 +559,8 @@ async fn set_automatic_trash_for_state(
 }
 
 #[tauri::command]
-pub fn quit_app(app: AppHandle, state: State<'_, AppState>, lifecycle: State<'_, AppLifecycle>) {
-    state.cancel_active_operation();
-    lifecycle.request_quit();
-    app.exit(0);
+pub fn quit_app(app: AppHandle) {
+    crate::quit::ask_to_quit(&app, "popover");
 }
 
 pub fn persisted_destination(value: Option<String>, default: PathBuf) -> (PathBuf, bool) {

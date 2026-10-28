@@ -171,6 +171,7 @@ fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
                 | "version"
                 | "build"
                 | "started_at"
+                | "active"
         ) {
             return Err(CoreError::InvalidAuditEvent);
         }
