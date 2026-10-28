@@ -597,7 +597,7 @@ fn validate_destination(selected: &Path, state: &AppState) -> Result<PathBuf, Pu
     Ok(canonical)
 }
 
-fn destination_path_is_allowed(path: &Path) -> bool {
+pub(crate) fn destination_path_is_allowed(path: &Path) -> bool {
     if !path.is_absolute()
         || path.parent().is_none()
         || path.components().any(|component| {

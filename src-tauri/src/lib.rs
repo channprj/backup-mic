@@ -1,4 +1,6 @@
 pub const PRODUCT_NAME: &str = "Backup Mic";
+/// The default transcript folder, created beside the default backup folder in Documents.
+pub const TRANSCRIPTS_FOLDER_NAME: &str = "Backup Mic Transcripts";
 
 pub mod app_state;
 pub mod artifact_pipeline;
@@ -16,6 +18,7 @@ pub mod quit;
 pub mod recovery_tool;
 pub mod rescan;
 pub mod rule_runtime;
+pub mod transcription;
 pub mod tray;
 pub mod window;
 
@@ -69,6 +72,16 @@ pub fn run() {
             commands::set_rescan_interval,
             commands::complete_initial_setup,
             commands::open_logs,
+            transcription::commands::get_transcription_snapshot,
+            transcription::commands::set_transcription_enabled,
+            transcription::commands::save_transcription_options,
+            transcription::commands::select_whisper_model,
+            transcription::commands::choose_custom_whisper_model,
+            transcription::commands::choose_transcription_folder,
+            transcription::commands::reset_transcription_folder,
+            transcription::commands::open_transcription_folder,
+            transcription::commands::download_whisper_model,
+            transcription::commands::cancel_whisper_model_download,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -129,6 +142,13 @@ pub fn run() {
                 }
             };
             app.manage(state.clone());
+            app.manage(transcription::TranscriptionService::new(
+                state.clone(),
+                transcription::TranscriptionDefaults {
+                    models_directory: app_data.join("whisper-models"),
+                    output_directory: documents.join(TRANSCRIPTS_FOLDER_NAME),
+                },
+            ));
             state.set_notification_status(app.handle(), notification_status);
             let initial_setup = state.snapshot().setup_state;
             let show_initial_setup = state.should_keep_window_open();

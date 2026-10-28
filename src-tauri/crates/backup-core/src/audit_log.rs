@@ -173,6 +173,7 @@ fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
                 | "started_at"
                 | "active"
                 | "login_item"
+                | "model"
         ) {
             return Err(CoreError::InvalidAuditEvent);
         }
