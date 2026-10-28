@@ -1074,6 +1074,12 @@ button:not(:disabled):active {
   margin-top: 12px;
 }
 
+/* The global `button { font: inherit }` rule outranks Tailwind's layered text size, so buttons
+   here would otherwise render at the 16px body size, larger than the 12px row labels. */
+.transcription-panel button {
+  font-size: 12px;
+}
+
 .transcription-loading {
   display: flex;
   flex-direction: column;
@@ -1088,7 +1094,6 @@ button:not(:disabled):active {
 
 .format-toggles [data-state] {
   min-width: 40px;
-  font-size: 11px;
 }
 
 .format-toggles [data-state="on"] {

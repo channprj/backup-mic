@@ -109,7 +109,7 @@ export function TranscriptionView({
   }
 
   return (
-    <>
+    <div className="transcription-panel">
       {error ? (
         <Alert variant="destructive">
           <AlertTitle>{error.title}</AlertTitle>
@@ -503,7 +503,7 @@ export function TranscriptionView({
           </div>
         </details>
       </section>
-    </>
+    </div>
   );
 }
 
