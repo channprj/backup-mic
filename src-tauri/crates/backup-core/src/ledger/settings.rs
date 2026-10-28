@@ -11,6 +11,7 @@ use crate::preferences::PreferenceFlag;
 use crate::preferences::PreferenceLimit;
 use crate::preferences::decode_bool;
 use crate::preferences::decode_limit;
+use crate::transcription::{TRANSCRIPTION_SETTING, TranscriptionSettings};
 
 use super::Ledger;
 
@@ -149,5 +150,21 @@ impl Ledger {
     ) -> Result<(), CoreError> {
         let accepted = limit.accept(value)?;
         self.set_setting(limit.storage_key(), &accepted.to_string(), updated_at)
+    }
+
+    /// The transcription configuration, or its defaults when it was never saved.
+    pub fn read_transcription_settings(&self) -> Result<TranscriptionSettings, CoreError> {
+        TranscriptionSettings::decode(self.setting(TRANSCRIPTION_SETTING)?.as_deref())
+    }
+
+    /// Stores the whole transcription configuration after it validates, so a refused value
+    /// never reaches the settings table.
+    pub fn set_transcription_settings(
+        &mut self,
+        settings: &TranscriptionSettings,
+        updated_at: &str,
+    ) -> Result<(), CoreError> {
+        let encoded = settings.encode()?;
+        self.set_setting(TRANSCRIPTION_SETTING, &encoded, updated_at)
     }
 }

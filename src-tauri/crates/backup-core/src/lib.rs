@@ -25,6 +25,7 @@ pub mod rule_scanner;
 pub mod scanner;
 pub mod source;
 pub mod state;
+pub mod transcription;
 
 #[cfg(test)]
 mod tests {
