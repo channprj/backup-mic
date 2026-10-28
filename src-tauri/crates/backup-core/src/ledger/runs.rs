@@ -8,8 +8,8 @@ use crate::batch::FrozenPreferences;
 use crate::error::CoreError;
 use crate::source::SourceId;
 
-use super::Ledger;
 use super::sql::to_i64;
+use super::{Ledger, UnfinishedBackupRun};
 
 impl Ledger {
     pub fn begin_backup_run(
@@ -255,6 +255,30 @@ impl Ledger {
             return Err(CoreError::InvalidRequest);
         }
         Ok(())
+    }
+
+    pub fn unfinished_backup_runs(&self) -> Result<Vec<UnfinishedBackupRun>, CoreError> {
+        let mut statement = self
+            .connection
+            .prepare(
+                r#"SELECT runs.id, runs.batch_phase, runs.started_at, sources.display_name
+                   FROM backup_runs AS runs
+                   LEFT JOIN sources ON sources.id = runs.source_id
+                   WHERE runs.outcome = 'running'
+                   ORDER BY runs.started_at, runs.id"#,
+            )
+            .map_err(CoreError::Ledger)?;
+        let rows = statement
+            .query_map([], |row| {
+                Ok(UnfinishedBackupRun {
+                    id: row.get(0)?,
+                    batch_phase: row.get(1)?,
+                    started_at: row.get(2)?,
+                    source_label: row.get(3)?,
+                })
+            })
+            .map_err(CoreError::Ledger)?;
+        rows.map(|row| row.map_err(CoreError::Ledger)).collect()
     }
 
     pub fn mark_interrupted_runs(&mut self, finished_at: &str) -> Result<usize, CoreError> {

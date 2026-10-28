@@ -83,6 +83,9 @@ pub fn run() {
             })?;
             let mut ledger = Ledger::open(app_data.join("ledger.sqlite3"))
                 .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
+            let unfinished_runs = ledger
+                .unfinished_backup_runs()
+                .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
             ledger
                 .mark_interrupted_runs(&clock::now_string())
                 .map_err(|error| report_setup_core_failure(&setup_reporter, error))?;
@@ -121,11 +124,16 @@ pub fn run() {
             let initial_setup = state.snapshot().setup_state;
             let show_initial_setup = state.should_keep_window_open();
             let destination_dialog_state = state.clone();
-            let orchestrator = orchestrator::DeviceOrchestrator::start(app.handle().clone(), state)
-                .map_err(|error| {
-                    report_setup_adapter_failure(&setup_reporter, "device_monitor_start");
-                    format!("device monitor unavailable: {error}")
-                })?;
+            let startup = lifecycle::StartupRecord {
+                version: app.package_info().version.to_string(),
+                unfinished: unfinished_runs,
+            };
+            let orchestrator =
+                orchestrator::DeviceOrchestrator::start(app.handle().clone(), state, startup)
+                    .map_err(|error| {
+                        report_setup_adapter_failure(&setup_reporter, "device_monitor_start");
+                        format!("device monitor unavailable: {error}")
+                    })?;
             app.manage(orchestrator);
             tray::setup(app).inspect_err(|_| {
                 report_setup_adapter_failure(&setup_reporter, "tray_setup");

@@ -168,6 +168,9 @@ fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
                 | "copied"
                 | "converted"
                 | "os_code"
+                | "version"
+                | "build"
+                | "started_at"
         ) {
             return Err(CoreError::InvalidAuditEvent);
         }

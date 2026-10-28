@@ -7,7 +7,7 @@ use backup_core::{
     device::PairedDevice,
     error::CoreError,
     events::{ActivityEntry, ActivitySeverity},
-    ledger::{Ledger, MAX_ACTIVITY_ENTRIES, VerifiedRecording},
+    ledger::{Ledger, MAX_ACTIVITY_ENTRIES, UnfinishedBackupRun, VerifiedRecording},
     preferences::{BackupPreferences, PreferenceFlag},
     source::{SourceId, SourceRecord},
     state::Transmitter,
@@ -96,11 +96,21 @@ fn opening_marks_running_backup_runs_interrupted() {
     }
     let mut ledger = Ledger::open(&path).unwrap();
     assert_eq!(
+        ledger.unfinished_backup_runs().unwrap(),
+        vec![UnfinishedBackupRun {
+            id: "run-1".to_owned(),
+            batch_phase: "completed".to_owned(),
+            started_at: "2026-08-09T00:00:00Z".to_owned(),
+            source_label: Some("Test TX01".to_owned()),
+        }]
+    );
+    assert_eq!(
         ledger
             .mark_interrupted_runs("2026-08-09T00:01:00Z")
             .unwrap(),
         1
     );
+    assert!(ledger.unfinished_backup_runs().unwrap().is_empty());
     assert_eq!(
         ledger.backup_run_outcome("run-1").unwrap().as_deref(),
         Some("interrupted")

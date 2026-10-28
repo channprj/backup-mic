@@ -18,7 +18,7 @@ use crate::rule_runtime::{MatchedSource, RuleVolumeMatch, match_mounted_volume};
 
 use super::operations::backup_should_schedule;
 use super::presentation::update_source;
-use super::reporting::activity_entry;
+use super::reporting::{activity_entry, loggable_label};
 use super::{AppState, publish_locked};
 
 impl AppState {
@@ -80,7 +80,15 @@ impl AppState {
                             None,
                         );
                     }
-                    let fields = [("reason", AuditValue::Text("device_removed"))];
+                    let fields = [
+                        ("reason", AuditValue::Text("device_removed")),
+                        (
+                            "source",
+                            AuditValue::Text(loggable_label(
+                                &matched.authority.source.display_name,
+                            )),
+                        ),
+                    ];
                     if self.runtime.lock().destination_configured
                         && let Err(error) = self.append_audit(
                             &AuditEvent {
@@ -192,6 +200,14 @@ impl AppState {
         }
         if let Some((source_id, _)) = matched_source {
             let transmitter = runtime_legacy_transmitter(self, &source_id);
+            let label = self
+                .runtime
+                .lock()
+                .matched
+                .get(&source_id)
+                .map(|matched| matched.authority.source.display_name.clone())
+                .unwrap_or_default();
+            let fields = [("source", AuditValue::Text(loggable_label(&label)))];
             if let Err(error) = self.record_activity(
                 app,
                 activity_entry("device_detected", source_id.clone(), ActivitySeverity::Info),
@@ -211,7 +227,7 @@ impl AppState {
                         level: AuditLevel::Info,
                         code: "device.detected",
                         transmitter,
-                        fields: &[],
+                        fields: &fields,
                     },
                     AuditDurability::Buffered,
                 )

@@ -12,22 +12,13 @@ use backup_core::audit_log::{
 };
 use backup_core::error::CoreError;
 
-use crate::app_state::{AppState, sanitize_item_name};
+use crate::app_state::{AppState, loggable_label, sanitize_item_name};
 use crate::clock;
 
 use super::pipeline::source_failure_is_process_wide;
 
 pub(super) fn short_run_id(run_id: &str) -> &str {
     run_id.get(..8).unwrap_or(run_id)
-}
-
-/// A volume label the log accepts; one that looks like an identity is replaced.
-pub(super) fn loggable_label(label: &str) -> &str {
-    if !label.is_empty() && text_is_loggable(label) {
-        label
-    } else {
-        "unnamed"
-    }
 }
 
 pub(super) fn duration_ms(elapsed: Duration) -> u64 {
@@ -318,16 +309,5 @@ mod tests {
             "3a8a0a38"
         );
         assert_eq!(short_run_id("run"), "run");
-    }
-
-    #[test]
-    fn labels_that_look_like_identities_are_not_logged() {
-        assert_eq!(loggable_label("DJI-MIC-2"), "DJI-MIC-2");
-        assert_eq!(
-            loggable_label("071FEE39-3941-33CD-AC05-532A6A258E2C"),
-            "unnamed"
-        );
-        assert_eq!(loggable_label("/Volumes/DJI-MIC-2"), "unnamed");
-        assert_eq!(loggable_label(""), "unnamed");
     }
 }

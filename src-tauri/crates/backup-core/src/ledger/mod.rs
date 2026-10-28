@@ -63,6 +63,15 @@ pub struct PendingAdditionalDeletionItem {
     pub source_size: u64,
 }
 
+/// A run a previous process left `running`, read before startup marks it interrupted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UnfinishedBackupRun {
+    pub id: String,
+    pub batch_phase: String,
+    pub started_at: String,
+    pub source_label: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LegacyRetiredRecording {
     pub recording_id: String,

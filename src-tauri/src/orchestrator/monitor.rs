@@ -14,6 +14,7 @@ use tauri::AppHandle;
 
 use crate::app_state::AppState;
 use crate::clock;
+use crate::lifecycle::StartupRecord;
 use crate::platform::device_registry::DeviceRegistry;
 use crate::platform::macos::DiskArbitrationMonitor;
 use crate::rescan::{RescanDecision, RescanScheduler};
@@ -28,7 +29,7 @@ pub struct DeviceOrchestrator {
 }
 
 impl DeviceOrchestrator {
-    pub fn start(app: AppHandle, state: AppState) -> Result<Self, String> {
+    pub fn start(app: AppHandle, state: AppState, startup: StartupRecord) -> Result<Self, String> {
         let (sender, receiver) = mpsc::channel();
         let monitor = DiskArbitrationMonitor::start(sender)?;
         let stop = Arc::new(AtomicBool::new(false));
@@ -36,6 +37,7 @@ impl DeviceOrchestrator {
         let thread = thread::Builder::new()
             .name("backup-mic-device-events".to_owned())
             .spawn(move || {
+                startup.write(&state);
                 let mut registry = DeviceRegistry::default();
                 let mut scheduler = RescanScheduler::new(state.rescan_interval());
                 let mut backup_pending = false;

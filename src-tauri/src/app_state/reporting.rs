@@ -154,10 +154,35 @@ pub(super) fn activity_entry(
     }
 }
 
+/// A volume label the log accepts; one that looks like an identity is replaced.
+pub(crate) fn loggable_label(label: &str) -> &str {
+    if !label.is_empty() && backup_core::audit_log::text_is_loggable(label) {
+        label
+    } else {
+        "unnamed"
+    }
+}
+
 pub(crate) fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
     item_name
         .and_then(|item_name| std::path::Path::new(item_name).file_name())
         .and_then(|item_name| item_name.to_str())
         .map(|item_name| item_name.chars().take(180).collect())
         .filter(|item_name: &String| !item_name.is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::loggable_label;
+
+    #[test]
+    fn labels_that_look_like_identities_are_not_logged() {
+        assert_eq!(loggable_label("DJI-MIC-2"), "DJI-MIC-2");
+        assert_eq!(
+            loggable_label("071FEE39-3941-33CD-AC05-532A6A258E2C"),
+            "unnamed"
+        );
+        assert_eq!(loggable_label("/Volumes/DJI-MIC-2"), "unnamed");
+        assert_eq!(loggable_label(""), "unnamed");
+    }
 }

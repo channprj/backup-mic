@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager as _};
 use tauri_plugin_notification::NotificationExt;
 use time::OffsetDateTime;
 
-use crate::app_state::{AppState, OperationGuard, publish_locked, update_source};
+use crate::app_state::{AppState, OperationGuard, loggable_label, publish_locked, update_source};
 use crate::clock;
 use crate::dto::ProgressDto;
 use crate::lifecycle::AppLifecycle;
@@ -25,7 +25,7 @@ use crate::platform::macos::trash::MacTrash;
 use super::pipeline::{
     NoSourceCopyFaults, overall_backup_phase, run_matched_sources_with_adapters,
 };
-use super::run_log::{append_trail, loggable_label, run_complete_fields, run_started_fields};
+use super::run_log::{append_trail, run_complete_fields, run_started_fields};
 use super::shared::{adapter_public_error, source_label};
 use super::trash::retire_ready_rule_sources_with_adapter;
 
