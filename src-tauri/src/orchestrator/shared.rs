@@ -7,8 +7,6 @@ use backup_core::state::Transmitter;
 use crate::app_state::AppState;
 use crate::rule_runtime::MatchedSource;
 
-use super::pipeline::SourceRunOutcome;
-
 pub(super) fn resolve_live_source(
     root: &std::path::Path,
     relative: &std::path::Path,
@@ -52,12 +50,4 @@ pub(super) fn source_label(state: &AppState, source_id: &SourceId) -> Option<Str
         .matched
         .get(source_id)
         .map(|matched| matched.authority.source.display_name.clone())
-}
-
-pub(super) fn source_failure_stage(outcome: &SourceRunOutcome) -> &'static str {
-    if outcome.batch_run_id.is_empty() {
-        "source_preparation"
-    } else {
-        "source_pipeline"
-    }
 }

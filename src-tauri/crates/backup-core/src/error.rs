@@ -150,6 +150,18 @@ impl CoreError {
         self.diagnostic_io_kind().map(io_kind_code)
     }
 
+    /// The raw errno behind an I/O failure, which separates an unplug (`ENXIO`, `EIO`) from a
+    /// full or read-only destination where the kind alone does not.
+    pub fn diagnostic_os_code(&self) -> Option<i32> {
+        match self {
+            Self::CopyFailed(error)
+            | Self::SyncFailed(error)
+            | Self::LedgerIo(error)
+            | Self::AuditLogUnavailable(error) => error.raw_os_error(),
+            _ => None,
+        }
+    }
+
     pub fn public(&self, transmitter: Option<Transmitter>) -> PublicError {
         let (code, message_code, retryable) = match self {
             Self::IdentityMismatch => (

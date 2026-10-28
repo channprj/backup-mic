@@ -124,7 +124,7 @@ pub(crate) async fn choose_destination_for_state(
         match orchestrator::start_backup(
             app.clone(),
             state.clone(),
-            orchestrator::BackupTrigger::Automatic,
+            orchestrator::BackupTrigger::SettingsChanged,
         ) {
             Ok(())
             | Err(backup_core::error::CoreError::Busy)
@@ -402,7 +402,7 @@ pub async fn complete_initial_setup(
         match orchestrator::start_backup(
             app,
             state.inner().clone(),
-            orchestrator::BackupTrigger::Automatic,
+            orchestrator::BackupTrigger::SettingsChanged,
         ) {
             Ok(())
             | Err(backup_core::error::CoreError::Busy)

@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use backup_core::audit_log::{AuditDurability, AuditEvent, AuditSink, FileAuditLog};
+use backup_core::audit_log::{AuditDurability, AuditEvent, AuditSink, AuditValue, FileAuditLog};
 use backup_core::error::{CoreError, PublicError};
 use backup_core::events::{ActivityEntry, ActivitySeverity};
 use backup_core::ledger::MAX_ACTIVITY_ENTRIES;
@@ -38,6 +38,19 @@ impl AppState {
         transmitter: Option<Transmitter>,
         item_name: Option<&str>,
     ) -> FailureWriteOutcome {
+        self.report_failure_with_context(operation, stage, error, transmitter, item_name, &[])
+    }
+
+    /// Reports a failure together with where it happened and the raw errno behind it.
+    pub fn report_failure_with_context(
+        &self,
+        operation: &'static str,
+        stage: &'static str,
+        error: &CoreError,
+        transmitter: Option<Transmitter>,
+        item_name: Option<&str>,
+        context: &[(&'static str, AuditValue<'_>)],
+    ) -> FailureWriteOutcome {
         let primary_destination = {
             let runtime = self.runtime.lock();
             runtime
@@ -54,10 +67,18 @@ impl AppState {
             os_kind: error.diagnostic_io_kind_code().map(str::to_owned),
             retryable: public.retryable,
         };
-        self.failure_reporter.report(
+        let mut context = context.to_vec();
+        if let Some(code) = error
+            .diagnostic_os_code()
+            .and_then(|code| u64::try_from(code).ok())
+        {
+            context.push(("os_code", AuditValue::Unsigned(code)));
+        }
+        self.failure_reporter.report_with_context(
             primary_destination.as_deref(),
             crate::clock::local_now(),
             &event,
+            &context,
         )
     }
 
@@ -133,7 +154,7 @@ pub(super) fn activity_entry(
     }
 }
 
-pub(super) fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
+pub(crate) fn sanitize_item_name(item_name: Option<&str>) -> Option<String> {
     item_name
         .and_then(|item_name| std::path::Path::new(item_name).file_name())
         .and_then(|item_name| item_name.to_str())

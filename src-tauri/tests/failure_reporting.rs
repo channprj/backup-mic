@@ -1,5 +1,6 @@
 use std::{fs, path::PathBuf};
 
+use backup_core::audit_log::AuditValue;
 use backup_core::state::Transmitter;
 use backup_core::{
     error::{CoreError, PublicError, PublicErrorCode},
@@ -48,6 +49,34 @@ fn failure_reporter_prefers_the_destination_log() {
             .is_file()
     );
     assert!(!fallback.path().join("2026").exists());
+}
+
+#[test]
+fn context_fields_follow_the_fixed_failure_fields() {
+    let destination = tempdir().unwrap();
+    let fallback = tempdir().unwrap();
+    let reporter = FailureReporter::new(fallback.path());
+
+    reporter.report_with_context(
+        Some(destination.path()),
+        datetime!(2026-08-10 09:30:15 +09:00),
+        &setting_failure(),
+        &[
+            ("run", AuditValue::Text("3a8a0a38")),
+            ("source", AuditValue::Text("DJI-MIC-2")),
+            ("os_code", AuditValue::Unsigned(6)),
+        ],
+    );
+
+    let output = fs::read_to_string(
+        destination
+            .path()
+            .join("logs/2026/08/260810-backup-mic.log"),
+    )
+    .unwrap();
+    assert!(output.contains(
+        "item=\"TX01_MIC001_20260810_001116.wav\" run=\"3a8a0a38\" source=\"DJI-MIC-2\" os_code=6\n"
+    ));
 }
 
 #[test]

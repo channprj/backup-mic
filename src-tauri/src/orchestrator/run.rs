@@ -1,6 +1,7 @@
 //! Starting a run and publishing its progress to the popover.
 
 use std::collections::{BTreeSet, HashMap};
+use std::time::Instant;
 
 use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
 use backup_core::clock::SystemClock;
@@ -9,13 +10,14 @@ use backup_core::error::{CoreError, PublicError};
 use backup_core::events::{ActivityEntry, ActivitySeverity};
 use backup_core::source::SourceId;
 use backup_core::state::{BackupPhase, DeletionPhase};
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager as _};
 use tauri_plugin_notification::NotificationExt;
 use time::OffsetDateTime;
 
 use crate::app_state::{AppState, OperationGuard, publish_locked, update_source};
 use crate::clock;
 use crate::dto::ProgressDto;
+use crate::lifecycle::AppLifecycle;
 use crate::manual_backup::ManualBackupClaim;
 use crate::platform::macos::audio::AppleAudioTools;
 use crate::platform::macos::trash::MacTrash;
@@ -23,13 +25,30 @@ use crate::platform::macos::trash::MacTrash;
 use super::pipeline::{
     NoSourceCopyFaults, overall_backup_phase, run_matched_sources_with_adapters,
 };
-use super::shared::{adapter_public_error, source_failure_stage, source_label};
+use super::run_log::{append_trail, loggable_label, run_complete_fields, run_started_fields};
+use super::shared::{adapter_public_error, source_label};
 use super::trash::retire_ready_rule_sources_with_adapter;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum BackupTrigger {
-    Automatic,
+    /// A matching recorder was mounted.
+    DeviceDetected,
+    /// The periodic rescan saw a connected recorder's files change.
+    SourceChanged,
+    /// A destination or setup change made the connected recorders eligible.
+    SettingsChanged,
     Manual,
+}
+
+impl BackupTrigger {
+    fn audit_name(self) -> &'static str {
+        match self {
+            Self::DeviceDetected => "device_detected",
+            Self::SourceChanged => "source_changed",
+            Self::SettingsChanged => "settings_changed",
+            Self::Manual => "manual",
+        }
+    }
 }
 
 pub fn request_backup(app: AppHandle, state: AppState) -> Result<(), CoreError> {
@@ -66,7 +85,9 @@ pub(crate) fn start_backup(
         return Err(CoreError::DeviceRemoved);
     }
     let manual_claim = match trigger {
-        BackupTrigger::Automatic => None,
+        BackupTrigger::DeviceDetected
+        | BackupTrigger::SourceChanged
+        | BackupTrigger::SettingsChanged => None,
         BackupTrigger::Manual => {
             let Some(claim) = state.claim_manual_backup(&scheduled_sources) else {
                 return Err(CoreError::DeviceRemoved);
@@ -84,7 +105,7 @@ pub(crate) fn start_backup(
     {
         append_reconnect_audit(&state, "backup.resumed_after_reconnect");
     }
-    tauri::async_runtime::spawn_blocking(move || match run_backup(&app, &state, &guard) {
+    tauri::async_runtime::spawn_blocking(move || match run_backup(&app, &state, &guard, trigger) {
         Ok(result) => {
             let interrupted = result.should_resume_after_reconnect();
             if result.has_real_failure {
@@ -114,6 +135,20 @@ pub(crate) fn start_backup(
             }
         }
         Err(CoreError::Cancelled) => {
+            let reason = if app
+                .try_state::<AppLifecycle>()
+                .is_some_and(|lifecycle| lifecycle.is_quitting())
+            {
+                "app_quit"
+            } else {
+                "user_cancel"
+            };
+            append_trail(
+                &state,
+                AuditLevel::Warning,
+                "backup.cancelled",
+                &[("reason", AuditValue::Text(reason))],
+            );
             state.cancel_manual_backup();
             state.settle_cancelled_operation(&app);
         }
@@ -152,11 +187,25 @@ pub(super) fn run_backup(
     app: &AppHandle,
     state: &AppState,
     guard: &OperationGuard,
+    trigger: BackupTrigger,
 ) -> Result<BackupRunResult, CoreError> {
-    let matched = state.matched_sources().into_values().collect::<Vec<_>>();
+    let run_started = Instant::now();
+    let mut matched = state.matched_sources().into_values().collect::<Vec<_>>();
     if matched.is_empty() {
         return Err(CoreError::DeviceRemoved);
     }
+    matched.sort_by(|left, right| left.authority.source.id.cmp(&right.authority.source.id));
+    let labels = matched
+        .iter()
+        .map(|source| loggable_label(&source.authority.source.display_name))
+        .collect::<Vec<_>>()
+        .join(",");
+    append_trail(
+        state,
+        AuditLevel::Info,
+        "backup.run_started",
+        &run_started_fields(trigger.audit_name(), matched.len(), &labels),
+    );
     {
         let mut runtime = state.runtime.lock();
         for source in &matched {
@@ -377,9 +426,6 @@ pub(super) fn run_backup(
         if outcome.error.as_ref().is_some_and(is_device_removed) {
             continue;
         }
-        if let Some(error) = &outcome.error {
-            state.report_public_failure("backup_run", source_failure_stage(outcome), error, None);
-        }
         let (code, severity) = match outcome.phase {
             BackupPhase::PartialFailure | BackupPhase::Error => {
                 ("partial_failure", ActivitySeverity::Error)
@@ -452,17 +498,17 @@ pub(super) fn run_backup(
             );
         }
     }
-    let fields = [
-        ("count", AuditValue::Unsigned(total_files)),
-        (
-            "mode",
-            AuditValue::Text(match phase {
-                BackupPhase::PartialFailure => "partial_failure",
-                BackupPhase::Detecting => "waiting_for_device",
-                _ => "completed",
-            }),
-        ),
-    ];
+    let fields = run_complete_fields(
+        total_files,
+        match phase {
+            BackupPhase::PartialFailure => "partial_failure",
+            BackupPhase::Detecting => "waiting_for_device",
+            BackupPhase::NothingNew => "nothing_new",
+            _ => "completed",
+        },
+        outcomes.len(),
+        run_started.elapsed(),
+    );
     state.append_audit(
         &AuditEvent {
             occurred_at: clock::local_now(),

@@ -138,6 +138,75 @@ fn a_saved_numeric_setting_records_its_value() {
 }
 
 #[test]
+fn a_run_trail_line_names_the_run_recorder_and_duration() {
+    let destination = tempdir().unwrap();
+    let log = FileAuditLog::new(destination.path());
+    let fields = [
+        ("run", AuditValue::Text("3a8a0a38")),
+        ("source", AuditValue::Text("DJI-MIC-2")),
+        ("mode", AuditValue::Text("nothing_new")),
+        ("files", AuditValue::Unsigned(17)),
+        ("copied", AuditValue::Unsigned(0)),
+        ("converted", AuditValue::Unsigned(0)),
+        ("duration_ms", AuditValue::Unsigned(136_398)),
+    ];
+
+    let path = log
+        .append(
+            &AuditEvent {
+                occurred_at: timestamp(),
+                level: AuditLevel::Info,
+                code: "backup.source_complete",
+                transmitter: None,
+                fields: &fields,
+            },
+            AuditDurability::Buffered,
+        )
+        .unwrap();
+
+    assert_eq!(
+        fs::read_to_string(path).unwrap(),
+        "2026-08-09T20:01:42.613+09:00 INFO backup.source_complete run=\"3a8a0a38\" source=\"DJI-MIC-2\" mode=\"nothing_new\" files=17 copied=0 converted=0 duration_ms=136398\n"
+    );
+}
+
+#[test]
+fn a_full_run_id_or_volume_uuid_is_still_refused() {
+    let destination = tempdir().unwrap();
+    let log = FileAuditLog::new(destination.path());
+    for fields in [
+        vec![(
+            "run",
+            AuditValue::Text("3a8a0a38-0c19-4a21-9476-b188beec6bc9"),
+        )],
+        vec![(
+            "source",
+            AuditValue::Text("071FEE39-3941-33CD-AC05-532A6A258E2C"),
+        )],
+    ] {
+        let result = log.append(
+            &AuditEvent {
+                occurred_at: timestamp(),
+                level: AuditLevel::Info,
+                code: "backup.source_started",
+                transmitter: None,
+                fields: &fields,
+            },
+            AuditDurability::Buffered,
+        );
+        assert!(matches!(result, Err(CoreError::InvalidAuditEvent)));
+    }
+}
+
+#[test]
+fn an_unplug_errno_is_kept_for_diagnosis() {
+    let error = CoreError::CopyFailed(std::io::Error::from_raw_os_error(6));
+
+    assert_eq!(error.diagnostic_os_code(), Some(6));
+    assert_eq!(CoreError::HashMismatch.diagnostic_os_code(), None);
+}
+
+#[test]
 fn concurrent_writers_append_complete_non_interleaved_events() {
     let destination = tempdir().unwrap();
     let log = Arc::new(FileAuditLog::new(destination.path()));

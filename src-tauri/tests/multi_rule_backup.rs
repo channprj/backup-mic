@@ -300,6 +300,29 @@ impl Fixture {
         (source_root, matched)
     }
 
+    /// Every daily audit log line written under the destination, in file order.
+    fn audit_log(&self) -> String {
+        fn collect(directory: &Path, output: &mut String) {
+            let Ok(entries) = fs::read_dir(directory) else {
+                return;
+            };
+            let mut paths = entries
+                .map(|entry| entry.unwrap().path())
+                .collect::<Vec<_>>();
+            paths.sort();
+            for path in paths {
+                if path.is_dir() {
+                    collect(&path, output);
+                } else {
+                    output.push_str(&fs::read_to_string(path).unwrap());
+                }
+            }
+        }
+        let mut output = String::new();
+        collect(&self._destination.path().join("logs"), &mut output);
+        output
+    }
+
     fn recordings(&self) -> Vec<backup_core::ledger::VerifiedRecording> {
         Ledger::open(&self.ledger_path)
             .unwrap()
@@ -559,6 +582,22 @@ fn one_source_copy_failure_does_not_block_the_other_source_cohort() {
         sony_outcome.error.as_ref().unwrap().message_code,
         "copy_failed"
     );
+    let log = fixture.audit_log();
+    let failure = log
+        .lines()
+        .find(|line| line.contains("operation.failed"))
+        .unwrap();
+    assert!(failure.contains("operation=\"backup_run\" stage=\"copy\" error_code=\"copy_failed\""));
+    assert!(failure.contains("item=\"REC0001.WAV\""));
+    assert!(failure.contains(&format!(
+        "run=\"{}\" source=\"SONY_REC\"",
+        &sony_outcome.batch_run_id[..8]
+    )));
+    assert!(
+        log.lines()
+            .any(|line| line.contains("ERROR backup.source_complete")
+                && line.contains("source=\"SONY_REC\" mode=\"partial_failure\""))
+    );
     assert!(!sony_outcome.deletion_ready);
     assert_eq!(overall_backup_phase(&outcomes), BackupPhase::PartialFailure);
     assert!(
@@ -633,6 +672,70 @@ fn a_read_error_followed_by_an_unmount_is_reported_as_a_removed_device() {
     assert_eq!(clock.sleeps_after_failure.load(Ordering::SeqCst), 1);
     assert_eq!(zoom_outcome.phase, BackupPhase::CompletedDeletionPending);
     assert!(zoom_outcome.error.is_none());
+    let log = fixture.audit_log();
+    let interrupted = log
+        .lines()
+        .find(|line| line.contains("backup.source_complete") && line.contains("SONY_REC"))
+        .unwrap();
+    assert!(interrupted.contains(" WARN "));
+    assert!(interrupted.contains("mode=\"device_removed\" stage=\"copy\" item=\"REC0001.WAV\""));
+    assert!(!log.contains("operation.failed"));
+}
+
+#[test]
+fn the_audit_log_follows_each_file_and_tells_a_repeat_run_apart() {
+    let fixture = Fixture::new();
+    let (_zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Zoom H1n",
+        "zoom-",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    let run = || {
+        run_matched_sources_with_adapters(
+            &fixture.state,
+            std::slice::from_ref(&zoom),
+            &FakeAudioTools,
+            &NoSourceCopyFaults,
+            &BackupTrash,
+            &InstantClock,
+            &CancellationToken::default(),
+        )
+        .unwrap()
+    };
+
+    let first = run();
+    let second = run();
+
+    assert_eq!(second[0].phase, BackupPhase::NothingNew);
+    let log = fixture.audit_log();
+    let first_run = format!(
+        "run=\"{}\" source=\"ZOOM_REC\"",
+        &first[0].batch_run_id[..8]
+    );
+    let second_run = format!(
+        "run=\"{}\" source=\"ZOOM_REC\"",
+        &second[0].batch_run_id[..8]
+    );
+    let lines_of = |run: &str| {
+        log.lines()
+            .filter(|line| line.contains(run))
+            .map(|line| line.split_once(' ').unwrap().1.to_owned())
+            .collect::<Vec<_>>()
+    };
+    let first_lines = lines_of(&first_run);
+    assert_eq!(first_lines.len(), 4, "{log}");
+    assert!(first_lines[0].starts_with("INFO backup.source_started"));
+    assert!(first_lines[0].ends_with("files=1 copy_files=1 bytes=96044"));
+    assert!(first_lines[1].starts_with("INFO backup.file_copied"));
+    assert!(first_lines[1].contains("item=\"REC0001.WAV\" bytes=96044 duration_ms="));
+    assert!(first_lines[2].starts_with("INFO backup.file_converted"));
+    assert!(first_lines[2].contains("source_bytes=96044 output_bytes=4 duration_ms="));
+    assert!(first_lines[3].starts_with("INFO backup.source_complete"));
+    assert!(first_lines[3].contains("mode=\"completed\" files=1 copied=1 converted=1"));
+    let second_lines = lines_of(&second_run);
+    assert_eq!(second_lines.len(), 2, "{log}");
+    assert!(second_lines[1].contains("mode=\"nothing_new\" files=1 copied=0 converted=0"));
 }
 
 #[test]

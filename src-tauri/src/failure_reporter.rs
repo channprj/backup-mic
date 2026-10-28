@@ -42,9 +42,21 @@ impl FailureReporter {
         occurred_at: OffsetDateTime,
         event: &FailureEvent,
     ) -> FailureWriteOutcome {
+        self.report_with_context(primary_destination, occurred_at, event, &[])
+    }
+
+    /// Reports a failure with fields that locate it, such as the run and the recorder.
+    /// They follow the fixed fields, so readers of the older line shape still parse it.
+    pub fn report_with_context(
+        &self,
+        primary_destination: Option<&Path>,
+        occurred_at: OffsetDateTime,
+        event: &FailureEvent,
+        context: &[(&'static str, AuditValue<'_>)],
+    ) -> FailureWriteOutcome {
         let os_kind = event.os_kind.as_deref().unwrap_or("none");
         let item_name = event.item_name.as_deref().unwrap_or("none");
-        let fields = [
+        let mut fields = vec![
             ("operation", AuditValue::Text(event.operation)),
             ("stage", AuditValue::Text(event.stage)),
             ("error_code", AuditValue::Text(&event.error_code)),
@@ -52,6 +64,7 @@ impl FailureReporter {
             ("retryable", AuditValue::Boolean(event.retryable)),
             ("item", AuditValue::Text(item_name)),
         ];
+        fields.extend_from_slice(context);
         let audit_event = AuditEvent {
             occurred_at,
             level: AuditLevel::Error,

@@ -39,12 +39,14 @@ impl DeviceOrchestrator {
                 let mut registry = DeviceRegistry::default();
                 let mut scheduler = RescanScheduler::new(state.rescan_interval());
                 let mut backup_pending = false;
+                let mut pending_trigger = None;
                 while !thread_stop.load(Ordering::SeqCst) {
                     match receiver.recv_timeout(std::time::Duration::from_millis(250)) {
                         Ok(event) => {
                             for lifecycle in registry.apply(event) {
                                 if state.handle_lifecycle(&app, lifecycle).is_some() {
                                     backup_pending = true;
+                                    pending_trigger.get_or_insert(BackupTrigger::DeviceDetected);
                                 }
                             }
                         }
@@ -107,6 +109,7 @@ impl DeviceOrchestrator {
                                     RescanDecision::RequestBackup | RescanDecision::KeepPending
                                 ) {
                                     backup_pending = true;
+                                    pending_trigger.get_or_insert(BackupTrigger::SourceChanged);
                                 }
                             }
                             Err(error) => {
@@ -131,6 +134,7 @@ impl DeviceOrchestrator {
                     }
                     if matched_sources.is_empty() {
                         backup_pending = false;
+                        pending_trigger = None;
                     }
                     if backup_pending {
                         let trigger = if matched_sources
@@ -139,16 +143,18 @@ impl DeviceOrchestrator {
                         {
                             BackupTrigger::Manual
                         } else {
-                            BackupTrigger::Automatic
+                            pending_trigger.unwrap_or(BackupTrigger::DeviceDetected)
                         };
                         match start_backup(app.clone(), state.clone(), trigger) {
                             Ok(()) => {
                                 scheduler.mark_backup_started();
                                 backup_pending = false;
+                                pending_trigger = None;
                             }
                             Err(CoreError::Busy) => {}
                             Err(CoreError::DeviceRemoved) => {
                                 backup_pending = false;
+                                pending_trigger = None;
                             }
                             Err(error) => {
                                 state.report_failure(
@@ -161,6 +167,7 @@ impl DeviceOrchestrator {
                                 state.set_error(&app, error, None);
                                 scheduler.mark_backup_started();
                                 backup_pending = false;
+                                pending_trigger = None;
                             }
                         }
                     }

@@ -160,19 +160,33 @@ fn validate_event(event: &AuditEvent<'_>) -> Result<(), CoreError> {
                 | "enabled"
                 | "value"
                 | "applies"
+                | "run"
+                | "trigger"
+                | "sources"
+                | "duration_ms"
+                | "copy_files"
+                | "copied"
+                | "converted"
+                | "os_code"
         ) {
             return Err(CoreError::InvalidAuditEvent);
         }
         if let AuditValue::Text(text) = value
-            && (Path::new(text).is_absolute()
-                || is_full_hash(text)
-                || uuid::Uuid::parse_str(text).is_ok()
-                || text.len() > 1024)
+            && !text_is_loggable(text)
         {
             return Err(CoreError::InvalidAuditEvent);
         }
     }
     Ok(())
+}
+
+/// Whether a text value may appear in the log: never an absolute path, a full hash, or a
+/// UUID, so the log cannot be joined back to volume identities or file contents.
+pub fn text_is_loggable(text: &str) -> bool {
+    !(Path::new(text).is_absolute()
+        || is_full_hash(text)
+        || uuid::Uuid::parse_str(text).is_ok()
+        || text.len() > 1024)
 }
 
 fn encode_event(event: &AuditEvent<'_>) -> Result<String, CoreError> {

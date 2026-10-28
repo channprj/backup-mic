@@ -1,6 +1,7 @@
 //! Executing one recorder's copies, conversion cohort, and retirement evidence.
 
 use std::collections::BTreeMap;
+use std::time::Instant;
 
 use backup_core::artifact::OutputFormat;
 use backup_core::backup::{
@@ -33,6 +34,7 @@ use super::pipeline::{
     revalidate_run_context, settle_source_failure, source_failure_is_process_wide,
 };
 use super::planning::PreparedSource;
+use super::run_log::SourceRunLog;
 use super::shared::resolve_live_source;
 
 #[allow(clippy::too_many_arguments)]
@@ -79,6 +81,24 @@ pub(super) fn process_prepared_source(
         )?;
         ledger.advance_batch_phase(&run_id, BatchPhase::Copying)?;
     }
+    let copy_files = source
+        .companion_plans
+        .iter()
+        .filter(|plan| plan.disposition == DestinationDisposition::Copy)
+        .count()
+        + source
+            .recording_plans
+            .iter()
+            .filter(|prepared| prepared.plan.disposition == DestinationDisposition::Copy)
+            .count();
+    let mut log = SourceRunLog::start(
+        state,
+        &run_id,
+        &source.authority.source.display_name,
+        source.scan.files.len(),
+        copy_files,
+        source.required_copy_bytes,
+    );
     let scoped_faults = ScopedCopyFaults {
         source_id: &source.source_id,
         faults: source_faults,
@@ -92,13 +112,23 @@ pub(super) fn process_prepared_source(
     )?;
 
     for plan in &source.companion_plans {
+        let copies = plan.disposition == DestinationDisposition::Copy;
+        log.at(
+            if copies {
+                "companion_copy"
+            } else {
+                "companion_reverify"
+            },
+            Some(&plan.source.relative_path),
+        );
+        let item_started = Instant::now();
         if let Err(error) = revalidate_run_context(
             state,
             &source.authority,
             destination,
             destination_generation,
         ) {
-            return finish_source_failure(state, clock, source, run_id, error);
+            return finish_source_failure(state, clock, &log, source, run_id, error);
         }
         if let Err(error) = scoped_faults
             .check(CopyFaultPoint::SourceOpen)
@@ -134,7 +164,14 @@ pub(super) fn process_prepared_source(
                     source_id: source.source_id.clone(),
                     relative_path: plan.source.relative_path.clone(),
                 })?;
-            return finish_source_failure(state, clock, source, run_id, error);
+            return finish_source_failure(state, clock, &log, source, run_id, error);
+        }
+        if copies {
+            log.file_copied(
+                &plan.source.relative_path,
+                plan.source.size,
+                item_started.elapsed(),
+            );
         }
         source
             .copy_barrier
@@ -145,13 +182,19 @@ pub(super) fn process_prepared_source(
     }
 
     for prepared in &source.recording_plans {
+        let copies = prepared.plan.disposition == DestinationDisposition::Copy;
+        log.at(
+            if copies { "copy" } else { "reverify" },
+            Some(&prepared.plan.source.relative_path),
+        );
+        let item_started = Instant::now();
         if let Err(error) = revalidate_run_context(
             state,
             &source.authority,
             destination,
             destination_generation,
         ) {
-            return finish_source_failure(state, clock, source, run_id, error);
+            return finish_source_failure(state, clock, &log, source, run_id, error);
         }
         let verified = if prepared.plan.disposition == DestinationDisposition::Reuse
             && prepared
@@ -210,7 +253,14 @@ pub(super) fn process_prepared_source(
                     source_id: source.source_id.clone(),
                     relative_path: prepared.plan.source.relative_path.clone(),
                 })?;
-            return finish_source_failure(state, clock, source, run_id, error);
+            return finish_source_failure(state, clock, &log, source, run_id, error);
+        }
+        if copies {
+            log.file_copied(
+                &prepared.plan.source.relative_path,
+                prepared.plan.source.size,
+                item_started.elapsed(),
+            );
         }
         source
             .copy_barrier
@@ -220,8 +270,16 @@ pub(super) fn process_prepared_source(
             })?;
     }
 
+    log.at("copy_barrier", None);
     if !source.copy_barrier.conversion_allowed() {
-        return finish_source_failure(state, clock, source, run_id, CoreError::InvalidRequest);
+        return finish_source_failure(
+            state,
+            clock,
+            &log,
+            source,
+            run_id,
+            CoreError::InvalidRequest,
+        );
     }
     state
         .ledger
@@ -234,11 +292,12 @@ pub(super) fn process_prepared_source(
         destination,
         destination_generation,
     ) {
-        return finish_source_failure(state, clock, source, run_id, error);
+        return finish_source_failure(state, clock, &log, source, run_id, error);
     }
 
     let mut converted_files = 0_u64;
     if preferences.m4a_conversion {
+        log.at("conversion", None);
         let cohort = state
             .ledger
             .lock()
@@ -248,25 +307,30 @@ pub(super) fn process_prepared_source(
         } else {
             match order_conversion_cohort(cohort) {
                 Ok(cohort) => cohort,
-                Err(error) => return finish_source_failure(state, clock, source, run_id, error),
+                Err(error) => {
+                    return finish_source_failure(state, clock, &log, source, run_id, error);
+                }
             }
         };
         let mut convertible = Vec::new();
         for recording in cohort {
             if let Err(error) = cancellation.check() {
-                return finish_source_failure(state, clock, source, run_id, error);
+                return finish_source_failure(state, clock, &log, source, run_id, error);
             }
+            log.at("conversion", Some(&recording.artifact.relative_path));
             match prove_header_only_wav(destination, &recording, audio_tools) {
                 Ok(true) => {
                     // Bound first: the guard in an `if let` scrutinee lives through the body,
                     // and finish_source_failure locks the ledger again.
                     let marked = state.ledger.lock().mark_header_only_wav(&recording.id);
                     if let Err(error) = marked {
-                        return finish_source_failure(state, clock, source, run_id, error);
+                        return finish_source_failure(state, clock, &log, source, run_id, error);
                     }
                 }
                 Ok(false) => convertible.push(recording),
-                Err(error) => return finish_source_failure(state, clock, source, run_id, error),
+                Err(error) => {
+                    return finish_source_failure(state, clock, &log, source, run_id, error);
+                }
             }
         }
         if convertible.is_empty() {
@@ -283,6 +347,8 @@ pub(super) fn process_prepared_source(
             for mut recording in convertible {
                 recording.backup_run_id.clone_from(&run_id);
                 recording.verified_at = clock::now_string();
+                log.at("conversion", Some(&recording.artifact.relative_path));
+                let item_started = Instant::now();
                 let prepared = match prepare_m4a(
                     destination,
                     &recording,
@@ -292,7 +358,7 @@ pub(super) fn process_prepared_source(
                 ) {
                     Ok(prepared) => prepared,
                     Err(error) => {
-                        return finish_source_failure(state, clock, source, run_id, error);
+                        return finish_source_failure(state, clock, &log, source, run_id, error);
                     }
                 };
                 {
@@ -307,9 +373,16 @@ pub(super) fn process_prepared_source(
                 }
                 finalize_prepared_m4a(&prepared)?;
                 converted_files = converted_files.saturating_add(1);
+                log.file_converted(
+                    &prepared.recording.artifact.relative_path,
+                    prepared.superseded_wav_size,
+                    prepared.recording.artifact.byte_count,
+                    item_started.elapsed(),
+                );
             }
             state.ledger.lock().commit_m4a_barrier(&run_id)?;
         }
+        log.at("wav_retirement", None);
         let retirement = {
             let mut ledger = state.ledger.lock();
             retire_superseded_wavs_for_source(
@@ -322,7 +395,7 @@ pub(super) fn process_prepared_source(
             )
         };
         if let Err(error) = retirement {
-            return finish_source_failure(state, clock, source, run_id, error);
+            return finish_source_failure(state, clock, &log, source, run_id, error);
         }
     }
 
@@ -332,9 +405,10 @@ pub(super) fn process_prepared_source(
         destination,
         destination_generation,
     ) {
-        return finish_source_failure(state, clock, source, run_id, error);
+        return finish_source_failure(state, clock, &log, source, run_id, error);
     }
 
+    log.at("deletion_evidence", None);
     let deletion_candidate_ready = preferences.m4a_conversion
         && !source.scan.files.is_empty()
         && source.scan.unsafe_session_count == 0
@@ -342,7 +416,7 @@ pub(super) fn process_prepared_source(
     let deletion_evidence = if deletion_candidate_ready {
         match build_rule_deletion_evidence(state, &source, destination, &run_id) {
             Ok(evidence) => evidence,
-            Err(error) => return finish_source_failure(state, clock, source, run_id, error),
+            Err(error) => return finish_source_failure(state, clock, &log, source, run_id, error),
         }
     } else {
         None
@@ -361,14 +435,25 @@ pub(super) fn process_prepared_source(
     )?;
     let verified_files = u64::try_from(source.copy_barrier.verified_count())
         .map_err(|_| CoreError::InvalidRequest)?;
+    let phase = if source.required_copy_bytes == 0 && converted_files == 0 {
+        BackupPhase::NothingNew
+    } else {
+        BackupPhase::CompletedDeletionPending
+    };
+    log.completed(
+        if phase == BackupPhase::NothingNew {
+            "nothing_new"
+        } else if preferences.m4a_conversion {
+            "completed"
+        } else {
+            "wav_retained"
+        },
+        verified_files,
+    );
     Ok(SourceRunOutcome {
         source_id: source.source_id,
         batch_run_id: run_id,
-        phase: if source.required_copy_bytes == 0 && converted_files == 0 {
-            BackupPhase::NothingNew
-        } else {
-            BackupPhase::CompletedDeletionPending
-        },
+        phase,
         verified_files,
         deletion_ready,
         error: None,
@@ -379,11 +464,16 @@ pub(super) fn process_prepared_source(
 pub(super) fn finish_source_failure(
     state: &AppState,
     clock: &dyn Clock,
+    log: &SourceRunLog<'_>,
     source: PreparedSource,
     run_id: String,
     error: CoreError,
 ) -> Result<SourceRunOutcome, CoreError> {
     let error = settle_source_failure(state, &source.authority, error, clock);
+    log.failed(
+        &error,
+        u64::try_from(source.copy_barrier.verified_count()).unwrap_or(u64::MAX),
+    );
     let public = error.public(None);
     state.ledger.lock().finish_backup_run(
         &run_id,

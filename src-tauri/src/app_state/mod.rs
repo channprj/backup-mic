@@ -41,6 +41,7 @@ use crate::rule_runtime::MatchedSource;
 
 pub use operations::OperationGuard;
 pub(crate) use presentation::update_source;
+pub(crate) use reporting::sanitize_item_name;
 
 pub const SNAPSHOT_EVENT: &str = "app-snapshot-changed";
 

@@ -21,6 +21,7 @@ use crate::rule_runtime::MatchedSource;
 
 use super::copying::{failed_without_run, process_prepared_source};
 use super::planning::prepare_matched_source;
+use super::run_log::source_not_started;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceRunOutcome {
@@ -155,10 +156,18 @@ pub fn run_matched_sources_with_adapters(
                 matched.rule = current;
                 eligible_sources.push(matched);
             }
-            Ok(_) => outcomes.push(failed_without_run(
-                matched.authority.source.id,
-                CoreError::IdentityMismatch,
-            )),
+            Ok(_) => {
+                source_not_started(
+                    state,
+                    &matched.authority.source.display_name,
+                    "rule_validation",
+                    &CoreError::IdentityMismatch,
+                );
+                outcomes.push(failed_without_run(
+                    matched.authority.source.id,
+                    CoreError::IdentityMismatch,
+                ));
+            }
             Err(error) => return Err(error),
         }
     }
@@ -179,6 +188,12 @@ pub fn run_matched_sources_with_adapters(
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
             Err(error) => {
                 let error = settle_source_failure(state, &matched.authority, error, clock);
+                source_not_started(
+                    state,
+                    &matched.authority.source.display_name,
+                    "source_scan",
+                    &error,
+                );
                 outcomes.push(failed_without_run(matched.authority.source.id, error));
             }
         }
@@ -213,6 +228,12 @@ pub fn run_matched_sources_with_adapters(
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
             Err(error) => {
                 let error = settle_source_failure(state, &matched.authority, error, clock);
+                source_not_started(
+                    state,
+                    &matched.authority.source.display_name,
+                    "source_preparation",
+                    &error,
+                );
                 outcomes.push(failed_without_run(matched.authority.source.id, error));
             }
         }
@@ -373,7 +394,7 @@ pub(super) fn revalidate_run_context(
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::super::{run::BackupRunResult, shared::source_failure_stage};
+    use super::super::run::BackupRunResult;
     use super::*;
 
     #[test]
@@ -391,24 +412,6 @@ mod tests {
         assert_eq!(current.diagnostic_code(), "copy_failed");
         assert!(matches!(removed, CoreError::DeviceRemoved));
         assert!(matches!(cancelled, CoreError::Cancelled));
-    }
-
-    #[test]
-    fn failures_without_a_run_are_reported_as_source_preparation() {
-        let preparation = SourceRunOutcome {
-            source_id: SourceId::new(),
-            batch_run_id: String::new(),
-            phase: BackupPhase::PartialFailure,
-            verified_files: 0,
-            deletion_ready: false,
-            error: Some(CoreError::InvalidRule.public(None)),
-            deletion_evidence: None,
-        };
-        let mut pipeline = preparation.clone();
-        pipeline.batch_run_id = "run".to_owned();
-
-        assert_eq!(source_failure_stage(&preparation), "source_preparation");
-        assert_eq!(source_failure_stage(&pipeline), "source_pipeline");
     }
 
     #[test]

@@ -9,6 +9,7 @@ mod monitor;
 mod pipeline;
 mod planning;
 mod run;
+mod run_log;
 mod shared;
 mod trash;
 
