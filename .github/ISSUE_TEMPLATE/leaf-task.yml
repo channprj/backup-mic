@@ -1,0 +1,99 @@
+name: "Leaf 태스크"
+description: "하나의 독립적인 결과를 구현하고 검증하는 작업"
+projects:
+  - "channprj/7"
+assignees:
+  - channprj
+body:
+  - type: markdown
+    attributes:
+      value: |
+        제목은 `type: 핵심 대상 및 작업` 또는 `type(scope): 핵심 대상 및 작업` 형식의 간결한 명사형으로 작성해 주세요.
+        예: `fix(backup): 중단된 작업 재시도 오류 수정`
+        `수정한다`, `추가하기` 대신 `수정`, `추가`처럼 끝내고, 불필요한 조사·설명과 `[Task]` 접두사는 빼 주세요.
+        자세한 예시는 [태스크 제목 작성 기준](https://github.com/channprj/backup-mic/blob/main/docs/github-project-workflow.md#태스크-제목-작성)을 따릅니다.
+
+        서로 다른 결과가 섞여 있다면 Issue를 만들기 전에 각각의 leaf 태스크로 나눠 주세요.
+        기본 보드는 [backup-mic Project](https://github.com/users/channprj/projects/7/views/1)입니다.
+        양식의 보드 자동 추가에는 생성자의 Project 쓰기 권한이 필요합니다. 생성 후 보드 등록 여부를 확인해 주세요.
+        Claude Code·Codex 같은 AI 에이전트로 작업하면 착수 전에 아래 에이전트 세션에 에이전트 종류·모델·추론 강도·세션 정보를 채우고, 새 세션에서 이어갈 때는 이전 기록을 유지한 채 새 행을 추가합니다.
+        기록 방법은 [운영 가이드](https://github.com/channprj/backup-mic/blob/main/docs/github-project-workflow.md#에이전트-세션-기록)를 따릅니다.
+
+  - type: textarea
+    id: purpose
+    attributes:
+      label: "목적과 기대 결과"
+      description: "이 작업이 해결할 문제와 독립적으로 확인 가능한 결과 하나를 적어 주세요."
+      placeholder: |
+        목적:
+        기대 결과:
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: "포함·제외 범위"
+      description: "작업에 포함할 내용과 제외할 내용을 구분해 적어 주세요."
+      placeholder: |
+        포함:
+        제외:
+    validations:
+      required: true
+
+  - type: textarea
+    id: file_scope
+    attributes:
+      label: "파일 소유 범위"
+      description: "수정할 파일 또는 디렉터리 범위를 적어 주세요."
+      placeholder: |
+        - path/to/file
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance_criteria
+    attributes:
+      label: "완료 조건"
+      description: "확인 가능한 체크리스트로 적어 주세요."
+      value: |
+        - [ ] 완료 조건을 적어 주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: "검증 방법"
+      description: "실행할 명령이나 확인 절차와 기대 결과를 적어 주세요."
+      placeholder: |
+        명령 또는 절차:
+        기대 결과:
+    validations:
+      required: true
+
+  - type: textarea
+    id: relationships
+    attributes:
+      label: "부모·선행 태스크"
+      description: "부모 Issue와 선행 태스크를 링크해 주세요. 해당 항목이 없으면 `없음`이라고 적어 주세요."
+      placeholder: |
+        부모 Issue: 없음
+        선행 태스크: 없음
+    validations:
+      required: true
+
+  - type: textarea
+    id: agent_sessions
+    attributes:
+      label: "에이전트 세션"
+      description: "사람이 생성하면 미배정으로 두고 배정 시 채웁니다. 에이전트 종류·모델·추론 강도·세션 ID는 도구가 알려 준 실제 값을 쓰며, 확인할 수 없으면 사유를 남기고 나중에 보완합니다. 대화·로그 원문이나 자격증명은 넣지 않습니다."
+      value: "미배정"
+      placeholder: |
+        | 담당 역할 | 에이전트 종류 | 모델 | 추론 강도 | 세션 ID | 재개 방법 | 작업 경로·브랜치 | 시작 일시 |
+        | --- | --- | --- | --- | --- | --- | --- | --- |
+        | 주 에이전트 | Claude Code 또는 Codex | 실제 모델 ID | low·medium·high·xhigh 등 | 실제 세션 ID | 재개 명령 | 저장소 루트 / 브랜치 | YYYY-MM-DD HH:mm (KST) |
+
+        선택한 설정: 모델 등급 또는 모델 / 추론 강도 — 근거 한 줄
+    validations:
+      required: false

@@ -63,6 +63,13 @@ brew install ripgrep gitleaks cargo-audit cmake
 Rust·프런트엔드 테스트, 타입 검사, 빌드, 비밀정보·의존성 감사를 실행합니다.
 보안 검사만 실행하려면 `pnpm security:check`를 사용합니다.
 
+## 작업 관리
+
+작업 진행 상태는 [backup-mic Project](https://github.com/users/channprj/projects/7/views/1)에서 Issue로 관리합니다.
+커밋 메시지에는 작업이 속한 Issue를 `Refs #번호`로 남기며, `pnpm install`이 설치하는 `commit-msg` 훅이 이를 확인합니다.
+훅만 다시 설치하려면 `pnpm run setup:hooks`, 푸시 전 범위를 확인하려면 `pnpm run tasks:check`를 사용합니다.
+자세한 규칙은 [AGENTS.md](AGENTS.md)와 [GitHub Project 운영 가이드](docs/github-project-workflow.md)를 참고합니다.
+
 ## 라이선스
 
 [MIT](LICENSE) · Copyright (c) 2026 channprj
