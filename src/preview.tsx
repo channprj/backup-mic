@@ -3,11 +3,18 @@ import { createRoot } from "react-dom/client";
 import completeFixture from "../contracts/fixtures/backup-complete.json";
 import copyingFixture from "../contracts/fixtures/backup-copying.json";
 import errorFixture from "../contracts/fixtures/error-destination-full.json";
+import transcriptionFixture from "../contracts/fixtures/transcription-snapshot.json";
 import "./index.css";
 import { BackupPopover } from "./features/backup/BackupPopover";
 import { SettingsView } from "./features/backup/SettingsApp";
 import type { BackupActions } from "./features/backup/client";
 import { appSnapshotSchema, type AppSnapshot } from "./features/backup/contracts";
+import { TranscriptionView } from "./features/transcription/TranscriptionPanel";
+import type { TranscriptionActions } from "./features/transcription/client";
+import {
+  transcriptionSnapshotSchema,
+  type TranscriptionSnapshot,
+} from "./features/transcription/contracts";
 
 const complete = appSnapshotSchema.parse(completeFixture);
 const copying = appSnapshotSchema.parse(copyingFixture);
@@ -120,10 +127,65 @@ function Preview() {
   );
 
   return settingsWindow ? (
-    <SettingsView snapshot={snapshot} actions={actions} />
+    <SettingsView
+      snapshot={snapshot}
+      actions={actions}
+      transcription={<TranscriptionPreview />}
+      initialTab={
+        new URLSearchParams(window.location.search).get("tab") === "transcription"
+          ? "transcription"
+          : "backup"
+      }
+    />
   ) : (
     <BackupPopover snapshot={snapshot} actions={actions} />
   );
+}
+
+/** The transcribe tab over the committed fixture, with every write applied locally. */
+function TranscriptionPreview() {
+  const [snapshot, setSnapshot] = useState<TranscriptionSnapshot>(() =>
+    transcriptionSnapshotSchema.parse(transcriptionFixture),
+  );
+  const actions = useMemo<TranscriptionActions>(() => {
+    const apply = async (change: Partial<TranscriptionSnapshot>) => {
+      const next = { ...snapshot, ...change, revision: snapshot.revision + 1 };
+      setSnapshot(next);
+      return next;
+    };
+    return {
+      getTranscriptionSnapshot: async () => snapshot,
+      setTranscriptionEnabled: (enabled) => apply({ enabled }),
+      saveTranscriptionOptions: (options) => apply(options),
+      selectWhisperModel: (id) =>
+        apply({
+          selected_model: {
+            ...snapshot.selected_model,
+            source: "catalog",
+            id,
+            label: snapshot.models.find((model) => model.id === id)?.label ?? id,
+            ready: snapshot.models.some((model) => model.id === id && model.installed),
+          },
+        }),
+      chooseCustomWhisperModel: async () => snapshot,
+      chooseTranscriptionFolder: async () => snapshot,
+      resetTranscriptionFolder: async () => snapshot,
+      openTranscriptionFolder: async () => undefined,
+      downloadWhisperModel: (id) =>
+        apply({
+          download: {
+            model_id: id,
+            received_bytes: 0,
+            total_bytes: snapshot.models.find((model) => model.id === id)?.byte_count ?? 1,
+          },
+        }),
+      cancelWhisperModelDownload: () => apply({ download: null }),
+      transcribeNow: async () => snapshot,
+      cancelTranscription: () =>
+        apply({ job: { ...snapshot.job, phase: "idle", current_item: null, percent: 0 } }),
+    };
+  }, [snapshot]);
+  return <TranscriptionView snapshot={snapshot} actions={actions} />;
 }
 
 createRoot(document.getElementById("root")!).render(

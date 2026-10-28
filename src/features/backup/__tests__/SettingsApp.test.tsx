@@ -1,4 +1,5 @@
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { describe, expect, it, vi } from "vitest";
 import packageManifest from "../../../../package.json";
 import completeFixture from "../../../../contracts/fixtures/backup-complete.json";
@@ -7,7 +8,7 @@ import { appSnapshotSchema, type AppSnapshot } from "../contracts";
 
 const complete = appSnapshotSchema.parse(completeFixture);
 
-function renderSettings(snapshot: AppSnapshot = complete) {
+function renderSettings(snapshot: AppSnapshot = complete, transcription?: ReactNode) {
   const actions = {
     backupNow: vi.fn().mockResolvedValue(undefined),
     cancelBackup: vi.fn().mockResolvedValue(undefined),
@@ -39,7 +40,12 @@ function renderSettings(snapshot: AppSnapshot = complete) {
     openLogs: vi.fn().mockResolvedValue(undefined),
     quitApp: vi.fn().mockResolvedValue(undefined),
   };
-  return { actions, ...render(<SettingsView snapshot={snapshot} actions={actions} />) };
+  return {
+    actions,
+    ...render(
+      <SettingsView snapshot={snapshot} actions={actions} transcription={transcription} />,
+    ),
+  };
 }
 
 describe("SettingsView", () => {
@@ -283,5 +289,27 @@ describe("SettingsView", () => {
         "보관 폴더나 날짜 구조를 바꾸면 검증된 기존 파일도 다음 백업 전에 새 구조로 안전하게 정리됩니다.",
       ),
     ).toBeInTheDocument();
+  });
+
+  it("switches between the backup and transcribe tabs without losing either", () => {
+    renderSettings(complete, <p>전사 탭 내용</p>);
+    const backupTab = screen.getByRole("tab", { name: "백업" });
+    const transcriptionTab = screen.getByRole("tab", { name: "전사" });
+    expect(backupTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.queryByText("전사 탭 내용")).not.toBeInTheDocument();
+
+    fireEvent.click(transcriptionTab);
+    expect(transcriptionTab).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("tabpanel", { name: "전사" })).toHaveTextContent("전사 탭 내용");
+    expect(screen.queryByRole("switch", { name: "자동으로 백업" })).not.toBeInTheDocument();
+
+    fireEvent.keyDown(transcriptionTab, { key: "ArrowLeft" });
+    expect(backupTab).toHaveAttribute("aria-selected", "true");
+    expect(backupTab).toHaveFocus();
+    expect(screen.getByRole("switch", { name: "자동으로 백업" })).toBeInTheDocument();
+    expect(
+      screen.getByText("전사 탭 내용"),
+      "the transcribe tab stays mounted once visited",
+    ).not.toBeVisible();
   });
 });

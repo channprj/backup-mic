@@ -77,3 +77,91 @@ fn webview_capability_has_no_direct_plugin_authority() {
     );
     assert_eq!(REGISTERED_COMMANDS.len(), 21);
 }
+
+#[test]
+fn transcription_fixture_is_exactly_what_rust_sends() {
+    use backup_core::{
+        error::{PublicError, PublicErrorCode},
+        transcription::{TranscriptFormats, WHISPER_MODELS, WhisperOptions},
+    };
+    use backup_mic_lib::transcription::dto::{
+        ModelDownloadDto, ModelSourceDto, SelectedModelDto, TranscriptionJobDto,
+        TranscriptionPhaseDto, TranscriptionSnapshotDto, WhisperModelDto,
+    };
+
+    let models_directory = "~/Library/Application Support/com.channprj.BackupMic/whisper-models";
+    let snapshot = TranscriptionSnapshotDto {
+        revision: 42,
+        enabled: true,
+        include_existing_recordings: false,
+        output_directory_display: "~/Documents/Backup Mic Transcripts".to_owned(),
+        output_directory_is_default: true,
+        models_directory_display: models_directory.to_owned(),
+        models_directory_is_default: true,
+        selected_model: SelectedModelDto {
+            source: ModelSourceDto::Catalog,
+            id: Some("medium".to_owned()),
+            label: "Medium".to_owned(),
+            file_display: format!("{models_directory}/ggml-medium.bin"),
+            ready: true,
+        },
+        models: WHISPER_MODELS
+            .iter()
+            .map(|model| WhisperModelDto {
+                id: model.id.to_owned(),
+                label: model.label.to_owned(),
+                byte_count: model.byte_count,
+                english_only: model.english_only,
+                quantized: model.quantized,
+                installed: matches!(model.id, "tiny" | "medium"),
+            })
+            .collect(),
+        download: Some(ModelDownloadDto {
+            model_id: "large-v3-turbo".to_owned(),
+            received_bytes: 406_138_819,
+            total_bytes: 1_624_555_275,
+        }),
+        formats: TranscriptFormats::default(),
+        whisper: WhisperOptions {
+            language: "ko".to_owned(),
+            initial_prompt: "백업 마이크 회의록".to_owned(),
+            ..WhisperOptions::default()
+        },
+        job: TranscriptionJobDto {
+            phase: TranscriptionPhaseDto::Transcribing,
+            current_item: Some("DJI_20261028_101500_TX01.m4a".to_owned()),
+            percent: 37,
+            queued_count: 3,
+            completed_count: 12,
+            failed_count: 1,
+            last_completed_at: Some("2026-10-28T01:05:00Z".to_owned()),
+        },
+        error: Some(PublicError {
+            code: PublicErrorCode::Internal,
+            message_code: "transcription_decode_failed".to_owned(),
+            retryable: true,
+            transmitter: None,
+            source_id: None,
+            source_label: None,
+        }),
+    };
+
+    // Tauri sends command results and events through `serde_json::to_string`, which writes an
+    // `f32` in its shortest form; comparing that text keeps `0.2` from reading as `0.2000000029`.
+    let sent: Value = serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+    let committed: Value = serde_json::from_str(&fixture("transcription-snapshot.json")).unwrap();
+    assert_eq!(sent, committed);
+    let serialized = serde_json::to_string(&sent).unwrap().to_ascii_lowercase();
+    for forbidden in [
+        "/volumes/",
+        "/users/",
+        "sha256",
+        "recording_id",
+        "source_path",
+    ] {
+        assert!(
+            !serialized.contains(forbidden),
+            "fixture contains {forbidden}"
+        );
+    }
+}

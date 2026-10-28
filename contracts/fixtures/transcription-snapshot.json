@@ -1,0 +1,186 @@
+{
+  "revision": 42,
+  "enabled": true,
+  "include_existing_recordings": false,
+  "output_directory_display": "~/Documents/Backup Mic Transcripts",
+  "output_directory_is_default": true,
+  "models_directory_display": "~/Library/Application Support/com.channprj.BackupMic/whisper-models",
+  "models_directory_is_default": true,
+  "selected_model": {
+    "source": "catalog",
+    "id": "medium",
+    "label": "Medium",
+    "file_display": "~/Library/Application Support/com.channprj.BackupMic/whisper-models/ggml-medium.bin",
+    "ready": true
+  },
+  "models": [
+    {
+      "id": "tiny",
+      "label": "Tiny",
+      "byte_count": 77691713,
+      "english_only": false,
+      "quantized": false,
+      "installed": true
+    },
+    {
+      "id": "tiny.en",
+      "label": "Tiny (English)",
+      "byte_count": 77704715,
+      "english_only": true,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "base",
+      "label": "Base",
+      "byte_count": 147951465,
+      "english_only": false,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "base.en",
+      "label": "Base (English)",
+      "byte_count": 147964211,
+      "english_only": true,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "small",
+      "label": "Small",
+      "byte_count": 487601967,
+      "english_only": false,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "small.en",
+      "label": "Small (English)",
+      "byte_count": 487614201,
+      "english_only": true,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "medium-q5_0",
+      "label": "Medium (Q5_0)",
+      "byte_count": 539212467,
+      "english_only": false,
+      "quantized": true,
+      "installed": false
+    },
+    {
+      "id": "large-v3-turbo-q5_0",
+      "label": "Large v3 Turbo (Q5_0)",
+      "byte_count": 574041195,
+      "english_only": false,
+      "quantized": true,
+      "installed": false
+    },
+    {
+      "id": "large-v3-turbo-q8_0",
+      "label": "Large v3 Turbo (Q8_0)",
+      "byte_count": 874188075,
+      "english_only": false,
+      "quantized": true,
+      "installed": false
+    },
+    {
+      "id": "large-v3-q5_0",
+      "label": "Large v3 (Q5_0)",
+      "byte_count": 1081140203,
+      "english_only": false,
+      "quantized": true,
+      "installed": false
+    },
+    {
+      "id": "medium",
+      "label": "Medium",
+      "byte_count": 1533763059,
+      "english_only": false,
+      "quantized": false,
+      "installed": true
+    },
+    {
+      "id": "medium.en",
+      "label": "Medium (English)",
+      "byte_count": 1533774781,
+      "english_only": true,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "large-v3-turbo",
+      "label": "Large v3 Turbo",
+      "byte_count": 1624555275,
+      "english_only": false,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "large-v2",
+      "label": "Large v2",
+      "byte_count": 3094623691,
+      "english_only": false,
+      "quantized": false,
+      "installed": false
+    },
+    {
+      "id": "large-v3",
+      "label": "Large v3",
+      "byte_count": 3095033483,
+      "english_only": false,
+      "quantized": false,
+      "installed": false
+    }
+  ],
+  "download": {
+    "model_id": "large-v3-turbo",
+    "received_bytes": 406138819,
+    "total_bytes": 1624555275
+  },
+  "formats": {
+    "txt": true,
+    "srt": true,
+    "vtt": false,
+    "json": false
+  },
+  "whisper": {
+    "language": "ko",
+    "translate": false,
+    "sampling": "beam_search",
+    "beam_size": 5,
+    "best_of": 5,
+    "temperature": 0.0,
+    "temperature_increment": 0.2,
+    "initial_prompt": "백업 마이크 회의록",
+    "threads": 0,
+    "use_gpu": true,
+    "flash_attention": true,
+    "no_speech_threshold": 0.6,
+    "entropy_threshold": 2.4,
+    "logprob_threshold": -1.0,
+    "max_segment_length": 0,
+    "split_on_word": false,
+    "suppress_blank": true,
+    "suppress_non_speech": false,
+    "condition_on_previous_text": false
+  },
+  "job": {
+    "phase": "transcribing",
+    "current_item": "DJI_20261028_101500_TX01.m4a",
+    "percent": 37,
+    "queued_count": 3,
+    "completed_count": 12,
+    "failed_count": 1,
+    "last_completed_at": "2026-10-28T01:05:00Z"
+  },
+  "error": {
+    "code": "internal",
+    "message_code": "transcription_decode_failed",
+    "retryable": true,
+    "source_id": null,
+    "source_label": null
+  }
+}

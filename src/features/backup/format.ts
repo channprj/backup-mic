@@ -223,6 +223,58 @@ export function errorCopy(messageCode: string) {
       title: "현재 상태를 불러오지 못했습니다",
       detail: "메뉴 막대를 다시 열거나 앱을 재시작해 주세요.",
     },
+    model_download_failed: {
+      title: "모델을 다운로드하지 못했습니다",
+      detail: "네트워크 연결을 확인한 뒤 다시 시도해 주세요. 받은 부분부터 이어서 받습니다.",
+    },
+    model_checksum_mismatch: {
+      title: "다운로드한 모델이 검증을 통과하지 못했습니다",
+      detail: "손상된 파일은 지웠습니다. 다시 다운로드해 주세요.",
+    },
+    model_storage_failed: {
+      title: "모델을 저장하지 못했습니다",
+      detail: "모델 폴더의 여유 공간과 권한을 확인해 주세요.",
+    },
+    model_download_busy: {
+      title: "다른 모델을 다운로드하고 있습니다",
+      detail: "진행 중인 다운로드가 끝나거나 중단된 뒤 다시 시도해 주세요.",
+    },
+    whisper_model_invalid: {
+      title: "Whisper 모델 파일이 아닙니다",
+      detail: "whisper.cpp용 ggml 모델(.bin) 파일을 선택해 주세요.",
+    },
+    whisper_model_unavailable: {
+      title: "Whisper 모델을 불러오지 못했습니다",
+      detail: "모델 파일이 손상됐거나 옮겨졌습니다. 다시 다운로드하거나 다른 모델을 선택해 주세요.",
+    },
+    transcription_folder_invalid: {
+      title: "이 폴더는 사용할 수 없습니다",
+      detail: "연결된 녹음기나 디스크 최상위가 아닌 폴더를 선택해 주세요.",
+    },
+    transcription_decode_failed: {
+      title: "녹음을 전사용으로 읽지 못했습니다",
+      detail: "백업된 파일을 확인해 주세요. 다른 녹음은 계속 전사합니다.",
+    },
+    transcription_failed: {
+      title: "녹음을 전사하지 못했습니다",
+      detail: "로그를 확인한 뒤 '지금 전사'로 다시 시도해 주세요.",
+    },
+    transcription_output_failed: {
+      title: "전사 결과를 저장하지 못했습니다",
+      detail: "전사 결과 폴더의 권한과 여유 공간을 확인해 주세요.",
+    },
+    open_folder_failed: {
+      title: "폴더를 열지 못했습니다",
+      detail: "폴더 권한을 확인한 뒤 다시 시도해 주세요.",
+    },
+    folder_dialog_failed: {
+      title: "폴더 선택 창을 열지 못했습니다",
+      detail: "잠시 후 다시 시도해 주세요.",
+    },
+    model_dialog_failed: {
+      title: "파일 선택 창을 열지 못했습니다",
+      detail: "잠시 후 다시 시도해 주세요.",
+    },
   };
   return (
     messages[messageCode] ?? {

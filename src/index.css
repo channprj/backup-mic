@@ -1031,6 +1031,183 @@ button:not(:disabled):active {
   overflow: visible;
 }
 
+.settings-tabs {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--secondary) 92%, transparent);
+}
+
+.settings-tabs [role="tab"] {
+  display: inline-flex;
+  min-height: 28px;
+  flex: 1 1 0;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  font-weight: 590;
+}
+
+.settings-tabs [role="tab"] svg {
+  width: 14px;
+  height: 14px;
+}
+
+.settings-tabs [role="tab"][aria-selected="true"] {
+  background: var(--card);
+  color: var(--foreground);
+  box-shadow: 0 1px 2px color-mix(in srgb, #000 12%, transparent);
+}
+
+.settings-tabs [role="tab"]:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}
+
+[role="tabpanel"] > [role="alert"]:first-child {
+  margin-top: 12px;
+}
+
+.transcription-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.folder-actions {
+  flex: 0 0 auto;
+  gap: 4px;
+}
+
+.format-toggles [data-state] {
+  min-width: 40px;
+  font-size: 11px;
+}
+
+.format-toggles [data-state="on"] {
+  border-color: color-mix(in srgb, var(--primary) 55%, transparent);
+  background: color-mix(in srgb, var(--primary) 14%, transparent);
+  color: var(--primary);
+}
+
+.transcription-job [role="progressbar"] {
+  margin-top: 6px;
+}
+
+.model-list {
+  border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+}
+
+.model-row {
+  min-height: 44px;
+}
+
+.settings-row > label.model-label {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.model-label input[type="radio"] {
+  flex: 0 0 auto;
+  accent-color: var(--primary);
+}
+
+.model-text {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.model-row[data-selected] {
+  background: color-mix(in srgb, var(--primary) 7%, transparent);
+}
+
+.model-progress {
+  width: 72px;
+}
+
+.settings-row .model-percent {
+  min-width: 30px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.settings-number {
+  width: 76px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-number:disabled,
+.settings-prompt:disabled {
+  opacity: 0.62;
+}
+
+.settings-prompt-row {
+  flex-wrap: wrap;
+}
+
+.settings-prompt-row > label {
+  flex-basis: 100%;
+}
+
+.settings-prompt {
+  width: 100%;
+  min-height: 64px;
+  padding: 6px 8px;
+  border: 1px solid var(--input);
+  border-radius: 7px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  resize: vertical;
+}
+
+.settings-prompt[aria-invalid="true"] {
+  border-color: var(--destructive);
+}
+
+.settings-row .settings-prompt-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.settings-row .settings-prompt-count.is-over {
+  color: var(--destructive);
+}
+
+.settings-advanced > summary {
+  margin: 0 4px 8px;
+  color: var(--foreground);
+  cursor: default;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.settings-advanced > summary:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .rule-list-wrap,
 .rule-editor {
   padding: 12px;
