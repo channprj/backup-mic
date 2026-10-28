@@ -46,9 +46,7 @@ pnpm tauri dev
 ## 앱 빌드와 설치
 
 ```bash
-./scripts/package-local.sh
-./scripts/install-local.sh "src-tauri/target/release/bundle/macos/Backup Mic.app"
-open -a "$HOME/Applications/Backup Mic.app"
+pnpm build install open
 ```
 
 현재 `VERSION`으로 빌드하며, 앱은 `~/Applications`에 설치됩니다. 로컬 빌드는 ad-hoc 서명을 사용하며 Apple 공증은 포함하지 않습니다.
