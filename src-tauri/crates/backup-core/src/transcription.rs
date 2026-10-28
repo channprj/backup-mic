@@ -41,6 +41,12 @@ pub const WHISPER_LANGUAGES: [&str; 100] = [
     "ha", "ba", "jw", "su", "yue",
 ];
 
+/// Where a fresh install looks for Ollama: its default local address.
+pub const DEFAULT_OLLAMA_URL: &str = "http://localhost:11434";
+
+/// The language transcripts are translated into until the user picks another.
+pub const DEFAULT_TRANSLATION_LANGUAGE: &str = "ko";
+
 /// The language value that asks whisper.cpp to detect the spoken language itself.
 pub const AUTO_LANGUAGE: &str = "auto";
 
@@ -310,8 +316,6 @@ pub enum SamplingStrategy {
 pub struct WhisperOptions {
     /// [`AUTO_LANGUAGE`] or one of [`WHISPER_LANGUAGES`].
     pub language: String,
-    /// Translate the speech into English instead of transcribing it.
-    pub translate: bool,
     pub sampling: SamplingStrategy,
     pub beam_size: u8,
     pub best_of: u8,
@@ -341,7 +345,6 @@ impl Default for WhisperOptions {
     fn default() -> Self {
         Self {
             language: AUTO_LANGUAGE.to_owned(),
-            translate: false,
             sampling: SamplingStrategy::BeamSearch,
             beam_size: 5,
             best_of: 5,
@@ -393,6 +396,66 @@ fn in_range(value: f32, low: f32, high: f32) -> bool {
     value.is_finite() && (low..=high).contains(&value)
 }
 
+/// Translating finished transcripts with a local Ollama model.
+///
+/// Whisper itself only translates into English, so any other target needs a second model. An
+/// empty model name means translation is not set up yet, and the queue then skips it rather than
+/// failing every recording.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TranslationSettings {
+    pub enabled: bool,
+    /// One of [`WHISPER_LANGUAGES`].
+    pub target_language: String,
+    /// The Ollama server, `http://localhost:11434` by default.
+    pub ollama_url: String,
+    /// An Ollama model name such as `qwen2.5:7b`; empty until the user enters one.
+    pub ollama_model: String,
+}
+
+impl Default for TranslationSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            target_language: DEFAULT_TRANSLATION_LANGUAGE.to_owned(),
+            ollama_url: DEFAULT_OLLAMA_URL.to_owned(),
+            ollama_model: String::new(),
+        }
+    }
+}
+
+impl TranslationSettings {
+    /// Refuses a target whisper.cpp does not know, a URL that is not plain `http(s)` or that
+    /// carries credentials, and a model name Ollama could not have.
+    pub fn validate(&self) -> Result<(), CoreError> {
+        let url_valid = ["http://", "https://"].iter().any(|scheme| {
+            self.ollama_url
+                .strip_prefix(scheme)
+                .is_some_and(|rest| !rest.is_empty())
+        }) && self.ollama_url.chars().count() <= 512
+            && !self.ollama_url.chars().any(|character| {
+                character.is_whitespace()
+                    || character.is_control()
+                    || matches!(character, '@' | '"' | '\\')
+            });
+        let model_valid = self.ollama_model.chars().count() <= 128
+            && self.ollama_model.chars().all(|character| {
+                character.is_ascii_alphanumeric()
+                    || matches!(character, '.' | '_' | ':' | '/' | '-')
+            });
+        if WHISPER_LANGUAGES.contains(&self.target_language.as_str()) && url_valid && model_valid {
+            Ok(())
+        } else {
+            Err(CoreError::InvalidRequest)
+        }
+    }
+
+    /// Whether finished transcripts should be translated now.
+    pub fn is_configured(&self) -> bool {
+        self.enabled && !self.ollama_model.is_empty()
+    }
+}
+
 /// Everything the transcription feature persists.
 ///
 /// The three paths are absent until the user picks one, so the defaults can follow the app's
@@ -414,6 +477,7 @@ pub struct TranscriptionSettings {
     /// Whether the dictionary below is applied; entries are kept either way.
     pub dictionary_enabled: bool,
     pub dictionary: Vec<DictionaryEntry>,
+    pub translation: TranslationSettings,
 }
 
 impl Default for TranscriptionSettings {
@@ -429,6 +493,7 @@ impl Default for TranscriptionSettings {
             whisper: WhisperOptions::default(),
             dictionary_enabled: true,
             dictionary: Vec::new(),
+            translation: TranslationSettings::default(),
         }
     }
 }
@@ -446,6 +511,7 @@ impl TranscriptionSettings {
         };
         if paths_valid && model_valid && !self.formats.selected().is_empty() {
             self.whisper.validate()?;
+            self.translation.validate()?;
             validate_dictionary(&self.dictionary)
         } else {
             Err(CoreError::InvalidRequest)
@@ -635,6 +701,52 @@ mod tests {
             ..WhisperOptions::default()
         };
         assert!(accepted.validate().is_ok());
+    }
+
+    #[test]
+    fn translation_needs_a_model_and_refuses_credentials_or_odd_urls() {
+        let defaults = TranslationSettings::default();
+        assert!(defaults.validate().is_ok());
+        assert!(
+            !defaults.is_configured(),
+            "off and without a model by default"
+        );
+        let configured = TranslationSettings {
+            enabled: true,
+            ollama_model: "qwen2.5:7b".to_owned(),
+            ollama_url: "http://192.168.0.10:11434".to_owned(),
+            ..TranslationSettings::default()
+        };
+        assert!(configured.validate().is_ok());
+        assert!(configured.is_configured());
+        for refused in [
+            TranslationSettings {
+                target_language: "auto".to_owned(),
+                ..configured.clone()
+            },
+            TranslationSettings {
+                ollama_url: "ftp://localhost".to_owned(),
+                ..configured.clone()
+            },
+            TranslationSettings {
+                ollama_url: "http://user:secret@localhost".to_owned(),
+                ..configured.clone()
+            },
+            TranslationSettings {
+                ollama_url: "http://local host".to_owned(),
+                ..configured.clone()
+            },
+            TranslationSettings {
+                ollama_url: "http://".to_owned(),
+                ..configured.clone()
+            },
+            TranslationSettings {
+                ollama_model: "model; rm".to_owned(),
+                ..configured.clone()
+            },
+        ] {
+            assert!(refused.validate().is_err(), "{refused:?}");
+        }
     }
 
     #[test]

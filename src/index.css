@@ -1165,6 +1165,15 @@ button:not(:disabled):active {
   opacity: 0.62;
 }
 
+.settings-text-row .settings-text-input {
+  flex: 0 0 200px;
+  width: 200px;
+}
+
+.settings-section-title code {
+  font-size: 10px;
+}
+
 .settings-text-input {
   width: 100%;
   min-height: 30px;

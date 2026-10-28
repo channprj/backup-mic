@@ -44,6 +44,10 @@ pub enum EngineError {
     DecodeFailed,
     TranscriptionFailed,
     OutputFailed,
+    /// Ollama could not be reached; the transcript itself was still written.
+    TranslationUnavailable,
+    /// Ollama answered without one translation per segment; the transcript was still written.
+    TranslationFailed,
 }
 
 impl EngineError {
@@ -54,6 +58,8 @@ impl EngineError {
             Self::DecodeFailed => "transcription_decode_failed",
             Self::TranscriptionFailed => "transcription_failed",
             Self::OutputFailed => "transcription_output_failed",
+            Self::TranslationUnavailable => "translation_unavailable",
+            Self::TranslationFailed => "translation_failed",
         }
     }
 }
@@ -225,7 +231,9 @@ impl TranscriptionEngine for WhisperEngine {
             },
         });
         parameters.set_language(Some(options.language.as_str()));
-        parameters.set_translate(options.translate);
+        // Translation is a separate step with a target the user picks; whisper.cpp's own mode
+        // only produces English.
+        parameters.set_translate(false);
         parameters.set_n_threads(thread_count(options.threads));
         parameters.set_temperature(options.temperature);
         parameters.set_temperature_inc(options.temperature_increment);

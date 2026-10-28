@@ -6,10 +6,12 @@ import {
   transcriptionFolderSchema,
   transcriptionOptionsSchema,
   transcriptionSnapshotSchema,
+  translationSettingsSchema,
   type TranscriptionDictionary,
   type TranscriptionFolder,
   type TranscriptionOptions,
   type TranscriptionSnapshot,
+  type TranslationSettings,
 } from "./contracts";
 
 const snapshotEvent = "transcription-snapshot-changed";
@@ -44,6 +46,14 @@ export function saveTranscriptionDictionary(
 ): Promise<TranscriptionSnapshot> {
   return invokeSnapshot("save_transcription_dictionary", {
     dictionary: transcriptionDictionarySchema.parse(dictionary),
+  });
+}
+
+export function saveTranslationSettings(
+  translation: TranslationSettings,
+): Promise<TranscriptionSnapshot> {
+  return invokeSnapshot("save_translation_settings", {
+    translation: translationSettingsSchema.parse(translation),
   });
 }
 
@@ -116,6 +126,7 @@ export const transcriptionClient = {
   setTranscriptionEnabled,
   saveTranscriptionOptions,
   saveTranscriptionDictionary,
+  saveTranslationSettings,
   selectWhisperModel,
   chooseCustomWhisperModel,
   chooseTranscriptionFolder,

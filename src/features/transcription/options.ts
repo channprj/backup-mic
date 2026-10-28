@@ -30,6 +30,23 @@ export const languageChoices = [
   { value: "uk", label: "우크라이나어" },
 ] as const;
 
+/** Translation targets: the same languages, without automatic detection. */
+export const translationLanguageChoices = languageChoices.filter(
+  (choice) => choice.value !== "auto",
+);
+
+export const defaultOllamaUrl = "http://localhost:11434";
+
+/** Whether an Ollama address points at this Mac, so transcripts never leave it. */
+export function isLocalOllamaUrl(url: string) {
+  try {
+    const { hostname } = new URL(url);
+    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(hostname);
+  } catch {
+    return false;
+  }
+}
+
 export const samplingChoices = [
   { value: "beam_search", label: "빔 서치" },
   { value: "greedy", label: "그리디" },
@@ -55,7 +72,6 @@ export const formatChoices = [
 /** The whisper.cpp defaults, mirrored from `WhisperOptions::default` in Rust. */
 export const defaultWhisperOptions: TranscriptionSnapshot["whisper"] = {
   language: "auto",
-  translate: false,
   sampling: "beam_search",
   beam_size: 5,
   best_of: 5,

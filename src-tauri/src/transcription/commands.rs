@@ -7,7 +7,7 @@ use backup_core::{
     audit_log::{AuditLevel, AuditValue},
     dictionary::normalize_dictionary,
     error::{CoreError, PublicError},
-    transcription::{ModelChoice, TranscriptionSettings, whisper_model},
+    transcription::{ModelChoice, TranscriptionSettings, TranslationSettings, whisper_model},
 };
 use tauri::{AppHandle, State};
 use tauri_plugin_dialog::DialogExt as _;
@@ -17,18 +17,19 @@ use super::{
     TranscriptionService,
     dto::{
         TranscriptionDictionaryDto, TranscriptionFolder, TranscriptionOptionsDto,
-        TranscriptionSnapshotDto,
+        TranscriptionSnapshotDto, TranslationSettingsDto,
     },
     models::validate_custom_model,
     public_error,
 };
 use crate::clock;
 
-pub const REGISTERED_COMMANDS: [&str; 13] = [
+pub const REGISTERED_COMMANDS: [&str; 14] = [
     "get_transcription_snapshot",
     "set_transcription_enabled",
     "save_transcription_options",
     "save_transcription_dictionary",
+    "save_translation_settings",
     "select_whisper_model",
     "choose_custom_whisper_model",
     "choose_transcription_folder",
@@ -120,6 +121,37 @@ pub async fn save_transcription_dictionary(
         move |settings| {
             settings.dictionary_enabled = dictionary.enabled;
             settings.dictionary = normalize_dictionary(dictionary.entries);
+            Ok(())
+        },
+    )
+    .await
+}
+
+/// Saves the Ollama translation settings. Address and model are trimmed; the stored settings
+/// refuse a URL with credentials or a model name Ollama could not have.
+#[tauri::command]
+pub async fn save_translation_settings(
+    app: AppHandle,
+    service: State<'_, TranscriptionService>,
+    translation: TranslationSettingsDto,
+) -> CommandResult {
+    save(
+        &app,
+        service.inner(),
+        "save_translation_settings",
+        move |settings| {
+            let next = TranslationSettings {
+                enabled: translation.enabled,
+                target_language: translation.target_language,
+                ollama_url: translation
+                    .ollama_url
+                    .trim()
+                    .trim_end_matches('/')
+                    .to_owned(),
+                ollama_model: translation.ollama_model.trim().to_owned(),
+            };
+            next.validate()?;
+            settings.translation = next;
             Ok(())
         },
     )

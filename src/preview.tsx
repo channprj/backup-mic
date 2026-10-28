@@ -159,6 +159,7 @@ function TranscriptionPreview() {
       saveTranscriptionOptions: (options) => apply(options),
       saveTranscriptionDictionary: ({ enabled, entries }) =>
         apply({ dictionary_enabled: enabled, dictionary: entries }),
+      saveTranslationSettings: (translation) => apply({ translation }),
       selectWhisperModel: (id) =>
         apply({
           selected_model: {

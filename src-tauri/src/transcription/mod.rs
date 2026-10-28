@@ -11,6 +11,7 @@ pub mod models;
 mod output;
 mod queue;
 mod timeline;
+mod translate;
 mod worker;
 
 use std::{
@@ -238,6 +239,7 @@ impl TranscriptionService {
             whisper: settings.whisper,
             dictionary_enabled: settings.dictionary_enabled,
             dictionary: settings.dictionary,
+            translation: settings.translation,
             job,
             error,
         }

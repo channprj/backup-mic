@@ -148,7 +148,6 @@
   },
   "whisper": {
     "language": "ko",
-    "translate": false,
     "sampling": "beam_search",
     "beam_size": 5,
     "best_of": 5,
@@ -184,6 +183,12 @@
       "enabled": false
     }
   ],
+  "translation": {
+    "enabled": true,
+    "target_language": "en",
+    "ollama_url": "http://localhost:11434",
+    "ollama_model": "qwen2.5:7b"
+  },
   "job": {
     "phase": "transcribing",
     "current_item": "DJI_20261028_101500_TX01.m4a",

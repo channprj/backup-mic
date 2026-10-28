@@ -1,6 +1,7 @@
 import { describe, expect, test } from "vitest";
 import transcriptionFixture from "../../../../contracts/fixtures/transcription-snapshot.json";
 import {
+  translationSettingsSchema,
   transcriptionDictionarySchema,
   transcriptionOptionsSchema,
   transcriptionSnapshotSchema,
@@ -79,6 +80,25 @@ describe("transcription contracts", () => {
           enabled: true,
           entries: [refused],
         }).success,
+        JSON.stringify(refused),
+      ).toBe(false);
+    }
+  });
+
+  test("mirrors the Rust translation checks", () => {
+    const translation =
+      transcriptionSnapshotSchema.parse(transcriptionFixture).translation;
+    expect(translationSettingsSchema.safeParse(translation).success).toBe(true);
+    for (const refused of [
+      { ollama_url: "ftp://localhost" },
+      { ollama_url: "http://user:secret@localhost" },
+      { ollama_url: "http://local host" },
+      { ollama_model: "model; rm" },
+      { extra: true },
+    ]) {
+      expect(
+        translationSettingsSchema.safeParse({ ...translation, ...refused })
+          .success,
         JSON.stringify(refused),
       ).toBe(false);
     }

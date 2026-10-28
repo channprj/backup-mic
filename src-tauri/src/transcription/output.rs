@@ -30,20 +30,23 @@ pub struct TranscriptMeta<'a> {
     pub source: &'a str,
     /// When the recording began on the recorder's clock, if it could be worked out.
     pub started_at: Option<PrimitiveDateTime>,
+    /// The language a translated transcript is in; `None` for the transcript itself.
+    pub translated_into: Option<&'a str>,
 }
 
-/// Where `format` of the recording at `relative` goes, or `None` for a path that could leave
-/// the output folder.
+/// Where `format` of the recording at `relative` goes — `<name>.<ext>`, or `<name>.<lang>.<ext>`
+/// for a translation — or `None` for a path that could leave the output folder.
 pub fn transcript_path(
     output_root: &Path,
     relative: &Path,
     format: TranscriptFormat,
+    translated_into: Option<&str>,
 ) -> Option<PathBuf> {
-    is_safe_relative_path(relative).then(|| {
-        output_root
-            .join(relative)
-            .with_extension(format.extension())
-    })
+    let extension = translated_into.map_or_else(
+        || format.extension().to_owned(),
+        |language| format!("{language}.{}", format.extension()),
+    );
+    is_safe_relative_path(relative).then(|| output_root.join(relative).with_extension(extension))
 }
 
 /// The selected formats this recording does not have a transcript file for yet.
@@ -51,12 +54,13 @@ pub fn missing_formats(
     output_root: &Path,
     relative: &Path,
     formats: &[TranscriptFormat],
+    translated_into: Option<&str>,
 ) -> Vec<TranscriptFormat> {
     formats
         .iter()
         .copied()
         .filter(|format| {
-            transcript_path(output_root, relative, *format)
+            transcript_path(output_root, relative, *format, translated_into)
                 .is_some_and(|path| fs::symlink_metadata(path).is_err())
         })
         .collect()
@@ -72,7 +76,7 @@ pub fn write_transcript(
 ) -> Result<usize, CoreError> {
     let first = formats
         .first()
-        .and_then(|format| transcript_path(output_root, relative, *format))
+        .and_then(|format| transcript_path(output_root, relative, *format, meta.translated_into))
         .ok_or(CoreError::InvalidRequest)?;
     let parent = first.parent().ok_or(CoreError::InvalidRequest)?;
     fs::create_dir_all(parent).map_err(CoreError::CopyFailed)?;
@@ -84,7 +88,7 @@ pub fn write_transcript(
     let recording = relative.to_string_lossy();
     let mut written = 0;
     for format in formats {
-        let name = transcript_path(output_root, relative, *format)
+        let name = transcript_path(output_root, relative, *format, meta.translated_into)
             .and_then(|path| path.file_name().map(ToOwned::to_owned))
             .ok_or(CoreError::InvalidRequest)?;
         let target = canonical_parent.join(name);
@@ -242,6 +246,7 @@ mod tests {
         model: "Medium",
         source: "TX01",
         started_at: Some(datetime!(2025-10-28 14:30:22)),
+        translated_into: None,
     };
 
     fn transcript() -> Transcript {
@@ -326,13 +331,16 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let relative = Path::new("DJI/2026/10/28/TX01_MIC001.m4a");
         let formats = [TranscriptFormat::Txt, TranscriptFormat::Srt];
-        assert_eq!(missing_formats(output.path(), relative, &formats), formats);
+        assert_eq!(
+            missing_formats(output.path(), relative, &formats, None),
+            formats
+        );
 
         let edited = output.path().join("DJI/2026/10/28/TX01_MIC001.txt");
         fs::create_dir_all(edited.parent().unwrap()).unwrap();
         fs::write(&edited, "edited by hand").unwrap();
         assert_eq!(
-            missing_formats(output.path(), relative, &formats),
+            missing_formats(output.path(), relative, &formats, None),
             [TranscriptFormat::Srt]
         );
 
@@ -346,7 +354,28 @@ mod tests {
                 .join("DJI/2026/10/28/TX01_MIC001.srt")
                 .is_file()
         );
-        assert!(missing_formats(output.path(), relative, &formats).is_empty());
+        assert!(missing_formats(output.path(), relative, &formats, None).is_empty());
+
+        assert_eq!(
+            missing_formats(output.path(), relative, &formats, Some("en")),
+            formats,
+            "a translation is tracked separately from the transcript"
+        );
+        let english = TranscriptMeta {
+            translated_into: Some("en"),
+            ..META
+        };
+        assert_eq!(
+            write_transcript(output.path(), relative, &formats, &transcript(), &english).unwrap(),
+            2
+        );
+        assert!(
+            output
+                .path()
+                .join("DJI/2026/10/28/TX01_MIC001.en.srt")
+                .is_file()
+        );
+        assert!(missing_formats(output.path(), relative, &formats, Some("en")).is_empty());
     }
 
     #[test]
@@ -354,8 +383,13 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         for relative in ["../escape.m4a", "/absolute.m4a", ""] {
             assert!(
-                transcript_path(output.path(), Path::new(relative), TranscriptFormat::Txt)
-                    .is_none()
+                transcript_path(
+                    output.path(),
+                    Path::new(relative),
+                    TranscriptFormat::Txt,
+                    None
+                )
+                .is_none()
             );
             assert!(
                 write_transcript(

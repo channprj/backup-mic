@@ -3,7 +3,10 @@ use std::path::PathBuf;
 use backup_core::{
     error::CoreError,
     ledger::Ledger,
-    transcription::{ModelChoice, TRANSCRIPTION_SETTING, TranscriptionSettings, WhisperOptions},
+    transcription::{
+        ModelChoice, TRANSCRIPTION_SETTING, TranscriptionSettings, TranslationSettings,
+        WhisperOptions,
+    },
 };
 
 #[test]
@@ -26,8 +29,13 @@ fn transcription_settings_survive_reopening_the_ledger() {
         },
         whisper: WhisperOptions {
             language: "ko".to_owned(),
-            translate: true,
             ..WhisperOptions::default()
+        },
+        translation: TranslationSettings {
+            enabled: true,
+            target_language: "en".to_owned(),
+            ollama_model: "qwen2.5:7b".to_owned(),
+            ..TranslationSettings::default()
         },
         ..TranscriptionSettings::default()
     };

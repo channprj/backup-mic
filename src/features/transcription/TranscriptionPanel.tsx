@@ -22,6 +22,8 @@ import { errorCopy, formatBytes, formatTime } from "../backup/format";
 import { SettingChoiceRow, SettingRow } from "../backup/SettingsControls";
 import { transcriptionClient, type TranscriptionActions } from "./client";
 import { DictionarySection } from "./DictionarySection";
+import { TextChoiceRow } from "./TranscriptionControls";
+import { TranslationSection } from "./TranslationSection";
 import {
   type TranscriptFormats,
   type TranscriptionFolder,
@@ -297,14 +299,6 @@ export function TranscriptionView({
             pending={optionsPending}
             onChange={(language) => setWhisper({ language })}
           />
-          <SettingRow
-            id="whisper-translate"
-            label="영어로 번역"
-            description="받아쓰는 대신 영어 번역문을 저장합니다."
-            checked={view.whisper.translate}
-            pending={optionsPending}
-            onChange={(translate) => setWhisper({ translate })}
-          />
           <TextChoiceRow
             id="whisper-sampling"
             label="디코딩 방식"
@@ -365,6 +359,12 @@ export function TranscriptionView({
           />
         </div>
       </section>
+
+      <TranslationSection
+        translation={view.translation}
+        pending={pending.has("translation")}
+        onSave={(translation) => void persistence.saveTranslation(translation)}
+      />
 
       <section
         className="settings-section"
@@ -778,57 +778,6 @@ function ModelRow({
             다운로드
           </Button>
         )}
-      </div>
-    </div>
-  );
-}
-
-/**
- * A settings row whose value is one of a few strings. Like `SettingChoiceRow`, a stored value
- * the list does not offer is shown as an extra option instead of being misreported.
- */
-function TextChoiceRow({
-  id,
-  label,
-  description,
-  value,
-  choices,
-  pending,
-  onChange,
-}: {
-  id: string;
-  label: string;
-  description: string;
-  value: string;
-  choices: ReadonlyArray<{ value: string; label: string }>;
-  pending: boolean;
-  onChange: (value: string) => void;
-}) {
-  const options = choices.some((choice) => choice.value === value)
-    ? choices
-    : [...choices, { value, label: value }];
-  return (
-    <div className="settings-row">
-      <label htmlFor={id}>
-        <strong>{label}</strong>
-        <span>{description}</span>
-      </label>
-      <div className="settings-control">
-        {pending ? <Spinner aria-label={`${label} 저장 중`} /> : null}
-        <select
-          id={id}
-          className="settings-choice"
-          aria-label={label}
-          value={value}
-          disabled={pending}
-          onChange={(event) => onChange(event.currentTarget.value)}
-        >
-          {options.map((choice) => (
-            <option key={choice.value} value={choice.value}>
-              {choice.label}
-            </option>
-          ))}
-        </select>
       </div>
     </div>
   );

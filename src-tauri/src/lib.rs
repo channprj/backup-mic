@@ -76,6 +76,7 @@ pub fn run() {
             transcription::commands::set_transcription_enabled,
             transcription::commands::save_transcription_options,
             transcription::commands::save_transcription_dictionary,
+            transcription::commands::save_translation_settings,
             transcription::commands::select_whisper_model,
             transcription::commands::choose_custom_whisper_model,
             transcription::commands::choose_transcription_folder,

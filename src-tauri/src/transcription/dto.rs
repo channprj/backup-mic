@@ -7,7 +7,7 @@
 use backup_core::{
     dictionary::DictionaryEntry,
     error::PublicError,
-    transcription::{TranscriptFormats, WhisperOptions},
+    transcription::{TranscriptFormats, TranslationSettings, WhisperOptions},
 };
 use serde::{Deserialize, Serialize};
 
@@ -27,6 +27,7 @@ pub struct TranscriptionSnapshotDto {
     pub whisper: WhisperOptions,
     pub dictionary_enabled: bool,
     pub dictionary: Vec<DictionaryEntry>,
+    pub translation: TranslationSettings,
     pub job: TranscriptionJobDto,
     pub error: Option<PublicError>,
 }
@@ -122,6 +123,16 @@ pub struct TranscriptionOptionsDto {
 pub struct TranscriptionDictionaryDto {
     pub enabled: bool,
     pub entries: Vec<DictionaryEntry>,
+}
+
+/// The translation settings as the window edits them.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TranslationSettingsDto {
+    pub enabled: bool,
+    pub target_language: String,
+    pub ollama_url: String,
+    pub ollama_model: String,
 }
 
 /// The two folders the transcription settings let the user choose.

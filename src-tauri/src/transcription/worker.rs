@@ -26,8 +26,11 @@ use super::{
     dto::TranscriptionPhaseDto,
     engine::{AppleDecoder, EngineError, PcmDecoder, TranscriptionEngine, WhisperEngine},
     public_error,
-    queue::{Candidate, Finished, Job, SourceLabels, pending_candidates, transcribe_one},
+    queue::{
+        Candidate, Finished, Job, SourceLabels, TranslationJob, pending_candidates, transcribe_one,
+    },
     timeline::StartSource,
+    translate::OllamaTranslator,
 };
 use crate::clock;
 
@@ -255,6 +258,13 @@ impl TranscriptionService {
         };
         let dictionary =
             DictionaryContext::compile(settings.dictionary_enabled, &settings.dictionary);
+        let translator = settings
+            .translation
+            .is_configured()
+            .then(|| OllamaTranslator {
+                url: settings.translation.ollama_url.clone(),
+                model: settings.translation.ollama_model.clone(),
+            });
         let started = Instant::now();
         let result = transcribe_one(
             candidate,
@@ -264,6 +274,10 @@ impl TranscriptionService {
                 model_label: &model_label,
                 options: &settings.whisper,
                 dictionary: &dictionary,
+                translation: translator.as_ref().map(|translator| TranslationJob {
+                    translator,
+                    target_language: &settings.translation.target_language,
+                }),
                 cancel,
             },
             decoder,
@@ -313,6 +327,10 @@ impl TranscriptionService {
                         ("count", AuditValue::Unsigned(finished.segments as u64)),
                         ("files", AuditValue::Unsigned(finished.files_written as u64)),
                         (
+                            "converted",
+                            AuditValue::Unsigned(finished.files_translated as u64),
+                        ),
+                        (
                             "mode",
                             AuditValue::Text(match finished.start_source {
                                 Some(StartSource::FileName) => "file_name_time",
@@ -334,7 +352,12 @@ impl TranscriptionService {
                 true
             }
             Err(error) => {
+                // A missing model fails every recording the same way, so it is not held against
+                // this one. An unreachable Ollama would too, but the transcript was already
+                // written and re-running whisper just to fail again is the expensive part, so
+                // the recording is skipped and the pass stops.
                 let model_problem = error == EngineError::ModelUnavailable;
+                let stop = model_problem || error == EngineError::TranslationUnavailable;
                 if !model_problem {
                     self.inner
                         .skipped
@@ -360,7 +383,7 @@ impl TranscriptionService {
                     ],
                 );
                 self.inner.runtime.lock().error = Some(public);
-                model_problem
+                stop
             }
         };
         {

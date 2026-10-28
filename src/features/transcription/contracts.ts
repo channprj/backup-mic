@@ -25,7 +25,6 @@ export const transcriptFormatsSchema = z
 export const whisperOptionsSchema = z
   .object({
     language: z.string().min(2).max(8),
-    translate: z.boolean(),
     sampling: z.enum(["greedy", "beam_search"]),
     beam_size: decoderCountSchema,
     best_of: decoderCountSchema,
@@ -75,6 +74,20 @@ export const transcriptionDictionarySchema = z
   .object({
     enabled: z.boolean(),
     entries: z.array(dictionaryEntrySchema).max(maxDictionaryEntries),
+  })
+  .strict();
+
+// Mirrors `TranslationSettings::validate` in Rust: plain http(s) without credentials, and an
+// Ollama model name that is empty until the user enters one.
+export const ollamaUrlPattern = /^https?:\/\/[^\s@"\\]+$/u;
+export const ollamaModelPattern = /^[A-Za-z0-9._:/-]*$/u;
+
+export const translationSettingsSchema = z
+  .object({
+    enabled: z.boolean(),
+    target_language: z.string().min(2).max(8),
+    ollama_url: z.string().max(512).regex(ollamaUrlPattern),
+    ollama_model: z.string().max(128).regex(ollamaModelPattern),
   })
   .strict();
 
@@ -145,6 +158,7 @@ export const transcriptionSnapshotSchema = z
     whisper: whisperOptionsSchema,
     dictionary_enabled: z.boolean(),
     dictionary: z.array(dictionaryEntrySchema).max(maxDictionaryEntries),
+    translation: translationSettingsSchema,
     job: z
       .object({
         phase: transcriptionPhaseSchema,
@@ -165,6 +179,7 @@ export type TranscriptFormats = z.infer<typeof transcriptFormatsSchema>;
 export type WhisperOptions = z.infer<typeof whisperOptionsSchema>;
 export type TranscriptionOptions = z.infer<typeof transcriptionOptionsSchema>;
 export type DictionaryEntry = z.infer<typeof dictionaryEntrySchema>;
+export type TranslationSettings = z.infer<typeof translationSettingsSchema>;
 export type TranscriptionDictionary = z.infer<
   typeof transcriptionDictionarySchema
 >;

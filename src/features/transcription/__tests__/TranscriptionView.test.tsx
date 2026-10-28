@@ -25,6 +25,12 @@ const fresh: TranscriptionSnapshot = {
   download: null,
   whisper: { ...fixture.whisper, language: "auto" },
   dictionary: [],
+  translation: {
+    enabled: false,
+    target_language: "ko",
+    ollama_url: "http://localhost:11434",
+    ollama_model: "",
+  },
   job: {
     ...fixture.job,
     phase: "idle",
@@ -57,6 +63,11 @@ function renderView(snapshot: TranscriptionSnapshot = fresh) {
       .fn()
       .mockImplementation((options) =>
         Promise.resolve(next(snapshot, options)),
+      ),
+    saveTranslationSettings: vi
+      .fn()
+      .mockImplementation((translation) =>
+        Promise.resolve(next(snapshot, { translation })),
       ),
     saveTranscriptionDictionary: vi
       .fn()
@@ -296,6 +307,76 @@ describe("TranscriptionView", () => {
     expect(screen.getByRole("textbox", { name: "정식 표기" })).toHaveValue(
       "WakeNote",
     );
+  });
+
+  it("sets up Ollama translation and waits for a model name", async () => {
+    const { actions } = renderView();
+    expect(
+      screen.queryByRole("switch", { name: "영어로 번역" }),
+      "whisper's English-only switch is gone",
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "전사 후 번역" }));
+    await waitFor(() =>
+      expect(actions.saveTranslationSettings).toHaveBeenCalledWith({
+        ...fresh.translation,
+        enabled: true,
+      }),
+    );
+    expect(
+      await screen.findByText("모델 이름을 넣으면 다음 녹음부터 번역합니다."),
+    ).toBeInTheDocument();
+
+    fireEvent.change(screen.getByRole("combobox", { name: "번역 언어" }), {
+      target: { value: "en" },
+    });
+    await waitFor(() =>
+      expect(actions.saveTranslationSettings).toHaveBeenLastCalledWith(
+        expect.objectContaining({ target_language: "en" }),
+      ),
+    );
+    expect(
+      within(screen.getByRole("combobox", { name: "번역 언어" })).queryByRole(
+        "option",
+        { name: "자동 감지" },
+      ),
+      "a translation needs a concrete target language",
+    ).not.toBeInTheDocument();
+  });
+
+  it("saves a trimmed model and refuses an address with credentials", async () => {
+    const { actions } = renderView();
+    const model = screen.getByRole("textbox", { name: "모델" });
+    fireEvent.focus(model);
+    fireEvent.change(model, { target: { value: "  qwen2.5:7b " } });
+    fireEvent.blur(model);
+    await waitFor(() =>
+      expect(actions.saveTranslationSettings).toHaveBeenCalledWith({
+        ...fresh.translation,
+        ollama_model: "qwen2.5:7b",
+      }),
+    );
+
+    actions.saveTranslationSettings.mockClear();
+    const url = screen.getByRole("textbox", { name: "Ollama 주소" });
+    fireEvent.focus(url);
+    fireEvent.change(url, { target: { value: "http://me:secret@nas:11434" } });
+    fireEvent.blur(url);
+    expect(actions.saveTranslationSettings).not.toHaveBeenCalled();
+    expect(url).toHaveValue("http://localhost:11434");
+  });
+
+  it("warns when transcripts would go to another computer", () => {
+    renderView({
+      ...fresh,
+      translation: {
+        ...fresh.translation,
+        ollama_url: "http://192.168.0.10:11434",
+      },
+    });
+    expect(
+      screen.getByText(/다른 컴퓨터의 Ollama 주소입니다/),
+    ).toBeInTheDocument();
   });
 
   it("shows a running download and transcription with their stop buttons", () => {

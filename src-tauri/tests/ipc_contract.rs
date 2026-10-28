@@ -83,7 +83,7 @@ fn transcription_fixture_is_exactly_what_rust_sends() {
     use backup_core::{
         dictionary::DictionaryEntry,
         error::{PublicError, PublicErrorCode},
-        transcription::{TranscriptFormats, WHISPER_MODELS, WhisperOptions},
+        transcription::{TranscriptFormats, TranslationSettings, WHISPER_MODELS, WhisperOptions},
     };
     use backup_mic_lib::transcription::dto::{
         ModelDownloadDto, ModelSourceDto, SelectedModelDto, TranscriptionJobDto,
@@ -126,6 +126,12 @@ fn transcription_fixture_is_exactly_what_rust_sends() {
         whisper: WhisperOptions {
             language: "ko".to_owned(),
             ..WhisperOptions::default()
+        },
+        translation: TranslationSettings {
+            enabled: true,
+            target_language: "en".to_owned(),
+            ollama_url: "http://localhost:11434".to_owned(),
+            ollama_model: "qwen2.5:7b".to_owned(),
         },
         dictionary_enabled: true,
         dictionary: vec![

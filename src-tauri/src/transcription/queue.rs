@@ -28,9 +28,10 @@ use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset, format_description::wel
 use crate::platform::macos::audio::TRANSCRIPTION_SAMPLE_RATE_HZ;
 
 use super::{
-    engine::{EngineError, PcmDecoder, TranscriptionEngine},
+    engine::{EngineError, PcmDecoder, Segment, Transcript, TranscriptionEngine},
     output::{TranscriptMeta, missing_formats, write_transcript},
     timeline::{StartSource, local_modified_time, recording_start, source_label, start_from_name},
+    translate::{TranslateError, Translator},
 };
 
 /// What the queue needs to stamp transcripts: each source's recorder rule name, for the bracket
@@ -48,6 +49,8 @@ pub struct Candidate {
     pub relative_path: PathBuf,
     pub audio_path: PathBuf,
     pub missing: Vec<TranscriptFormat>,
+    /// The selected formats with no translation file yet; empty when translation is off.
+    pub missing_translations: Vec<TranscriptFormat>,
     /// The bracketed label after each line's stamp.
     pub source: String,
     /// The start time the original file name encodes.
@@ -80,6 +83,10 @@ pub fn pending_candidates(
     labels: &SourceLabels,
 ) -> Vec<Candidate> {
     let formats = settings.formats.selected();
+    let translated_into = settings
+        .translation
+        .is_configured()
+        .then_some(settings.translation.target_language.as_str());
     let since = if settings.include_existing_recordings {
         None
     } else {
@@ -107,8 +114,12 @@ pub fn pending_candidates(
             let audio_path = destination.join(&recording.artifact.relative_path);
             let is_file = fs::symlink_metadata(&audio_path)
                 .is_ok_and(|metadata| metadata.file_type().is_file());
-            let missing = missing_formats(output_root, &recording.artifact.relative_path, &formats);
-            (is_file && !missing.is_empty()).then(|| {
+            let relative = &recording.artifact.relative_path;
+            let missing = missing_formats(output_root, relative, &formats, None);
+            let missing_translations = translated_into.map_or_else(Vec::new, |language| {
+                missing_formats(output_root, relative, &formats, Some(language))
+            });
+            (is_file && !(missing.is_empty() && missing_translations.is_empty())).then(|| {
                 let source_name = recording
                     .source_relative_path
                     .file_name()
@@ -138,6 +149,7 @@ pub fn pending_candidates(
                     relative_path: recording.artifact.relative_path,
                     audio_path,
                     missing,
+                    missing_translations,
                 };
                 (recording.verified_at, candidate)
             })
@@ -161,6 +173,8 @@ fn parse_time(value: &str) -> Option<OffsetDateTime> {
 pub struct Finished {
     pub segments: usize,
     pub files_written: usize,
+    /// How many of `files_written` are translations.
+    pub files_translated: usize,
     /// Where the line stamps' start time came from, if one was found.
     pub start_source: Option<StartSource>,
 }
@@ -172,7 +186,15 @@ pub struct Job<'a> {
     pub model_label: &'a str,
     pub options: &'a WhisperOptions,
     pub dictionary: &'a DictionaryContext,
+    /// Where translations go, when translation is set up.
+    pub translation: Option<TranslationJob<'a>>,
     pub cancel: Arc<AtomicBool>,
+}
+
+#[derive(Clone, Copy)]
+pub struct TranslationJob<'a> {
+    pub translator: &'a dyn Translator,
+    pub target_language: &'a str,
 }
 
 /// Decodes, transcribes, applies the dictionary, and writes the missing transcript files for
@@ -204,22 +226,94 @@ pub fn transcribe_one(
         segment.text = job.dictionary.correct(&segment.text);
     }
     let start = recording_start(candidate.name_start, candidate.modified_at, duration_ms);
-    let files_written = write_transcript(
-        job.output_root,
-        &candidate.relative_path,
-        &candidate.missing,
-        &transcript,
-        &TranscriptMeta {
-            model: job.model_label,
-            source: &candidate.source,
-            started_at: start.map(|(started_at, _)| started_at),
-        },
-    )
-    .map_err(|_| EngineError::OutputFailed)?;
+    let meta = TranscriptMeta {
+        model: job.model_label,
+        source: &candidate.source,
+        started_at: start.map(|(started_at, _)| started_at),
+        translated_into: None,
+    };
+    let mut files_written = 0;
+    if !candidate.missing.is_empty() {
+        files_written = write_transcript(
+            job.output_root,
+            &candidate.relative_path,
+            &candidate.missing,
+            &transcript,
+            &meta,
+        )
+        .map_err(|_| EngineError::OutputFailed)?;
+    }
+    // Written after the transcript, so a translation that fails never costs the transcript.
+    let mut files_translated = 0;
+    if let Some(translation) = job
+        .translation
+        .filter(|_| !candidate.missing_translations.is_empty())
+    {
+        let translated = translate_transcript(&transcript, translation, job)?;
+        files_translated = write_transcript(
+            job.output_root,
+            &candidate.relative_path,
+            &candidate.missing_translations,
+            &translated,
+            &TranscriptMeta {
+                translated_into: Some(translation.target_language),
+                ..meta
+            },
+        )
+        .map_err(|_| EngineError::OutputFailed)?;
+    }
     Ok(Finished {
         segments: transcript.segments.len(),
-        files_written,
+        files_written: files_written + files_translated,
+        files_translated,
         start_source: start.map(|(_, source)| source),
+    })
+}
+
+/// The transcript in the target language, keeping every segment's timing.
+///
+/// A recording already spoken in the target language is copied rather than sent to the model.
+fn translate_transcript(
+    transcript: &Transcript,
+    translation: TranslationJob<'_>,
+    job: &Job<'_>,
+) -> Result<Transcript, EngineError> {
+    let texts = transcript
+        .segments
+        .iter()
+        .map(|segment| segment.text.clone())
+        .collect::<Vec<_>>();
+    let translated = if transcript.language.as_deref() == Some(translation.target_language)
+        || texts.is_empty()
+    {
+        texts
+    } else {
+        translation
+            .translator
+            .translate(
+                &texts,
+                translation.target_language,
+                job.dictionary.prompt(),
+                &job.cancel,
+            )
+            .map_err(|error| match error {
+                TranslateError::Cancelled => EngineError::Cancelled,
+                TranslateError::Unavailable => EngineError::TranslationUnavailable,
+                TranslateError::InvalidResponse => EngineError::TranslationFailed,
+            })?
+    };
+    Ok(Transcript {
+        language: Some(translation.target_language.to_owned()),
+        segments: transcript
+            .segments
+            .iter()
+            .zip(translated)
+            .map(|(segment, text)| Segment {
+                start_ms: segment.start_ms,
+                end_ms: segment.end_ms,
+                text,
+            })
+            .collect(),
     })
 }
 
@@ -464,6 +558,7 @@ mod tests {
             model_label: "Medium",
             options: &settings.whisper,
             dictionary: &dictionary,
+            translation: None,
             cancel: Arc::new(AtomicBool::new(false)),
         };
 
@@ -481,6 +576,7 @@ mod tests {
             Finished {
                 segments: 1,
                 files_written: 2,
+                files_translated: 0,
                 start_source: Some(StartSource::FileName),
             }
         );
@@ -525,6 +621,7 @@ mod tests {
             model_label: "Medium",
             options: &settings.whisper,
             dictionary: &DictionaryContext::default(),
+            translation: None,
             cancel: Arc::new(AtomicBool::new(false)),
         };
 
@@ -547,6 +644,200 @@ mod tests {
         );
     }
 
+    /// The segments, target language, and glossary one translation request carried.
+    type TranslatorCall = (Vec<String>, String, Option<String>);
+
+    /// Marks every segment as English, or fails the way it is told to.
+    struct FakeTranslator {
+        failure: Option<TranslateError>,
+        calls: std::sync::Mutex<Vec<TranslatorCall>>,
+    }
+
+    impl Translator for FakeTranslator {
+        fn translate(
+            &self,
+            texts: &[String],
+            target_language: &str,
+            glossary: Option<&str>,
+            _cancel: &AtomicBool,
+        ) -> Result<Vec<String>, TranslateError> {
+            self.calls.lock().unwrap().push((
+                texts.to_vec(),
+                target_language.to_owned(),
+                glossary.map(str::to_owned),
+            ));
+            match self.failure {
+                Some(error) => Err(error),
+                None => Ok(texts.iter().map(|text| format!("EN: {text}")).collect()),
+            }
+        }
+    }
+
+    fn translating(target: &str) -> TranscriptionSettings {
+        TranscriptionSettings {
+            translation: backup_core::transcription::TranslationSettings {
+                enabled: true,
+                target_language: target.to_owned(),
+                ollama_model: "qwen2.5:7b".to_owned(),
+                ..Default::default()
+            },
+            ..enabled_since("2026-10-28T01:00:00Z")
+        }
+    }
+
+    #[test]
+    fn a_translation_is_written_beside_the_transcript_with_the_same_stamps() {
+        let name = "DJI/TX01_MIC001_20251028_143022.m4a";
+        let fixture = Fixture::new(&[name]);
+        let settings = translating("en");
+        let candidates = pending_candidates(
+            vec![recording("a", name, "2026-10-28T02:00:00Z")],
+            &settings,
+            fixture.destination.path(),
+            fixture.output.path(),
+            &HashSet::new(),
+            &SourceLabels::default(),
+        );
+        assert_eq!(
+            candidates[0].missing_translations,
+            [TranscriptFormat::Txt, TranscriptFormat::Srt]
+        );
+        let translator = FakeTranslator {
+            failure: None,
+            calls: std::sync::Mutex::new(Vec::new()),
+        };
+        let dictionary = DictionaryContext::compile(
+            true,
+            &[DictionaryEntry {
+                id: "dictionary-1".to_owned(),
+                term: "백업 마이크".to_owned(),
+                aliases: Vec::new(),
+                enabled: true,
+            }],
+        );
+        let job = Job {
+            output_root: fixture.output.path(),
+            model_path: Path::new("/models/ggml-medium.bin"),
+            model_label: "Medium",
+            options: &settings.whisper,
+            dictionary: &dictionary,
+            translation: Some(TranslationJob {
+                translator: &translator,
+                target_language: "en",
+            }),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        let finished = transcribe_one(
+            &candidates[0],
+            &job,
+            &SilenceDecoder,
+            &mut ScriptedEngine {
+                calls: 0,
+                prompt: None,
+            },
+            Box::new(|_| {}),
+        )
+        .unwrap();
+
+        assert_eq!((finished.files_written, finished.files_translated), (4, 2));
+        let output = fixture.output.path().join("DJI");
+        assert_eq!(
+            fs::read_to_string(output.join("TX01_MIC001_20251028_143022.en.txt")).unwrap(),
+            "2025-10-28 14:30:22 [TX01] - EN: 백업마이크 테스트\n"
+        );
+        assert!(output.join("TX01_MIC001_20251028_143022.txt").is_file());
+        let calls = translator.calls.lock().unwrap();
+        assert_eq!(calls[0].1, "en");
+        assert_eq!(
+            calls[0].2.as_deref(),
+            Some("백업 마이크"),
+            "the glossary is passed along"
+        );
+        assert!(
+            pending_candidates(
+                vec![recording("a", name, "2026-10-28T02:00:00Z")],
+                &settings,
+                fixture.destination.path(),
+                fixture.output.path(),
+                &HashSet::new(),
+                &SourceLabels::default(),
+            )
+            .is_empty()
+        );
+    }
+
+    #[test]
+    fn a_failed_translation_keeps_the_transcript_and_reports_why() {
+        let fixture = Fixture::new(&["a.m4a"]);
+        let settings = translating("en");
+        let candidates = pending_candidates(
+            vec![recording("a", "a.m4a", "2026-10-28T02:00:00Z")],
+            &settings,
+            fixture.destination.path(),
+            fixture.output.path(),
+            &HashSet::new(),
+            &SourceLabels::default(),
+        );
+        for (failure, expected) in [
+            (
+                TranslateError::Unavailable,
+                EngineError::TranslationUnavailable,
+            ),
+            (
+                TranslateError::InvalidResponse,
+                EngineError::TranslationFailed,
+            ),
+        ] {
+            let translator = FakeTranslator {
+                failure: Some(failure),
+                calls: std::sync::Mutex::new(Vec::new()),
+            };
+            let job = Job {
+                output_root: fixture.output.path(),
+                model_path: Path::new("/models/ggml-medium.bin"),
+                model_label: "Medium",
+                options: &settings.whisper,
+                dictionary: &DictionaryContext::default(),
+                translation: Some(TranslationJob {
+                    translator: &translator,
+                    target_language: "en",
+                }),
+                cancel: Arc::new(AtomicBool::new(false)),
+            };
+            let result = transcribe_one(
+                &candidates[0],
+                &job,
+                &SilenceDecoder,
+                &mut ScriptedEngine {
+                    calls: 0,
+                    prompt: None,
+                },
+                Box::new(|_| {}),
+            );
+            assert_eq!(result.unwrap_err(), expected);
+            assert!(fixture.output.path().join("a.txt").is_file());
+            assert!(!fixture.output.path().join("a.en.txt").exists());
+        }
+    }
+
+    #[test]
+    fn translation_without_a_model_is_not_queued() {
+        let fixture = Fixture::new(&["a.m4a"]);
+        let mut settings = translating("en");
+        settings.translation.ollama_model.clear();
+        fs::write(fixture.output.path().join("a.txt"), "done").unwrap();
+        fs::write(fixture.output.path().join("a.srt"), "done").unwrap();
+        assert!(
+            fixture
+                .pending(
+                    vec![recording("a", "a.m4a", "2026-10-28T02:00:00Z")],
+                    &settings
+                )
+                .is_empty()
+        );
+    }
+
     #[test]
     fn a_cancelled_recording_writes_nothing() {
         let fixture = Fixture::new(&["a.m4a"]);
@@ -565,6 +856,7 @@ mod tests {
             model_label: "Medium",
             options: &settings.whisper,
             dictionary: &DictionaryContext::default(),
+            translation: None,
             cancel: Arc::new(AtomicBool::new(true)),
         };
 

@@ -6,6 +6,7 @@ import type {
   DictionaryEntry,
   TranscriptionOptions,
   TranscriptionSnapshot,
+  TranslationSettings,
 } from "./contracts";
 
 /** The parts of the view a pending write can cover; each disables its own controls. */
@@ -13,6 +14,7 @@ export type PendingKey =
   | "enabled"
   | "options"
   | "dictionary"
+  | "translation"
   | "model"
   | "output_folder"
   | "models_folder"
@@ -27,6 +29,7 @@ type EditableFields = Pick<
   | "whisper"
   | "dictionary_enabled"
   | "dictionary"
+  | "translation"
 >;
 
 function commandError(error: unknown, title: string): ActionError {
@@ -148,6 +151,13 @@ export function useTranscriptionPersistence(
       );
       return saved;
     },
+    saveTranslation: (translation: TranslationSettings) =>
+      run(
+        "translation",
+        "번역 설정을 저장하지 못했습니다",
+        () => actions.saveTranslationSettings(translation),
+        { translation },
+      ),
     selectModel: (modelId: string) =>
       run("model", "모델을 선택하지 못했습니다", () =>
         actions.selectWhisperModel(modelId),
