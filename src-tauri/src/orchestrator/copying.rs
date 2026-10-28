@@ -258,7 +258,10 @@ pub(super) fn process_prepared_source(
             }
             match prove_header_only_wav(destination, &recording, audio_tools) {
                 Ok(true) => {
-                    if let Err(error) = state.ledger.lock().mark_header_only_wav(&recording.id) {
+                    // Bound first: the guard in an `if let` scrutinee lives through the body,
+                    // and finish_source_failure locks the ledger again.
+                    let marked = state.ledger.lock().mark_header_only_wav(&recording.id);
+                    if let Err(error) = marked {
                         return finish_source_failure(state, clock, source, run_id, error);
                     }
                 }

@@ -106,6 +106,43 @@ impl AudioTools for FakeAudioTools {
     }
 }
 
+/// Edits the ledger behind the pipeline so the recording no longer qualifies for the
+/// header-only mark, then reports the WAV as header-only. The mark fails inside the cohort.
+struct HeaderOnlyAfterLedgerEdit {
+    ledger_path: std::path::PathBuf,
+}
+
+impl AudioTools for HeaderOnlyAfterLedgerEdit {
+    fn inspect(&self, _path: &Path) -> Result<AudioDescription, CoreError> {
+        let connection = rusqlite::Connection::open(&self.ledger_path).unwrap();
+        connection.busy_timeout(Duration::from_secs(5)).unwrap();
+        connection
+            .execute(
+                "UPDATE recordings SET conversion_error_code = 'audio_conversion_failed'",
+                [],
+            )
+            .unwrap();
+        Ok(AudioDescription {
+            container: "WAVE".to_owned(),
+            codec: "lpcm".to_owned(),
+            sample_rate_hz: 48_000,
+            channels: 1,
+            audio_bytes: 0,
+            packets: 0,
+            frames_per_packet: 1,
+            valid_frames: 0,
+            total_frames: 0,
+            priming_frames: 0,
+            remainder_frames: 0,
+            duration_micros: 0,
+        })
+    }
+
+    fn convert_aac_lc_128k(&self, _input: &Path, _output: &Path) -> Result<(), CoreError> {
+        Err(CoreError::AudioToolFailed)
+    }
+}
+
 struct FailSource {
     source_id: SourceId,
 }
@@ -596,6 +633,47 @@ fn a_read_error_followed_by_an_unmount_is_reported_as_a_removed_device() {
     assert_eq!(clock.sleeps_after_failure.load(Ordering::SeqCst), 1);
     assert_eq!(zoom_outcome.phase, BackupPhase::CompletedDeletionPending);
     assert!(zoom_outcome.error.is_none());
+}
+
+#[test]
+fn a_failed_header_only_mark_finishes_the_run_instead_of_hanging() {
+    let fixture = Fixture::new();
+    let (_zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Zoom H1n",
+        "zoom-",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    let state = fixture.state.clone();
+    let tools = HeaderOnlyAfterLedgerEdit {
+        ledger_path: fixture.ledger_path.clone(),
+    };
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let outcomes = run_matched_sources_with_adapters(
+            &state,
+            &[zoom],
+            &tools,
+            &NoSourceCopyFaults,
+            &BackupTrash,
+            &InstantClock,
+            &CancellationToken::default(),
+        )
+        .map(|outcomes| {
+            outcomes
+                .into_iter()
+                .map(|outcome| outcome.error.map(|error| error.message_code))
+                .collect::<Vec<_>>()
+        });
+        let _ = sender.send(outcomes);
+    });
+
+    let errors = receiver
+        .recv_timeout(Duration::from_secs(20))
+        .expect("the run must not wait on the ledger lock it already holds")
+        .unwrap();
+
+    assert_eq!(errors, vec![Some("invalid_request".to_owned())]);
 }
 
 #[test]
