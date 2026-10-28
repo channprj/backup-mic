@@ -8,6 +8,7 @@ pub mod dto;
 pub mod failure_reporter;
 pub mod legacy_app_data;
 pub mod lifecycle;
+pub mod login_item;
 pub mod manual_backup;
 pub mod orchestrator;
 pub mod platform;
@@ -102,6 +103,7 @@ pub fn run() {
                     .map_err(|error| report_setup_core_failure(&setup_reporter, error))?,
                 documents.join(PRODUCT_NAME),
             );
+            let login_item = login_item::reconcile(app.handle());
             let autostart_enabled = match app.autolaunch().is_enabled() {
                 Ok(enabled) => enabled,
                 Err(_) => {
@@ -133,6 +135,7 @@ pub fn run() {
             let destination_dialog_state = state.clone();
             let startup = lifecycle::StartupRecord {
                 version: app.package_info().version.to_string(),
+                login_item: login_item.audit_name(),
                 unfinished: unfinished_runs,
             };
             let orchestrator =

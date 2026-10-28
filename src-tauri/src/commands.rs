@@ -257,12 +257,15 @@ pub fn set_autostart(
     state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<AppSnapshotDto, PublicError> {
+    let report = Reported::new(state.inner(), "set_autostart");
+    if enabled && !crate::login_item::may_enable_from_this_copy() {
+        return Err(report.adapter("not_installed_copy", "autostart_failed", false));
+    }
     let result = if enabled {
         app.autolaunch().enable()
     } else {
         app.autolaunch().disable()
     };
-    let report = Reported::new(state.inner(), "set_autostart");
     result.map_err(|_| report.adapter("autostart_adapter", "autostart_failed", true))?;
     let actual = app
         .autolaunch()

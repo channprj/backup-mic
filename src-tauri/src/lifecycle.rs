@@ -60,6 +60,8 @@ pub fn build_profile() -> &'static str {
 /// is the only place the log can say that a backup stopped and in which phase.
 pub struct StartupRecord {
     pub version: String,
+    /// What startup found the login item launching; see `login_item::LoginItem`.
+    pub login_item: &'static str,
     pub unfinished: Vec<UnfinishedBackupRun>,
 }
 
@@ -67,15 +69,21 @@ impl StartupRecord {
     /// Writes the record. Called from the device thread, so a slow destination such as an
     /// unreachable network share delays neither setup nor the menu bar icon.
     pub fn write(&self, state: &AppState) {
-        record_start(state, &self.version, &self.unfinished);
+        record_start(state, &self.version, self.login_item, &self.unfinished);
     }
 }
 
-fn record_start(state: &AppState, version: &str, unfinished: &[UnfinishedBackupRun]) {
+fn record_start(
+    state: &AppState,
+    version: &str,
+    login_item: &'static str,
+    unfinished: &[UnfinishedBackupRun],
+) {
     let interrupted = u64::try_from(unfinished.len()).unwrap_or(u64::MAX);
     let fields = [
         ("version", AuditValue::Text(version)),
         ("build", AuditValue::Text(build_profile())),
+        ("login_item", AuditValue::Text(login_item)),
         ("count", AuditValue::Unsigned(interrupted)),
     ];
     append_lifecycle(state, AuditLevel::Info, "app.started", &fields);
@@ -177,6 +185,7 @@ mod tests {
         record_start(
             &state,
             "0.261028.0",
+            "repaired",
             &[UnfinishedBackupRun {
                 id: "3a8a0a38-0c19-4a21-9476-b188beec6bc9".to_owned(),
                 batch_phase: "copying".to_owned(),
@@ -194,7 +203,7 @@ mod tests {
             lines,
             vec![
                 format!(
-                    "INFO app.started version=\"0.261028.0\" build=\"{}\" count=1",
+                    "INFO app.started version=\"0.261028.0\" build=\"{}\" login_item=\"repaired\" count=1",
                     build_profile()
                 )
                 .as_str(),
