@@ -10,6 +10,7 @@ mod engine;
 pub mod models;
 mod output;
 mod queue;
+mod timeline;
 mod worker;
 
 use std::{

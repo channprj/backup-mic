@@ -46,10 +46,10 @@ export const threadChoices = [0, 1, 2, 4, 6, 8, 12, 16].map((value) => ({
 }));
 
 export const formatChoices = [
-  { key: "txt", label: "TXT", description: "문장만 담은 텍스트" },
+  { key: "txt", label: "TXT", description: "줄마다 녹음 시각이 붙은 텍스트" },
   { key: "srt", label: "SRT", description: "시간이 붙은 자막" },
   { key: "vtt", label: "VTT", description: "웹 자막" },
-  { key: "json", label: "JSON", description: "세그먼트별 시간과 텍스트" },
+  { key: "json", label: "JSON", description: "구간별 녹음 시각과 텍스트" },
 ] as const;
 
 /** The whisper.cpp defaults, mirrored from `WhisperOptions::default` in Rust. */

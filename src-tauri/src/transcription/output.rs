@@ -15,8 +15,22 @@ use backup_core::{
     error::CoreError, filesystem::is_safe_relative_path, transcription::TranscriptFormat,
 };
 use serde::Serialize;
+use time::{PrimitiveDateTime, macros::format_description};
 
-use super::engine::Transcript;
+use super::{
+    engine::Transcript,
+    timeline::{elapsed_timestamp, line_timestamp},
+};
+
+/// What a transcript says about itself besides the words.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TranscriptMeta<'a> {
+    pub model: &'a str,
+    /// The bracketed label after each stamp: the transmitter or the recorder rule.
+    pub source: &'a str,
+    /// When the recording began on the recorder's clock, if it could be worked out.
+    pub started_at: Option<PrimitiveDateTime>,
+}
 
 /// Where `format` of the recording at `relative` goes, or `None` for a path that could leave
 /// the output folder.
@@ -54,7 +68,7 @@ pub fn write_transcript(
     relative: &Path,
     formats: &[TranscriptFormat],
     transcript: &Transcript,
-    model_label: &str,
+    meta: &TranscriptMeta<'_>,
 ) -> Result<usize, CoreError> {
     let first = formats
         .first()
@@ -74,7 +88,7 @@ pub fn write_transcript(
             .and_then(|path| path.file_name().map(ToOwned::to_owned))
             .ok_or(CoreError::InvalidRequest)?;
         let target = canonical_parent.join(name);
-        let body = render(*format, transcript, &recording, model_label);
+        let body = render(*format, transcript, &recording, meta);
         let mut temporary =
             tempfile::NamedTempFile::new_in(&canonical_parent).map_err(CoreError::CopyFailed)?;
         temporary
@@ -91,17 +105,33 @@ pub fn write_transcript(
 }
 
 /// The text of one transcript file.
+///
+/// Text lines carry WakeNote's export stamp, `YYYY-MM-DD HH:MM:SS [source] - text`, on the
+/// recorder's clock. Subtitles keep times relative to the file so players can follow them.
 pub fn render(
     format: TranscriptFormat,
     transcript: &Transcript,
     recording: &str,
-    model_label: &str,
+    meta: &TranscriptMeta<'_>,
 ) -> String {
+    let stamp = |offset_ms: u64| {
+        meta.started_at.map_or_else(
+            || elapsed_timestamp(offset_ms),
+            |start| line_timestamp(start, offset_ms),
+        )
+    };
     match format {
         TranscriptFormat::Txt => transcript
             .segments
             .iter()
-            .map(|segment| format!("{}\n", segment.text))
+            .map(|segment| {
+                format!(
+                    "{} [{}] - {}\n",
+                    stamp(segment.start_ms),
+                    meta.source,
+                    single_line(&segment.text)
+                )
+            })
             .collect(),
         TranscriptFormat::Srt => transcript
             .segments
@@ -130,7 +160,15 @@ pub fn render(
         TranscriptFormat::Json => {
             let document = JsonTranscript {
                 recording,
-                model: model_label,
+                model: meta.model,
+                source: meta.source,
+                started_at: meta.started_at.and_then(|start| {
+                    start
+                        .format(format_description!(
+                            "[year]-[month]-[day]T[hour]:[minute]:[second]"
+                        ))
+                        .ok()
+                }),
                 language: transcript.language.as_deref(),
                 text: transcript
                     .segments
@@ -142,6 +180,9 @@ pub fn render(
                     .segments
                     .iter()
                     .map(|segment| JsonSegment {
+                        time: meta
+                            .started_at
+                            .map(|start| line_timestamp(start, segment.start_ms)),
                         start_ms: segment.start_ms,
                         end_ms: segment.end_ms,
                         text: &segment.text,
@@ -159,6 +200,9 @@ pub fn render(
 struct JsonTranscript<'a> {
     recording: &'a str,
     model: &'a str,
+    source: &'a str,
+    /// The recording's start on the recorder's clock, without a zone because it has none.
+    started_at: Option<String>,
     language: Option<&'a str>,
     text: String,
     segments: Vec<JsonSegment<'a>>,
@@ -166,9 +210,16 @@ struct JsonTranscript<'a> {
 
 #[derive(Serialize)]
 struct JsonSegment<'a> {
+    /// The wall-clock stamp the text file shows for this segment.
+    time: Option<String>,
     start_ms: u64,
     end_ms: u64,
     text: &'a str,
+}
+
+/// Keeps one segment on one line, so each text line has exactly one stamp.
+fn single_line(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 /// `HH:MM:SS,mmm` for SubRip and `HH:MM:SS.mmm` for WebVTT.
@@ -182,8 +233,16 @@ fn timestamp(ms: u64, separator: char) -> String {
 
 #[cfg(test)]
 mod tests {
+    use time::macros::datetime;
+
     use super::super::engine::Segment;
     use super::*;
+
+    const META: TranscriptMeta<'static> = TranscriptMeta {
+        model: "Medium",
+        source: "TX01",
+        started_at: Some(datetime!(2025-10-28 14:30:22)),
+    };
 
     fn transcript() -> Transcript {
         Transcript {
@@ -207,29 +266,59 @@ mod tests {
     fn renders_each_format_with_its_own_timestamp_style() {
         let transcript = transcript();
         assert_eq!(
-            render(TranscriptFormat::Txt, &transcript, "a.m4a", "Medium"),
-            "안녕하세요.\n회의를 시작합니다.\n"
+            render(TranscriptFormat::Txt, &transcript, "a.m4a", &META),
+            "2025-10-28 14:30:22 [TX01] - 안녕하세요.\n\
+             2025-10-28 15:32:25 [TX01] - 회의를 시작합니다.\n"
         );
         assert_eq!(
-            render(TranscriptFormat::Srt, &transcript, "a.m4a", "Medium"),
+            render(TranscriptFormat::Srt, &transcript, "a.m4a", &META),
             "1\n00:00:00,000 --> 00:00:02,500\n안녕하세요.\n\n\
              2\n01:02:03,456 --> 01:02:05,000\n회의를 시작합니다.\n\n"
         );
         assert!(
-            render(TranscriptFormat::Vtt, &transcript, "a.m4a", "Medium")
+            render(TranscriptFormat::Vtt, &transcript, "a.m4a", &META)
                 .starts_with("WEBVTT\n\n00:00:00.000 --> 00:00:02.500\n안녕하세요.\n\n")
         );
         let json: serde_json::Value = serde_json::from_str(&render(
             TranscriptFormat::Json,
             &transcript,
             "DJI/2026/10/28/a.m4a",
-            "Medium",
+            &META,
         ))
         .unwrap();
         assert_eq!(json["recording"], "DJI/2026/10/28/a.m4a");
+        assert_eq!(json["source"], "TX01");
+        assert_eq!(json["started_at"], "2025-10-28T14:30:22");
+        assert_eq!(json["segments"][1]["time"], "2025-10-28 15:32:25");
         assert_eq!(json["language"], "ko");
         assert_eq!(json["text"], "안녕하세요. 회의를 시작합니다.");
         assert_eq!(json["segments"][1]["start_ms"], 3_723_456);
+    }
+
+    #[test]
+    fn an_unknown_start_stamps_elapsed_time_and_lines_stay_single() {
+        let meta = TranscriptMeta {
+            started_at: None,
+            source: "Zoom H1n",
+            ..META
+        };
+        let transcript = Transcript {
+            language: None,
+            segments: vec![Segment {
+                start_ms: 61_000,
+                end_ms: 62_000,
+                text: "두 줄로\n나온 문장".to_owned(),
+            }],
+        };
+        assert_eq!(
+            render(TranscriptFormat::Txt, &transcript, "a.m4a", &meta),
+            "00:01:01 [Zoom H1n] - 두 줄로 나온 문장\n"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&render(TranscriptFormat::Json, &transcript, "a.m4a", &meta))
+                .unwrap();
+        assert!(json["started_at"].is_null());
+        assert!(json["segments"][0]["time"].is_null());
     }
 
     #[test]
@@ -248,7 +337,7 @@ mod tests {
         );
 
         let written =
-            write_transcript(output.path(), relative, &formats, &transcript(), "Medium").unwrap();
+            write_transcript(output.path(), relative, &formats, &transcript(), &META).unwrap();
         assert_eq!(written, 1, "the existing text file is left alone");
         assert_eq!(fs::read_to_string(&edited).unwrap(), "edited by hand");
         assert!(
@@ -274,7 +363,7 @@ mod tests {
                     Path::new(relative),
                     &[TranscriptFormat::Txt],
                     &transcript(),
-                    "Medium"
+                    &META
                 )
                 .is_err()
             );
@@ -293,7 +382,7 @@ mod tests {
             Path::new("DJI/a.m4a"),
             &[TranscriptFormat::Txt],
             &transcript(),
-            "Medium",
+            &META,
         );
         assert!(result.is_err());
         assert!(!elsewhere.path().join("a.txt").exists());

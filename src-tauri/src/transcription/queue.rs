@@ -6,7 +6,7 @@
 //! that file's progress.
 
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -20,14 +20,26 @@ use backup_core::{
     dictionary::DictionaryContext,
     filesystem::is_safe_relative_path,
     ledger::VerifiedRecording,
+    source::SourceId,
     transcription::{TranscriptFormat, TranscriptionSettings, WhisperOptions},
 };
-use time::{OffsetDateTime, format_description::well_known::Rfc3339};
+use time::{OffsetDateTime, PrimitiveDateTime, UtcOffset, format_description::well_known::Rfc3339};
+
+use crate::platform::macos::audio::TRANSCRIPTION_SAMPLE_RATE_HZ;
 
 use super::{
     engine::{EngineError, PcmDecoder, TranscriptionEngine},
-    output::{missing_formats, write_transcript},
+    output::{TranscriptMeta, missing_formats, write_transcript},
+    timeline::{StartSource, local_modified_time, recording_start, source_label, start_from_name},
 };
+
+/// What the queue needs to stamp transcripts: each source's recorder rule name, for the bracket
+/// label, and the local offset a modification time is read in.
+#[derive(Debug, Clone, Default)]
+pub struct SourceLabels {
+    pub rule_names: HashMap<SourceId, String>,
+    pub offset: Option<UtcOffset>,
+}
 
 /// One recording waiting for a transcript.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +48,12 @@ pub struct Candidate {
     pub relative_path: PathBuf,
     pub audio_path: PathBuf,
     pub missing: Vec<TranscriptFormat>,
+    /// The bracketed label after each line's stamp.
+    pub source: String,
+    /// The start time the original file name encodes.
+    pub name_start: Option<PrimitiveDateTime>,
+    /// The original file's modification time on the local clock, the fallback start.
+    pub modified_at: Option<PrimitiveDateTime>,
 }
 
 impl Candidate {
@@ -59,6 +77,7 @@ pub fn pending_candidates(
     destination: &Path,
     output_root: &Path,
     skipped: &HashSet<String>,
+    labels: &SourceLabels,
 ) -> Vec<Candidate> {
     let formats = settings.formats.selected();
     let since = if settings.include_existing_recordings {
@@ -90,15 +109,37 @@ pub fn pending_candidates(
                 .is_ok_and(|metadata| metadata.file_type().is_file());
             let missing = missing_formats(output_root, &recording.artifact.relative_path, &formats);
             (is_file && !missing.is_empty()).then(|| {
-                (
-                    recording.verified_at.clone(),
-                    Candidate {
-                        recording_id: recording.id,
-                        relative_path: recording.artifact.relative_path,
-                        audio_path,
-                        missing,
-                    },
-                )
+                let source_name = recording
+                    .source_relative_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let artifact_name = recording
+                    .artifact
+                    .relative_path
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                let candidate = Candidate {
+                    source: source_label(
+                        &source_name,
+                        labels
+                            .rule_names
+                            .get(&recording.source_id)
+                            .map(String::as_str),
+                    ),
+                    name_start: start_from_name(&source_name)
+                        .or_else(|| start_from_name(&artifact_name)),
+                    modified_at: local_modified_time(
+                        recording.source_mtime_ns,
+                        labels.offset.unwrap_or(UtcOffset::UTC),
+                    ),
+                    recording_id: recording.id,
+                    relative_path: recording.artifact.relative_path,
+                    audio_path,
+                    missing,
+                };
+                (recording.verified_at, candidate)
             })
         })
         .collect::<Vec<_>>();
@@ -120,6 +161,8 @@ fn parse_time(value: &str) -> Option<OffsetDateTime> {
 pub struct Finished {
     pub segments: usize,
     pub files_written: usize,
+    /// Where the line stamps' start time came from, if one was found.
+    pub start_source: Option<StartSource>,
 }
 
 /// Everything one transcription needs besides the recording itself.
@@ -153,21 +196,30 @@ pub fn transcribe_one(
         job.cancel.clone(),
         progress,
     )?;
+    // The decoded length is exact, unlike the ledger's, and is what the modification-time
+    // fallback subtracts.
+    let duration_ms = samples.len() as u64 * 1_000 / u64::from(TRANSCRIPTION_SAMPLE_RATE_HZ);
     drop(samples);
     for segment in &mut transcript.segments {
         segment.text = job.dictionary.correct(&segment.text);
     }
+    let start = recording_start(candidate.name_start, candidate.modified_at, duration_ms);
     let files_written = write_transcript(
         job.output_root,
         &candidate.relative_path,
         &candidate.missing,
         &transcript,
-        job.model_label,
+        &TranscriptMeta {
+            model: job.model_label,
+            source: &candidate.source,
+            started_at: start.map(|(started_at, _)| started_at),
+        },
     )
     .map_err(|_| EngineError::OutputFailed)?;
     Ok(Finished {
         segments: transcript.segments.len(),
         files_written,
+        start_source: start.map(|(_, source)| source),
     })
 }
 
@@ -243,6 +295,7 @@ mod tests {
                 self.destination.path(),
                 self.output.path(),
                 &HashSet::new(),
+                &SourceLabels::default(),
             )
             .into_iter()
             .map(|candidate| candidate.recording_id)
@@ -313,6 +366,7 @@ mod tests {
             fixture.destination.path(),
             fixture.output.path(),
             &skipped,
+            &SourceLabels::default(),
         );
         assert!(pending.is_empty());
     }
@@ -379,15 +433,17 @@ mod tests {
 
     #[test]
     fn a_transcribed_recording_writes_its_missing_files_and_leaves_the_queue() {
-        let fixture = Fixture::new(&["DJI/a.m4a"]);
+        let name = "DJI/TX01_MIC001_20251028_143022.m4a";
+        let fixture = Fixture::new(&[name]);
         let settings = enabled_since("2026-10-28T01:00:00Z");
-        let recordings = vec![recording("a", "DJI/a.m4a", "2026-10-28T02:00:00Z")];
+        let recordings = vec![recording("a", name, "2026-10-28T02:00:00Z")];
         let candidates = pending_candidates(
             recordings.clone(),
             &settings,
             fixture.destination.path(),
             fixture.output.path(),
             &HashSet::new(),
+            &SourceLabels::default(),
         );
         let mut engine = ScriptedEngine {
             calls: 0,
@@ -424,16 +480,71 @@ mod tests {
             finished,
             Finished {
                 segments: 1,
-                files_written: 2
+                files_written: 2,
+                start_source: Some(StartSource::FileName),
             }
         );
         assert_eq!(
-            fs::read_to_string(fixture.output.path().join("DJI/a.txt")).unwrap(),
-            "백업 마이크 테스트\n",
-            "aliases become the canonical term before anything is written"
+            fs::read_to_string(
+                fixture
+                    .output
+                    .path()
+                    .join("DJI/TX01_MIC001_20251028_143022.txt")
+            )
+            .unwrap(),
+            "2025-10-28 14:30:22 [TX01] - 백업 마이크 테스트\n",
+            "lines carry the recorder's clock, and aliases become the canonical term"
         );
         assert_eq!(engine.prompt.as_deref(), Some("백업 마이크"));
         assert!(fixture.pending(recordings, &settings).is_empty());
+    }
+
+    #[test]
+    fn a_name_without_a_time_is_stamped_from_the_modification_time_and_rule_name() {
+        let fixture = Fixture::new(&["Zoom/ZOOM0001.m4a"]);
+        let settings = enabled_since("2026-10-28T01:00:00Z");
+        let mut zoom = recording("a", "Zoom/ZOOM0001.m4a", "2026-10-28T02:00:00Z");
+        zoom.source_relative_path = PathBuf::from("RECORD/FOLDER01/ZOOM0001.WAV");
+        // 2025-10-28 15:30:22 at +09:00, written when the one-second take ended.
+        zoom.source_mtime_ns = 1_761_633_022_000_000_000;
+        let labels = SourceLabels {
+            rule_names: HashMap::from([(zoom.source_id.clone(), "Zoom H1n".to_owned())]),
+            offset: Some(UtcOffset::from_hms(9, 0, 0).unwrap()),
+        };
+        let candidates = pending_candidates(
+            vec![zoom],
+            &settings,
+            fixture.destination.path(),
+            fixture.output.path(),
+            &HashSet::new(),
+            &labels,
+        );
+        let job = Job {
+            output_root: fixture.output.path(),
+            model_path: Path::new("/models/ggml-medium.bin"),
+            model_label: "Medium",
+            options: &settings.whisper,
+            dictionary: &DictionaryContext::default(),
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+
+        let finished = transcribe_one(
+            &candidates[0],
+            &job,
+            &SilenceDecoder,
+            &mut ScriptedEngine {
+                calls: 0,
+                prompt: None,
+            },
+            Box::new(|_| {}),
+        )
+        .unwrap();
+
+        assert_eq!(finished.start_source, Some(StartSource::ModifiedTime));
+        assert_eq!(
+            fs::read_to_string(fixture.output.path().join("Zoom/ZOOM0001.txt")).unwrap(),
+            "2025-10-28 15:30:21 [Zoom H1n] - 백업마이크 테스트\n"
+        );
     }
 
     #[test]
@@ -446,6 +557,7 @@ mod tests {
             fixture.destination.path(),
             fixture.output.path(),
             &HashSet::new(),
+            &SourceLabels::default(),
         );
         let job = Job {
             output_root: fixture.output.path(),

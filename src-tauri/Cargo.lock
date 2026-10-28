@@ -258,6 +258,7 @@ dependencies = [
  "objc2-foundation",
  "parking_lot",
  "quick-xml",
+ "regex",
  "rusqlite",
  "serde",
  "serde_json",

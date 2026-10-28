@@ -26,7 +26,8 @@ use super::{
     dto::TranscriptionPhaseDto,
     engine::{AppleDecoder, EngineError, PcmDecoder, TranscriptionEngine, WhisperEngine},
     public_error,
-    queue::{Candidate, Finished, Job, pending_candidates, transcribe_one},
+    queue::{Candidate, Finished, Job, SourceLabels, pending_candidates, transcribe_one},
+    timeline::StartSource,
 };
 use crate::clock;
 
@@ -192,7 +193,16 @@ impl TranscriptionService {
     }
 
     fn pending(&self, settings: &TranscriptionSettings) -> Result<Vec<Candidate>, CoreError> {
-        let recordings = self.inner.state.ledger.lock().verified_recordings()?;
+        let (recordings, rule_names) = {
+            let ledger = self.inner.state.ledger.lock();
+            let mut rule_names = std::collections::HashMap::new();
+            for rule in ledger.backup_rules(true)? {
+                for source in ledger.sources_for_rule(&rule.id)? {
+                    rule_names.insert(source.id, rule.name.clone());
+                }
+            }
+            (ledger.verified_recordings()?, rule_names)
+        };
         let skipped = self.inner.skipped.lock().clone();
         Ok(pending_candidates(
             recordings,
@@ -200,6 +210,10 @@ impl TranscriptionService {
             &self.inner.state.destination(),
             &self.output_directory(),
             &skipped,
+            &SourceLabels {
+                rule_names,
+                offset: Some(clock::local_offset()),
+            },
         ))
     }
 
@@ -298,6 +312,14 @@ impl TranscriptionService {
                         ("model", AuditValue::Text(model)),
                         ("count", AuditValue::Unsigned(finished.segments as u64)),
                         ("files", AuditValue::Unsigned(finished.files_written as u64)),
+                        (
+                            "mode",
+                            AuditValue::Text(match finished.start_source {
+                                Some(StartSource::FileName) => "file_name_time",
+                                Some(StartSource::ModifiedTime) => "modified_time",
+                                None => "elapsed_time",
+                            }),
+                        ),
                         ("duration_ms", AuditValue::Unsigned(duration_ms)),
                     ],
                 );
