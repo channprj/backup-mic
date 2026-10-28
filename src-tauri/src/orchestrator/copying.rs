@@ -8,6 +8,7 @@ use backup_core::backup::{
     prepare_backup_item_observed, progress_for_plans,
 };
 use backup_core::batch::{BatchItemKey, BatchPhase, M4A_PROFILE_ID};
+use backup_core::clock::Clock;
 use backup_core::deletion::{
     AdditionalDeletionCandidate, CompleteRuleDeletionSnapshot, DeletionCandidate,
     RuleSessionDeletionCandidate, TrashAdapter,
@@ -29,8 +30,7 @@ use crate::platform::macos::audio::AudioTools;
 
 use super::pipeline::{
     CompletedRuleDeletionEvidence, ScopedCopyFaults, SourceCopyFaults, SourceRunOutcome,
-    classify_source_failure, revalidate_run_context, source_authority_is_available,
-    source_failure_is_process_wide,
+    revalidate_run_context, settle_source_failure, source_failure_is_process_wide,
 };
 use super::planning::PreparedSource;
 use super::shared::resolve_live_source;
@@ -45,6 +45,7 @@ pub(super) fn process_prepared_source(
     audio_tools: &dyn AudioTools,
     source_faults: &dyn SourceCopyFaults,
     destination_trash: &dyn TrashAdapter,
+    clock: &dyn Clock,
     cancellation: &backup_core::backup::CancellationToken,
 ) -> Result<SourceRunOutcome, CoreError> {
     if source.authority.source.id != source.source_id
@@ -97,7 +98,7 @@ pub(super) fn process_prepared_source(
             destination,
             destination_generation,
         ) {
-            return finish_source_failure(state, source, run_id, error);
+            return finish_source_failure(state, clock, source, run_id, error);
         }
         if let Err(error) = scoped_faults
             .check(CopyFaultPoint::SourceOpen)
@@ -133,7 +134,7 @@ pub(super) fn process_prepared_source(
                     source_id: source.source_id.clone(),
                     relative_path: plan.source.relative_path.clone(),
                 })?;
-            return finish_source_failure(state, source, run_id, error);
+            return finish_source_failure(state, clock, source, run_id, error);
         }
         source
             .copy_barrier
@@ -150,7 +151,7 @@ pub(super) fn process_prepared_source(
             destination,
             destination_generation,
         ) {
-            return finish_source_failure(state, source, run_id, error);
+            return finish_source_failure(state, clock, source, run_id, error);
         }
         let verified = if prepared.plan.disposition == DestinationDisposition::Reuse
             && prepared
@@ -209,7 +210,7 @@ pub(super) fn process_prepared_source(
                     source_id: source.source_id.clone(),
                     relative_path: prepared.plan.source.relative_path.clone(),
                 })?;
-            return finish_source_failure(state, source, run_id, error);
+            return finish_source_failure(state, clock, source, run_id, error);
         }
         source
             .copy_barrier
@@ -220,7 +221,7 @@ pub(super) fn process_prepared_source(
     }
 
     if !source.copy_barrier.conversion_allowed() {
-        return finish_source_failure(state, source, run_id, CoreError::InvalidRequest);
+        return finish_source_failure(state, clock, source, run_id, CoreError::InvalidRequest);
     }
     state
         .ledger
@@ -233,7 +234,7 @@ pub(super) fn process_prepared_source(
         destination,
         destination_generation,
     ) {
-        return finish_source_failure(state, source, run_id, error);
+        return finish_source_failure(state, clock, source, run_id, error);
     }
 
     let mut converted_files = 0_u64;
@@ -247,22 +248,22 @@ pub(super) fn process_prepared_source(
         } else {
             match order_conversion_cohort(cohort) {
                 Ok(cohort) => cohort,
-                Err(error) => return finish_source_failure(state, source, run_id, error),
+                Err(error) => return finish_source_failure(state, clock, source, run_id, error),
             }
         };
         let mut convertible = Vec::new();
         for recording in cohort {
             if let Err(error) = cancellation.check() {
-                return finish_source_failure(state, source, run_id, error);
+                return finish_source_failure(state, clock, source, run_id, error);
             }
             match prove_header_only_wav(destination, &recording, audio_tools) {
                 Ok(true) => {
                     if let Err(error) = state.ledger.lock().mark_header_only_wav(&recording.id) {
-                        return finish_source_failure(state, source, run_id, error);
+                        return finish_source_failure(state, clock, source, run_id, error);
                     }
                 }
                 Ok(false) => convertible.push(recording),
-                Err(error) => return finish_source_failure(state, source, run_id, error),
+                Err(error) => return finish_source_failure(state, clock, source, run_id, error),
             }
         }
         if convertible.is_empty() {
@@ -287,7 +288,9 @@ pub(super) fn process_prepared_source(
                     &mut |_| {},
                 ) {
                     Ok(prepared) => prepared,
-                    Err(error) => return finish_source_failure(state, source, run_id, error),
+                    Err(error) => {
+                        return finish_source_failure(state, clock, source, run_id, error);
+                    }
                 };
                 {
                     let mut ledger = state.ledger.lock();
@@ -316,7 +319,7 @@ pub(super) fn process_prepared_source(
             )
         };
         if let Err(error) = retirement {
-            return finish_source_failure(state, source, run_id, error);
+            return finish_source_failure(state, clock, source, run_id, error);
         }
     }
 
@@ -326,7 +329,7 @@ pub(super) fn process_prepared_source(
         destination,
         destination_generation,
     ) {
-        return finish_source_failure(state, source, run_id, error);
+        return finish_source_failure(state, clock, source, run_id, error);
     }
 
     let deletion_candidate_ready = preferences.m4a_conversion
@@ -336,7 +339,7 @@ pub(super) fn process_prepared_source(
     let deletion_evidence = if deletion_candidate_ready {
         match build_rule_deletion_evidence(state, &source, destination, &run_id) {
             Ok(evidence) => evidence,
-            Err(error) => return finish_source_failure(state, source, run_id, error),
+            Err(error) => return finish_source_failure(state, clock, source, run_id, error),
         }
     } else {
         None
@@ -372,14 +375,12 @@ pub(super) fn process_prepared_source(
 
 pub(super) fn finish_source_failure(
     state: &AppState,
+    clock: &dyn Clock,
     source: PreparedSource,
     run_id: String,
     error: CoreError,
 ) -> Result<SourceRunOutcome, CoreError> {
-    let error = classify_source_failure(
-        source_authority_is_available(state, &source.authority),
-        error,
-    );
+    let error = settle_source_failure(state, &source.authority, error, clock);
     let public = error.public(None);
     state.ledger.lock().finish_backup_run(
         &run_id,

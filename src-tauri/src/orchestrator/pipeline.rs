@@ -1,5 +1,7 @@
 //! Driving one backup over every matched recorder, and reducing the per-source results.
 
+use std::time::Duration;
+
 use backup_core::audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue};
 use backup_core::backup::{CopyFaultPoint, CopyFaults, cleanup_owned_partials, ensure_capacity};
 use backup_core::clock::Clock;
@@ -176,10 +178,7 @@ pub fn run_matched_sources_with_adapters(
             Ok((compiled, snapshot)) => scan_snapshots.push((matched, compiled, snapshot)),
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
             Err(error) => {
-                let error = classify_source_failure(
-                    source_authority_is_available(state, &matched.authority),
-                    error,
-                );
+                let error = settle_source_failure(state, &matched.authority, error, clock);
                 outcomes.push(failed_without_run(matched.authority.source.id, error));
             }
         }
@@ -213,10 +212,7 @@ pub fn run_matched_sources_with_adapters(
             Ok(source) => prepared.push(source),
             Err(error) if source_failure_is_process_wide(&error) => return Err(error),
             Err(error) => {
-                let error = classify_source_failure(
-                    source_authority_is_available(state, &matched.authority),
-                    error,
-                );
+                let error = settle_source_failure(state, &matched.authority, error, clock);
                 outcomes.push(failed_without_run(matched.authority.source.id, error));
             }
         }
@@ -248,6 +244,7 @@ pub fn run_matched_sources_with_adapters(
             audio_tools,
             source_faults,
             destination_trash,
+            clock,
             cancellation,
         )?);
     }
@@ -315,6 +312,31 @@ pub(super) fn source_failure_is_process_wide(error: &CoreError) -> bool {
             | CoreError::LedgerIo(_)
             | CoreError::Cancelled
     )
+}
+
+/// How long a source I/O failure waits for Disk Arbitration to report that the recorder left.
+///
+/// Pulling a recorder mid-read fails the read a few dozen milliseconds before the unmount
+/// event reaches the device thread. Classifying at once reports a copy failure for what is a
+/// disconnect, which skips the resume-after-reconnect path.
+pub(super) const DEVICE_REMOVAL_GRACE_STEP: Duration = Duration::from_millis(100);
+pub(super) const DEVICE_REMOVAL_GRACE_STEPS: u32 = 20;
+
+pub(super) fn settle_source_failure(
+    state: &AppState,
+    authority: &MountedSourceAuthority,
+    error: CoreError,
+    clock: &dyn Clock,
+) -> CoreError {
+    if matches!(error, CoreError::CopyFailed(_) | CoreError::SourceChanged) {
+        for _ in 0..DEVICE_REMOVAL_GRACE_STEPS {
+            if !source_authority_is_available(state, authority) {
+                break;
+            }
+            clock.sleep(DEVICE_REMOVAL_GRACE_STEP);
+        }
+    }
+    classify_source_failure(source_authority_is_available(state, authority), error)
 }
 
 pub(super) fn classify_source_failure(authority_is_current: bool, error: CoreError) -> CoreError {

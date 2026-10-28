@@ -121,6 +121,38 @@ impl SourceCopyFaults for FailSource {
     }
 }
 
+/// Fails a source read the way a pulled recorder does: the read error arrives first.
+struct UnplugDuringCopy {
+    source_id: SourceId,
+    failed: AtomicBool,
+}
+
+impl SourceCopyFaults for UnplugDuringCopy {
+    fn check(&self, source_id: &SourceId, point: CopyFaultPoint) -> Result<(), CoreError> {
+        if source_id == &self.source_id && point == CopyFaultPoint::SourceOpen {
+            self.failed.store(true, Ordering::SeqCst);
+            return Err(CoreError::CopyFailed(std::io::Error::from_raw_os_error(6)));
+        }
+        Ok(())
+    }
+}
+
+/// Delivers the unmount a moment after the read error, as Disk Arbitration does.
+struct UnmountAfterFailureClock<'a> {
+    faults: &'a UnplugDuringCopy,
+    mount_root: std::path::PathBuf,
+    sleeps_after_failure: AtomicUsize,
+}
+
+impl Clock for UnmountAfterFailureClock<'_> {
+    fn sleep(&self, _duration: Duration) {
+        if self.faults.failed.load(Ordering::SeqCst) {
+            self.sleeps_after_failure.fetch_add(1, Ordering::SeqCst);
+            let _ = fs::remove_dir_all(&self.mount_root);
+        }
+    }
+}
+
 struct EditRuleClock {
     state: AppState,
     draft: BackupRuleDraft,
@@ -486,6 +518,10 @@ fn one_source_copy_failure_does_not_block_the_other_source_cohort() {
     assert_eq!(zoom_outcome.phase, BackupPhase::CompletedDeletionPending);
     assert!(zoom_outcome.deletion_ready);
     assert_eq!(sony_outcome.phase, BackupPhase::PartialFailure);
+    assert_eq!(
+        sony_outcome.error.as_ref().unwrap().message_code,
+        "copy_failed"
+    );
     assert!(!sony_outcome.deletion_ready);
     assert_eq!(overall_backup_phase(&outcomes), BackupPhase::PartialFailure);
     assert!(
@@ -507,6 +543,59 @@ fn one_source_copy_failure_does_not_block_the_other_source_cohort() {
             .phase,
         BatchPhase::Copying
     );
+}
+
+#[test]
+fn a_read_error_followed_by_an_unmount_is_reported_as_a_removed_device() {
+    let fixture = Fixture::new();
+    let (_zoom_root, zoom) = fixture.add_source(
+        "ZOOM",
+        "Zoom H1n",
+        "zoom-",
+        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    );
+    let (sony_root, sony) = fixture.add_source(
+        "SONY",
+        "Sony PCM",
+        "sony-",
+        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    );
+    let faults = UnplugDuringCopy {
+        source_id: sony.authority.source.id.clone(),
+        failed: AtomicBool::new(false),
+    };
+    let clock = UnmountAfterFailureClock {
+        faults: &faults,
+        mount_root: sony_root.path().to_path_buf(),
+        sleeps_after_failure: AtomicUsize::new(0),
+    };
+
+    let outcomes = run_matched_sources_with_adapters(
+        &fixture.state,
+        &[zoom.clone(), sony.clone()],
+        &FakeAudioTools,
+        &faults,
+        &BackupTrash,
+        &clock,
+        &CancellationToken::default(),
+    )
+    .unwrap();
+
+    let sony_outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.source_id == sony.authority.source.id)
+        .unwrap();
+    let zoom_outcome = outcomes
+        .iter()
+        .find(|outcome| outcome.source_id == zoom.authority.source.id)
+        .unwrap();
+    assert_eq!(
+        sony_outcome.error.as_ref().unwrap().message_code,
+        "device_removed"
+    );
+    assert_eq!(clock.sleeps_after_failure.load(Ordering::SeqCst), 1);
+    assert_eq!(zoom_outcome.phase, BackupPhase::CompletedDeletionPending);
+    assert!(zoom_outcome.error.is_none());
 }
 
 #[test]
