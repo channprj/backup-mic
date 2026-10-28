@@ -82,6 +82,8 @@ pub fn run() {
             transcription::commands::open_transcription_folder,
             transcription::commands::download_whisper_model,
             transcription::commands::cancel_whisper_model_download,
+            transcription::commands::transcribe_now,
+            transcription::commands::cancel_transcription,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -142,13 +144,18 @@ pub fn run() {
                 }
             };
             app.manage(state.clone());
-            app.manage(transcription::TranscriptionService::new(
+            let transcription = transcription::TranscriptionService::new(
                 state.clone(),
                 transcription::TranscriptionDefaults {
                     models_directory: app_data.join("whisper-models"),
                     output_directory: documents.join(TRANSCRIPTS_FOLDER_NAME),
                 },
-            ));
+            );
+            app.manage(transcription.clone());
+            match transcription.start_worker(app.handle().clone()) {
+                Ok(()) => transcription.wake(),
+                Err(_) => report_setup_adapter_failure(&setup_reporter, "transcription_worker"),
+            }
             state.set_notification_status(app.handle(), notification_status);
             let initial_setup = state.snapshot().setup_state;
             let show_initial_setup = state.should_keep_window_open();

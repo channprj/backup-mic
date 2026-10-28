@@ -20,7 +20,7 @@ use super::{
 };
 use crate::clock;
 
-pub const REGISTERED_COMMANDS: [&str; 10] = [
+pub const REGISTERED_COMMANDS: [&str; 12] = [
     "get_transcription_snapshot",
     "set_transcription_enabled",
     "save_transcription_options",
@@ -31,6 +31,8 @@ pub const REGISTERED_COMMANDS: [&str; 10] = [
     "open_transcription_folder",
     "download_whisper_model",
     "cancel_whisper_model_download",
+    "transcribe_now",
+    "cancel_transcription",
 ];
 
 type CommandResult = Result<TranscriptionSnapshotDto, PublicError>;
@@ -62,6 +64,9 @@ pub async fn set_transcription_enabled(
         },
     )
     .await?;
+    if !enabled {
+        service.cancel_job();
+    }
     service.audit(
         AuditLevel::Info,
         "transcription.setting_saved",
@@ -294,6 +299,23 @@ pub async fn cancel_whisper_model_download(
     service: State<'_, TranscriptionService>,
 ) -> CommandResult {
     service.cancel_download();
+    Ok(service.snapshot())
+}
+
+/// Retries recordings that failed this session and runs the queue now.
+#[tauri::command]
+pub async fn transcribe_now(
+    app: AppHandle,
+    service: State<'_, TranscriptionService>,
+) -> CommandResult {
+    service.request_run();
+    Ok(service.publish(&app))
+}
+
+/// Stops the recording being transcribed; the queue picks up again on its next wake.
+#[tauri::command]
+pub async fn cancel_transcription(service: State<'_, TranscriptionService>) -> CommandResult {
+    service.cancel_job();
     Ok(service.snapshot())
 }
 

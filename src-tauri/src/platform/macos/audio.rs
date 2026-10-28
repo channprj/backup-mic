@@ -76,6 +76,49 @@ pub fn afconvert_arguments(input: &Path, output: &Path) -> Vec<OsString> {
     ]
 }
 
+/// The sample rate whisper.cpp expects its input at.
+pub const TRANSCRIPTION_SAMPLE_RATE_HZ: u32 = 16_000;
+
+/// Decodes any backed-up artifact to the 16 kHz mono 16-bit WAV whisper.cpp reads.
+///
+/// `--mix` downmixes rather than dropping channels, so a two-transmitter stereo recording keeps
+/// both voices.
+pub fn decode_for_transcription(input: &Path, output: &Path) -> Result<(), CoreError> {
+    if !input.is_absolute() || !output.is_absolute() || output.exists() {
+        return Err(CoreError::InvalidRequest);
+    }
+    let result = Command::new("/usr/bin/afconvert")
+        .args(transcription_decode_arguments(input, output))
+        .output()
+        .map_err(|_| CoreError::AudioToolFailed)?;
+    if !result.status.success()
+        || result.stdout.len() > MAX_TOOL_OUTPUT_BYTES
+        || result.stderr.len() > MAX_TOOL_OUTPUT_BYTES
+    {
+        return Err(CoreError::AudioToolFailed);
+    }
+    let metadata = std::fs::symlink_metadata(output).map_err(CoreError::CopyFailed)?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 {
+        return Err(CoreError::AudioToolFailed);
+    }
+    Ok(())
+}
+
+pub fn transcription_decode_arguments(input: &Path, output: &Path) -> Vec<OsString> {
+    vec![
+        input.as_os_str().to_owned(),
+        OsString::from("-o"),
+        output.as_os_str().to_owned(),
+        OsString::from("-f"),
+        OsString::from("WAVE"),
+        OsString::from("-d"),
+        OsString::from(format!("LEI16@{TRANSCRIPTION_SAMPLE_RATE_HZ}")),
+        OsString::from("--channels"),
+        OsString::from("1"),
+        OsString::from("--mix"),
+    ]
+}
+
 #[derive(Debug, Deserialize)]
 struct AudioInfo {
     audio_file: AudioFile,

@@ -6,9 +6,14 @@
 
 pub mod commands;
 pub mod dto;
+mod engine;
 pub mod models;
+mod output;
+mod queue;
+mod worker;
 
 use std::{
+    collections::HashSet,
     fs,
     path::{Path, PathBuf},
     sync::{
@@ -28,7 +33,7 @@ use tauri::{AppHandle, Emitter as _};
 
 use crate::{app_state::AppState, clock, dto::destination_display_for};
 use dto::{
-    ModelDownloadDto, ModelSourceDto, SelectedModelDto, TranscriptionFolder,
+    ModelDownloadDto, ModelSourceDto, SelectedModelDto, TranscriptionFolder, TranscriptionJobDto,
     TranscriptionSnapshotDto, WhisperModelDto,
 };
 use models::{
@@ -58,12 +63,21 @@ struct Inner {
     runtime: Mutex<Runtime>,
     /// Serialises settings writes, so two quick edits cannot each persist half of a change.
     save: tokio::sync::Mutex<()>,
+    /// Set when the queue should look for work; the worker sleeps on `wake_signal` otherwise.
+    wake: std::sync::Mutex<bool>,
+    wake_signal: std::sync::Condvar,
+    shutting_down: AtomicBool,
+    /// Recordings that failed during this app session, so one bad file cannot loop forever.
+    /// Cleared whenever the settings change or the user asks for a run.
+    skipped: Mutex<HashSet<String>>,
 }
 
 struct Runtime {
     settings: TranscriptionSettings,
     revision: u64,
     download: Option<ActiveDownload>,
+    job: TranscriptionJobDto,
+    job_cancel: Arc<AtomicBool>,
     error: Option<PublicError>,
 }
 
@@ -94,9 +108,15 @@ impl TranscriptionService {
                     settings,
                     revision: 1,
                     download: None,
+                    job: TranscriptionJobDto::default(),
+                    job_cancel: Arc::new(AtomicBool::new(false)),
                     error: None,
                 }),
                 save: tokio::sync::Mutex::new(()),
+                wake: std::sync::Mutex::new(false),
+                wake_signal: std::sync::Condvar::new(),
+                shutting_down: AtomicBool::new(false),
+                skipped: Mutex::new(HashSet::new()),
             }),
         }
     }
@@ -156,7 +176,7 @@ impl TranscriptionService {
     }
 
     pub fn snapshot(&self) -> TranscriptionSnapshotDto {
-        let (settings, revision, download, error) = {
+        let (settings, revision, download, job, error) = {
             let runtime = self.inner.runtime.lock();
             (
                 runtime.settings.clone(),
@@ -166,6 +186,7 @@ impl TranscriptionService {
                     received_bytes: download.received_bytes,
                     total_bytes: download.total_bytes,
                 }),
+                runtime.job.clone(),
                 runtime.error.clone(),
             )
         };
@@ -214,6 +235,7 @@ impl TranscriptionService {
             download,
             formats: settings.formats,
             whisper: settings.whisper,
+            job,
             error,
         }
     }
@@ -254,9 +276,13 @@ impl TranscriptionService {
             .ledger
             .lock()
             .set_transcription_settings(&next, occurred_at)?;
-        let mut runtime = self.inner.runtime.lock();
-        runtime.settings = next;
-        runtime.error = None;
+        {
+            let mut runtime = self.inner.runtime.lock();
+            runtime.settings = next;
+            runtime.error = None;
+        }
+        self.inner.skipped.lock().clear();
+        self.wake();
         Ok(())
     }
 
@@ -323,11 +349,14 @@ impl TranscriptionService {
     ) {
         self.inner.runtime.lock().download = None;
         match result {
-            Ok(()) => self.audit(
-                AuditLevel::Info,
-                "transcription.model_downloaded",
-                &[("model", AuditValue::Text(model_id))],
-            ),
+            Ok(()) => {
+                self.audit(
+                    AuditLevel::Info,
+                    "transcription.model_downloaded",
+                    &[("model", AuditValue::Text(model_id))],
+                );
+                self.wake();
+            }
             Err(DownloadError::Cancelled) => self.audit(
                 AuditLevel::Info,
                 "transcription.model_download_cancelled",

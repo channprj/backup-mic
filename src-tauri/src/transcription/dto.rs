@@ -24,7 +24,46 @@ pub struct TranscriptionSnapshotDto {
     pub download: Option<ModelDownloadDto>,
     pub formats: TranscriptFormats,
     pub whisper: WhisperOptions,
+    pub job: TranscriptionJobDto,
     pub error: Option<PublicError>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TranscriptionPhaseDto {
+    Idle,
+    /// Recordings are waiting, but the selected model is not downloaded or not readable.
+    WaitingForModel,
+    /// A backup is running; the queue resumes when it finishes.
+    WaitingForBackup,
+    Transcribing,
+}
+
+/// What the background queue is doing, counted since the app started.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TranscriptionJobDto {
+    pub phase: TranscriptionPhaseDto,
+    /// The file name being transcribed; never a path.
+    pub current_item: Option<String>,
+    pub percent: u8,
+    pub queued_count: u64,
+    pub completed_count: u64,
+    pub failed_count: u64,
+    pub last_completed_at: Option<String>,
+}
+
+impl Default for TranscriptionJobDto {
+    fn default() -> Self {
+        Self {
+            phase: TranscriptionPhaseDto::Idle,
+            current_item: None,
+            percent: 0,
+            queued_count: 0,
+            completed_count: 0,
+            failed_count: 0,
+            last_completed_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

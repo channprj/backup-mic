@@ -105,6 +105,10 @@ pub(crate) fn start_backup(
     {
         append_reconnect_audit(&state, "backup.resumed_after_reconnect");
     }
+    // The queue waits out the run and then transcribes whatever it verified.
+    let transcription = app
+        .try_state::<crate::transcription::TranscriptionService>()
+        .map(|service| service.inner().clone());
     tauri::async_runtime::spawn_blocking(move || match run_backup(&app, &state, &guard, trigger) {
         Ok(result) => {
             let interrupted = result.should_resume_after_reconnect();
@@ -169,6 +173,9 @@ pub(crate) fn start_backup(
             state.set_error(&app, error, None);
         }
     });
+    if let Some(transcription) = transcription {
+        transcription.wake();
+    }
     Ok(())
 }
 

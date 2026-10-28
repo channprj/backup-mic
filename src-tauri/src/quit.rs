@@ -175,6 +175,9 @@ pub fn quit(app: &AppHandle, origin: &'static str) {
 /// on the main thread: for a terminate this app did not start, such as logout or shutdown, and
 /// for one that arrives while a quit is still waiting for its cancelled run.
 pub fn settle_on_exit(app: &AppHandle) {
+    if let Some(transcription) = app.try_state::<crate::transcription::TranscriptionService>() {
+        transcription.shutdown();
+    }
     let Some(lifecycle) = app.try_state::<AppLifecycle>() else {
         return;
     };
