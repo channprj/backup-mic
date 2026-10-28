@@ -60,13 +60,17 @@ export function untrackedCommits(range) {
 }
 
 const REPOSITORY = "channprj/backup-mic";
+const BOARD = { number: "7", owner: "channprj" };
 
 /**
  * Asks GitHub whether each Issue exists and sits on the board. Returns null
- * when `gh` is missing or not signed in, so a check never blocks work that
- * cannot reach the network.
+ * when `gh` is missing, not signed in, or signed in to an account that cannot
+ * see the private board, so a check never blocks work it cannot judge.
  */
-export function boardState(numbers, run = ghIssue) {
+export function boardState(numbers, run = ghIssue, visible = ghBoardVisible) {
+  // An Issue lists only the boards the viewer can see, so an account without
+  // access would report every Issue as off the board.
+  if (numbers.length > 0 && !visible()) return null;
   const unknown = [];
   for (const number of numbers) {
     const answer = run(number);
@@ -76,6 +80,15 @@ export function boardState(numbers, run = ghIssue) {
       unknown.push({ number, reason: "not on the board" });
   }
   return unknown;
+}
+
+function ghBoardVisible() {
+  const result = spawnSync(
+    "gh",
+    ["project", "view", BOARD.number, "--owner", BOARD.owner, "--format", "json"],
+    { encoding: "utf8" },
+  );
+  return !result.error && result.status === 0;
 }
 
 function ghIssue(number) {
@@ -130,7 +143,9 @@ function main(argv) {
     ];
     const unknown = boardState(referenced);
     if (unknown === null) {
-      process.stdout.write("Skipped the board check: gh is unavailable.\n");
+      process.stdout.write(
+        "Skipped the board check: gh is unavailable or cannot see the board.\n",
+      );
       return 0;
     }
     if (unknown.length === 0) {

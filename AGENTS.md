@@ -21,4 +21,4 @@
 
 - 커밋 메시지에는 그 작업이 속한 Issue를 `Refs #번호`로 남긴다. 검증을 마치기 전에는 `Closes #번호`로 완료를 미리 선언하지 않는다.
 - `pnpm install`의 `prepare` 단계 또는 `pnpm run setup:hooks`로 설치되는 `commit-msg` 훅이 참조를 확인한다. `chore(release)` 커밋과 머지·되돌리기 커밋은 면제한다.
-- `pnpm run tasks:check`는 범위 안의 커밋이 모두 Issue를 참조하는지, 그 Issue가 실제로 있고 보드에 등록되어 있는지 확인한다. 기본 범위는 `origin/main..HEAD`다. `gh`를 쓸 수 없으면 보드 확인은 건너뛰고 작업을 막지 않는다.
+- `pnpm run tasks:check`는 범위 안의 커밋이 모두 Issue를 참조하는지, 그 Issue가 실제로 있고 보드에 등록되어 있는지 확인한다. 기본 범위는 `origin/main..HEAD`다. `gh`를 쓸 수 없거나 로그인한 계정이 보드를 볼 수 없으면 보드 확인은 건너뛰고 작업을 막지 않는다.

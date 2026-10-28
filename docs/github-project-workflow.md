@@ -144,7 +144,7 @@ pnpm run tasks:check                          # origin/main..HEAD
 node scripts/task-refs.mjs range v0.260815.0..HEAD
 ```
 
-이 명령은 참조가 빠진 커밋을 먼저 보여 주고, 모두 참조가 있으면 그 번호가 실제 Issue이고 보드에 등록되어 있는지 확인합니다. `gh`가 없거나 로그인되어 있지 않으면 보드 확인만 건너뜁니다. 검사 자체의 테스트는 `pnpm test`에 포함됩니다.
+이 명령은 참조가 빠진 커밋을 먼저 보여 주고, 모두 참조가 있으면 그 번호가 실제 Issue이고 보드에 등록되어 있는지 확인합니다. `gh`가 없거나 로그인되어 있지 않거나, 로그인한 계정이 비공개 보드를 볼 수 없으면 보드 확인만 건너뜁니다. 여러 GitHub 계정을 쓴다면 `gh auth switch --user channprj`로 바꾼 뒤 다시 실행합니다. 검사 자체의 테스트는 `pnpm test`에 포함됩니다.
 
 ## 상태 사용법
 

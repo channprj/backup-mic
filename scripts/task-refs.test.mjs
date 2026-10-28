@@ -82,21 +82,42 @@ describe("commit-msg hook entry point", () => {
 });
 
 describe("board check", () => {
+  const visible = () => true;
+
   it("names the Issues that are missing or off the board", () => {
     const answers = {
       1: { onBoard: true },
       2: { onBoard: false },
       3: "missing",
     };
-    expect(boardState([1, 2, 3], (n) => answers[n])).toEqual([
+    expect(boardState([1, 2, 3], (n) => answers[n], visible)).toEqual([
       { number: 2, reason: "not on the board" },
       { number: 3, reason: "no such Issue" },
     ]);
-    expect(boardState([1], (n) => answers[n])).toEqual([]);
+    expect(boardState([1], (n) => answers[n], visible)).toEqual([]);
   });
 
   it("reports nothing to act on when GitHub cannot be reached", () => {
     // gh missing or signed out must not turn into a false failure.
-    expect(boardState([1, 2], () => null)).toBeNull();
+    expect(boardState([1, 2], () => null, visible)).toBeNull();
+  });
+
+  it("does not blame Issues when the account cannot see the board", () => {
+    // Another signed-in account sees no private board, so every Issue looks off it.
+    const asked = [];
+    const run = (n) => {
+      asked.push(n);
+      return { onBoard: false };
+    };
+    expect(boardState([1, 2], run, () => false)).toBeNull();
+    expect(asked).toEqual([]);
+  });
+
+  it("does not look for the board when no Issue is referenced", () => {
+    expect(
+      boardState([], visible, () => {
+        throw new Error("the board was looked up");
+      }),
+    ).toEqual([]);
   });
 });
