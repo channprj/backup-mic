@@ -45,6 +45,8 @@ type CommandResult = Result<TranscriptionSnapshotDto, PublicError>;
 
 #[tauri::command]
 pub async fn get_transcription_snapshot(service: State<'_, TranscriptionService>) -> CommandResult {
+    // Opening settings also picks up models installed or relocated since the last queue pass.
+    service.wake();
     Ok(service.snapshot())
 }
 

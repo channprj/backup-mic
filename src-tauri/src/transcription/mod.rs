@@ -12,6 +12,7 @@ mod output;
 mod queue;
 mod timeline;
 mod translate;
+mod wakenote;
 mod worker;
 
 use std::{
@@ -28,7 +29,9 @@ use std::{
 use backup_core::{
     audit_log::{AuditDurability, AuditEvent, AuditLevel, AuditValue},
     error::{CoreError, PublicError, PublicErrorCode},
-    transcription::{ModelChoice, TranscriptionSettings, WHISPER_MODELS, whisper_model},
+    transcription::{
+        ModelChoice, TranscriptionSettings, WHISPER_MODELS, WhisperModel, whisper_model,
+    },
 };
 use parking_lot::Mutex;
 use tauri::{AppHandle, Emitter as _};
@@ -39,8 +42,8 @@ use dto::{
     TranscriptionSnapshotDto, WhisperModelDto,
 };
 use models::{
-    CurlFetcher, DownloadError, catalog_model_installed, catalog_model_path, install_catalog_model,
-    regular_file_len,
+    CurlFetcher, DownloadError, ModelFetcher, catalog_model_installed, catalog_model_path,
+    install_catalog_model, regular_file_len,
 };
 
 pub const TRANSCRIPTION_SNAPSHOT_EVENT: &str = "transcription-snapshot-changed";
@@ -62,6 +65,7 @@ struct Inner {
     state: AppState,
     defaults: TranscriptionDefaults,
     home: Option<PathBuf>,
+    wakenote: wakenote::WakeNoteModels,
     runtime: Mutex<Runtime>,
     /// Serialises settings writes, so two quick edits cannot each persist half of a change.
     save: tokio::sync::Mutex<()>,
@@ -105,6 +109,7 @@ impl TranscriptionService {
             inner: Arc::new(Inner {
                 state,
                 defaults,
+                wakenote: wakenote::WakeNoteModels::new(home.as_deref()),
                 home,
                 runtime: Mutex::new(Runtime {
                     settings,
@@ -154,25 +159,66 @@ impl TranscriptionService {
         chosen.clone().unwrap_or_else(|| default.clone())
     }
 
+    fn available_catalog_model(&self, model: &WhisperModel) -> Option<PathBuf> {
+        let directory = self.models_directory();
+        catalog_model_installed(&directory, model)
+            .then(|| catalog_model_path(&directory, model))
+            .or_else(|| self.inner.wakenote.verified_path(model))
+    }
+
+    fn install_or_reuse_model(
+        &self,
+        model: &WhisperModel,
+        fetcher: &dyn ModelFetcher,
+        cancel: &AtomicBool,
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<PathBuf, DownloadError> {
+        if let Some(path) = self.available_catalog_model(model) {
+            return Ok(path);
+        }
+        // This method runs on the download thread, including the initial discovery/hash.
+        self.inner.wakenote.refresh(&[*model]);
+        if cancel.load(Ordering::SeqCst) {
+            return Err(DownloadError::Cancelled);
+        }
+        if let Some(path) = self.available_catalog_model(model) {
+            return Ok(path);
+        }
+        install_catalog_model(&self.models_directory(), model, fetcher, cancel, progress)
+    }
+
+    fn refresh_shared_models(&self) {
+        let directory = self.models_directory();
+        let missing: Vec<_> = WHISPER_MODELS
+            .iter()
+            .copied()
+            .filter(|model| !catalog_model_installed(&directory, model))
+            .collect();
+        self.inner.wakenote.refresh(&missing);
+    }
+
     /// The model file transcription would load, whether or not it is there yet.
     pub fn selected_model_path(&self) -> PathBuf {
         let model = self.inner.runtime.lock().settings.model.clone();
         match model {
             ModelChoice::Catalog { id } => whisper_model(&id).map_or_else(
                 || self.models_directory().join(format!("ggml-{id}.bin")),
-                |model| catalog_model_path(&self.models_directory(), model),
+                |model| {
+                    self.available_catalog_model(model)
+                        .unwrap_or_else(|| catalog_model_path(&self.models_directory(), model))
+                },
             ),
             ModelChoice::Custom { path } => path,
         }
     }
 
-    /// Whether the selected model can be loaded now: a catalog model must be fully downloaded,
-    /// and a picked file must still be a regular file.
+    /// Whether the selected model can be loaded now: a catalog model must be locally installed
+    /// or verified in WakeNote, and a picked file must still be a regular file.
     pub fn selected_model_ready(&self) -> bool {
         let model = self.inner.runtime.lock().settings.model.clone();
         match model {
             ModelChoice::Catalog { id } => whisper_model(&id)
-                .is_some_and(|model| catalog_model_installed(&self.models_directory(), model)),
+                .is_some_and(|model| self.available_catalog_model(model).is_some()),
             ModelChoice::Custom { path } => regular_file_len(&path).is_some_and(|len| len > 0),
         }
     }
@@ -202,7 +248,7 @@ impl TranscriptionService {
                 byte_count: model.byte_count,
                 english_only: model.english_only,
                 quantized: model.quantized,
-                installed: catalog_model_installed(&models_directory, model),
+                installed: self.available_catalog_model(model).is_some(),
             })
             .collect();
         let selected_model = match &settings.model {
@@ -298,11 +344,19 @@ impl TranscriptionService {
     /// Starts downloading a catalog model in the background. One download runs at a time.
     pub fn start_download(&self, app: &AppHandle, model_id: &str) -> Result<(), CoreError> {
         let model = whisper_model(model_id).ok_or(CoreError::InvalidRequest)?;
+        let available = self.available_catalog_model(model).is_some();
         let cancel = Arc::new(AtomicBool::new(false));
         {
             let mut runtime = self.inner.runtime.lock();
             if runtime.download.is_some() {
                 return Err(CoreError::Busy);
+            }
+            if available {
+                runtime.error = None;
+                drop(runtime);
+                self.wake();
+                self.publish(app);
+                return Ok(());
             }
             runtime.download = Some(ActiveDownload {
                 model_id: model.id,
@@ -312,19 +366,14 @@ impl TranscriptionService {
             });
             runtime.error = None;
         }
-        let models_directory = self.models_directory();
         let service = self.clone();
         let thread_app = app.clone();
         let spawned = std::thread::Builder::new()
             .name("whisper-model-download".to_owned())
             .spawn(move || {
                 let mut last_published: Option<Instant> = None;
-                let result = install_catalog_model(
-                    &models_directory,
-                    model,
-                    &CurlFetcher,
-                    &cancel,
-                    &mut |received| {
+                let result =
+                    service.install_or_reuse_model(model, &CurlFetcher, &cancel, &mut |received| {
                         if let Some(download) = service.inner.runtime.lock().download.as_mut() {
                             download.received_bytes = received;
                         }
@@ -334,8 +383,7 @@ impl TranscriptionService {
                             service.publish(&thread_app);
                             last_published = Some(Instant::now());
                         }
-                    },
-                );
+                    });
                 service.finish_download(&thread_app, model.id, result.map(|_| ()));
             });
         if spawned.is_err() {
@@ -357,7 +405,14 @@ impl TranscriptionService {
             Ok(()) => {
                 self.audit(
                     AuditLevel::Info,
-                    "transcription.model_downloaded",
+                    if whisper_model(model_id).is_some_and(|model| {
+                        !catalog_model_installed(&self.models_directory(), model)
+                            && self.inner.wakenote.verified_path(model).is_some()
+                    }) {
+                        "transcription.model_reused"
+                    } else {
+                        "transcription.model_downloaded"
+                    },
                     &[("model", AuditValue::Text(model_id))],
                 );
                 self.wake();
@@ -479,14 +534,122 @@ mod tests {
         let destination = root.path().join("Backup Mic");
         fs::create_dir_all(&destination).unwrap();
         let state = AppState::new(ledger, destination, true, false).unwrap();
-        let service = TranscriptionService::new(
+        let mut service = TranscriptionService::new(
             state,
             TranscriptionDefaults {
                 models_directory: root.path().join("whisper-models"),
                 output_directory: root.path().join("Transcripts"),
             },
         );
+        Arc::get_mut(&mut service.inner).unwrap().wakenote =
+            wakenote::WakeNoteModels::new(Some(root.path()));
         (service, root)
+    }
+
+    fn shared_fixture(root: &Path) -> (WhisperModel, PathBuf) {
+        let body = b"lmgg shared service fixture";
+        let digest = backup_core::hash::hash_reader(body.as_slice(), |_| {}).unwrap();
+        let directory = root.join("Library/Application Support/WakeNote/models");
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("whisper-medium.bin");
+        fs::write(&path, body).unwrap();
+        (
+            WhisperModel {
+                id: "medium",
+                label: "Medium",
+                byte_count: digest.size,
+                sha256: Box::leak(digest.sha256.into_boxed_str()),
+                english_only: false,
+                quantized: false,
+            },
+            path,
+        )
+    }
+
+    struct NoNetwork;
+    impl ModelFetcher for NoNetwork {
+        fn fetch(
+            &self,
+            _: &str,
+            _: &Path,
+            _: &AtomicBool,
+            _: &mut dyn FnMut(u64),
+        ) -> Result<(), DownloadError> {
+            panic!("an installed WakeNote model must not be downloaded");
+        }
+    }
+
+    #[test]
+    fn a_verified_wakenote_model_is_available_at_its_original_path() {
+        let (service, root) = service();
+        let (model, path) = shared_fixture(root.path());
+        service.inner.wakenote.refresh(&[model]);
+        assert_eq!(service.available_catalog_model(&model), Some(path));
+        assert!(!service.models_directory().exists());
+    }
+
+    #[test]
+    fn a_download_request_discovers_wakenote_before_creating_local_files_or_using_the_network() {
+        let (service, root) = service();
+        let (model, path) = shared_fixture(root.path());
+        let result = service
+            .install_or_reuse_model(&model, &NoNetwork, &AtomicBool::new(false), &mut |_| {})
+            .unwrap();
+        assert_eq!(result, path);
+        assert!(!service.models_directory().exists());
+    }
+
+    #[test]
+    fn the_users_model_directory_takes_priority_over_wakenote() {
+        let (service, root) = service();
+        let (model, _) = shared_fixture(root.path());
+        service.inner.wakenote.refresh(&[model]);
+        let local = root.path().join("chosen-models");
+        fs::create_dir(&local).unwrap();
+        let path = local.join("ggml-medium.bin");
+        fs::write(&path, b"lmgg shared service fixture").unwrap();
+        service
+            .update_settings("2026-10-30T04:30:00Z", |settings| {
+                settings.models_directory = Some(local);
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(service.available_catalog_model(&model), Some(path.clone()));
+        assert_eq!(
+            service
+                .install_or_reuse_model(&model, &NoNetwork, &AtomicBool::new(false), &mut |_| {})
+                .unwrap(),
+            path
+        );
+    }
+
+    #[test]
+    fn manually_selected_files_are_preserved_even_when_wakenote_has_a_model() {
+        let (service, root) = service();
+        let (model, _) = shared_fixture(root.path());
+        service.inner.wakenote.refresh(&[model]);
+        let custom = root.path().join("my-model.bin");
+        fs::write(&custom, b"lmgg custom model").unwrap();
+        models::validate_custom_model(&custom).unwrap();
+        service
+            .update_settings("2026-10-30T04:30:00Z", |settings| {
+                settings.model = ModelChoice::Custom {
+                    path: custom.clone(),
+                };
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(service.selected_model_path(), custom);
+        assert!(service.selected_model_ready());
+        assert_eq!(
+            service.snapshot().selected_model.source,
+            ModelSourceDto::Custom
+        );
+        fs::remove_file(custom).unwrap();
+        assert!(
+            !service.selected_model_ready(),
+            "do not silently replace a missing custom model"
+        );
     }
 
     #[test]
@@ -575,6 +738,45 @@ mod tests {
         let (service, _root) = service();
         assert!(!service.cancel_download());
         assert!(!service.download_active());
+    }
+
+    /// Read-only acceptance against an existing WakeNote installation; never downloads a model.
+    /// `BACKUP_MIC_WAKENOTE_HOME=... cargo test --lib -- --ignored reuses_a_real_wakenote_model`
+    #[test]
+    #[ignore = "requires an installed WakeNote medium model and BACKUP_MIC_WAKENOTE_HOME"]
+    fn reuses_a_real_wakenote_model_through_the_service() {
+        let home = std::env::var_os("BACKUP_MIC_WAKENOTE_HOME")
+            .map(PathBuf::from)
+            .expect("set BACKUP_MIC_WAKENOTE_HOME to the WakeNote user's home");
+        let (mut service, _root) = service();
+        Arc::get_mut(&mut service.inner).unwrap().wakenote =
+            wakenote::WakeNoteModels::new(Some(&home));
+        service.refresh_shared_models();
+        let model = whisper_model("medium").unwrap();
+        let expected = home.join("Library/Application Support/WakeNote/models/whisper-medium.bin");
+        assert_eq!(service.selected_model_path(), expected);
+        assert!(service.selected_model_ready());
+        let snapshot = service.snapshot();
+        assert!(snapshot.selected_model.ready);
+        assert!(
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.id == "medium")
+                .unwrap()
+                .installed
+        );
+        assert_eq!(
+            snapshot.selected_model.file_display,
+            service.display(&expected)
+        );
+        assert_eq!(
+            service
+                .install_or_reuse_model(model, &NoNetwork, &AtomicBool::new(false), &mut |_| {})
+                .unwrap(),
+            expected
+        );
+        assert!(!service.models_directory().exists());
     }
 
     /// Downloads the real tiny model through `curl`, so it needs the network and is opt-in:
