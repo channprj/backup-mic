@@ -50,6 +50,8 @@ impl TranscriptionService {
                 whisper_rs::install_logging_hooks();
                 let mut engine = WhisperEngine::default();
                 while service.wait_for_wake() {
+                    service.refresh_shared_models();
+                    service.publish(&app);
                     service.run_pass(&app, &AppleDecoder, &mut engine);
                     engine.unload();
                 }
