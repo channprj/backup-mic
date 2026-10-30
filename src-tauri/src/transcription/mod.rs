@@ -579,6 +579,161 @@ mod tests {
         }
     }
 
+    const STANDALONE_MODEL: &[u8] = b"lmgg standalone model fixture";
+
+    fn standalone_fixture_model() -> WhisperModel {
+        let digest = backup_core::hash::hash_reader(STANDALONE_MODEL, |_| {}).unwrap();
+        WhisperModel {
+            id: "medium",
+            label: "Medium",
+            byte_count: digest.size,
+            sha256: Box::leak(digest.sha256.into_boxed_str()),
+            english_only: false,
+            quantized: false,
+        }
+    }
+
+    struct FixtureDownload(&'static [u8]);
+
+    impl ModelFetcher for FixtureDownload {
+        fn fetch(
+            &self,
+            url: &str,
+            partial: &Path,
+            _: &AtomicBool,
+            progress: &mut dyn FnMut(u64),
+        ) -> Result<(), DownloadError> {
+            assert_eq!(
+                url,
+                "https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-medium.bin"
+            );
+            assert_eq!(partial.file_name().unwrap(), "ggml-medium.bin.part");
+            fs::write(partial, self.0).unwrap();
+            progress(self.0.len() as u64);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn without_wakenote_local_catalog_models_remain_ready() {
+        let (service, root) = service();
+        let model = whisper_model("medium").unwrap();
+        let directory = service.models_directory();
+        fs::create_dir_all(&directory).unwrap();
+        let path = directory.join("ggml-medium.bin");
+        fs::File::create(&path)
+            .unwrap()
+            .set_len(model.byte_count)
+            .unwrap();
+
+        service.refresh_shared_models();
+
+        assert_eq!(service.selected_model_path(), path);
+        assert!(service.selected_model_ready());
+        let snapshot = service.snapshot();
+        assert!(snapshot.selected_model.ready);
+        assert!(
+            snapshot
+                .models
+                .iter()
+                .find(|model| model.id == "medium")
+                .unwrap()
+                .installed
+        );
+        assert!(snapshot.error.is_none());
+        assert_eq!(
+            service
+                .install_or_reuse_model(model, &NoNetwork, &AtomicBool::new(false), &mut |_| {})
+                .unwrap(),
+            path
+        );
+        assert!(!root.path().join("Library").exists());
+    }
+
+    #[test]
+    fn without_wakenote_downloads_are_verified_and_reused_locally() {
+        let (service, root) = service();
+        let model = standalone_fixture_model();
+        service.refresh_shared_models();
+        assert!(!service.selected_model_ready());
+
+        let path = service
+            .install_or_reuse_model(
+                &model,
+                &FixtureDownload(STANDALONE_MODEL),
+                &AtomicBool::new(false),
+                &mut |_| {},
+            )
+            .unwrap();
+
+        assert_eq!(path, root.path().join("whisper-models/ggml-medium.bin"));
+        assert_eq!(fs::read(&path).unwrap(), STANDALONE_MODEL);
+        assert!(catalog_model_installed(&service.models_directory(), &model));
+        assert!(
+            !service
+                .models_directory()
+                .join("ggml-medium.bin.part")
+                .exists()
+        );
+        assert_eq!(
+            service
+                .install_or_reuse_model(&model, &NoNetwork, &AtomicBool::new(false), &mut |_| {})
+                .unwrap(),
+            path
+        );
+        assert!(!root.path().join("Library").exists());
+        assert!(service.snapshot().error.is_none());
+    }
+
+    #[test]
+    fn without_wakenote_a_corrupt_download_is_never_installed() {
+        let (service, root) = service();
+        let model = standalone_fixture_model();
+        service.refresh_shared_models();
+        let result = service.install_or_reuse_model(
+            &model,
+            &FixtureDownload(b"lmgg standalonc model fixture"),
+            &AtomicBool::new(false),
+            &mut |_| {},
+        );
+
+        assert_eq!(result.unwrap_err(), DownloadError::Checksum);
+        assert!(!service.models_directory().join("ggml-medium.bin").exists());
+        assert!(
+            !service
+                .models_directory()
+                .join("ggml-medium.bin.part")
+                .exists()
+        );
+        assert!(!service.selected_model_ready());
+        assert!(!root.path().join("Library").exists());
+    }
+
+    #[test]
+    fn without_wakenote_manual_model_selection_still_works() {
+        let (service, root) = service();
+        let custom = root.path().join("custom.bin");
+        fs::write(&custom, STANDALONE_MODEL).unwrap();
+        models::validate_custom_model(&custom).unwrap();
+        service
+            .update_settings("2026-10-30T05:00:00Z", |settings| {
+                settings.model = ModelChoice::Custom {
+                    path: custom.clone(),
+                };
+                Ok(())
+            })
+            .unwrap();
+
+        service.refresh_shared_models();
+
+        assert_eq!(service.selected_model_path(), custom);
+        let snapshot = service.snapshot();
+        assert_eq!(snapshot.selected_model.source, ModelSourceDto::Custom);
+        assert!(snapshot.selected_model.ready);
+        assert!(snapshot.error.is_none());
+        assert!(!root.path().join("Library").exists());
+    }
+
     #[test]
     fn a_verified_wakenote_model_is_available_at_its_original_path() {
         let (service, root) = service();
@@ -655,8 +810,11 @@ mod tests {
     #[test]
     fn a_fresh_install_selects_medium_and_reports_it_missing() {
         let (service, root) = service();
+        service.refresh_shared_models();
         let snapshot = service.snapshot();
 
+        assert!(snapshot.error.is_none());
+        assert!(!root.path().join("Library").exists());
         assert!(!snapshot.enabled);
         assert_eq!(snapshot.selected_model.id.as_deref(), Some("medium"));
         assert!(!snapshot.selected_model.ready);
