@@ -266,13 +266,7 @@ fn a_header_only_wav_finishes_the_barrier_and_survives_reuse() {
         automatic_trash: true,
     };
     ledger
-        .begin_batch_run(
-            "run-1",
-            &source_id,
-            "2026-08-10T00:00:00Z",
-            8,
-            preferences,
-        )
+        .begin_batch_run("run-1", &source_id, "2026-08-10T00:00:00Z", 8, preferences)
         .unwrap();
     ledger
         .advance_batch_phase("run-1", BatchPhase::Copying)
